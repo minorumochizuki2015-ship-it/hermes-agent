@@ -1586,6 +1586,246 @@ class TestDelegateTask(unittest.TestCase):
             self.assertNotIn(private_value, serialized)
         self.assertIn("src/README.md", serialized)
 
+    def test_read_only_audit_result_contract_closes_every_admitted_field(self):
+        """Every admitted audit field has a bounded type/privacy contract."""
+        import math
+
+        from tools.delegate_tool import _project_read_only_audit_result
+
+        child = types.SimpleNamespace(
+            _delegate_private_context="PRIVATE_CONTEXT_CANARY /private/context",
+            _delegate_target_repo_root="/private/repo",
+            _delegate_snapshot_root="/private/snapshot",
+        )
+        base = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "safe finding in src/README.md",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "_child_role": "leaf",
+            "_child_cost_usd": 0.0,
+        }
+        cases = (
+            ("task_index", "number"),
+            ("status", "status"),
+            ("summary", "text"),
+            ("error", "text"),
+            ("error_category", "error_category"),
+            ("api_calls", "number"),
+            ("duration_seconds", "number"),
+            ("timeout_seconds", "number"),
+            ("timed_out_after_seconds", "number"),
+            ("timeout_phase", "timeout_phase"),
+            ("exit_reason", "exit_reason"),
+            ("model", "model"),
+            ("tokens", "tokens"),
+            ("cost_usd", "number"),
+            ("cost_status", "cost_status"),
+            ("requested_target_revision", "revision"),
+            ("resolved_target_revision", "revision"),
+            ("launch", "bool"),
+            ("launch_count", "number"),
+            ("schema_valid", "bool"),
+            ("schema_retries", "number"),
+            ("schema_errors", "text_list"),
+            ("summary_truncated", "bool"),
+            ("_child_role", "role"),
+            ("_child_cost_usd", "number"),
+        )
+        enum_values = {
+            "status": {"completed", "failed", "error", "timeout", "interrupted", "unavailable"},
+            "error_category": {
+                "subagent_timeout",
+                "subagent_execution_failed",
+                "fixed_revision_unavailable",
+                "immutable_snapshot_unavailable",
+                "read_only_audit_unavailable",
+            },
+            "timeout_phase": {"before_first_llm_call", "after_llm_calls"},
+            "exit_reason": {"completed", "max_iterations", "timeout", "error", "interrupted"},
+            "cost_status": {"unknown", "estimated", "actual"},
+            "_child_role": {"leaf", "orchestrator"},
+        }
+
+        for field, kind in cases:
+            with self.subTest(field=field):
+                marker = f"{field.upper()}_PRIVATE_CANARY"
+                reflected = (
+                    f"{marker} https://audit.invalid/{field}?token={marker} "
+                    f"/tmp/{field}/{marker} RuntimeError: {marker}"
+                )
+                bad_value = reflected
+                if kind == "tokens":
+                    bad_value = {
+                        "input": 1,
+                        "output": 2,
+                        "provider_payload": marker,
+                        "nested": {"raw": reflected},
+                    }
+                elif kind == "text_list":
+                    bad_value = [reflected] * 64
+                projected = dict(base)
+                projected[field] = bad_value
+                _project_read_only_audit_result(
+                    projected,
+                    child=child,
+                    goal="PRIVATE_GOAL_CANARY",
+                )
+                serialized = repr(projected)
+                self.assertNotIn(marker, serialized)
+                if kind in enum_values and field in projected:
+                    self.assertIn(projected[field], enum_values[field])
+                elif kind == "bool" and field in projected:
+                    self.assertIs(type(projected[field]), bool)
+                elif kind == "number" and field in projected:
+                    self.assertIsInstance(projected[field], (int, float))
+                    self.assertNotIsInstance(projected[field], bool)
+                    self.assertTrue(math.isfinite(float(projected[field])))
+                    self.assertGreaterEqual(projected[field], 0)
+                elif kind == "model" and field in projected:
+                    self.assertIsInstance(projected[field], str)
+                    self.assertLessEqual(len(projected[field]), 128)
+                elif kind == "revision" and field in projected:
+                    self.assertRegex(projected[field], r"^[0-9a-fA-F]{7,64}$")
+                elif kind == "text_list" and field in projected:
+                    self.assertLessEqual(len(projected[field]), 16)
+
+    def test_read_only_audit_text_rejects_platform_absolute_and_traversal_paths(self):
+        """Audit text keeps repo-relative evidence but rejects path aliases."""
+        from tools.delegate_tool import _sanitize_read_only_audit_text
+
+        unsafe = (
+            "/tmp",
+            r"C:\Users\moc\DRIVE_PATH_CANARY.txt",
+            r"\\server\share\UNC_PATH_CANARY.txt",
+            r"\\.\PIPE\DEVICE_PATH_CANARY",
+            "repo/../TRAVERSAL_PATH_CANARY.txt",
+            "repo/%2e%2e/ENCODED_PATH_CANARY.txt",
+            "src/NUL_PATH_CANARY\x00.txt",
+            "custom:private/PATH_URI_CANARY",
+            "src/./DOT_PATH_CANARY.txt",
+            "src//EMPTY_COMPONENT_PATH_CANARY.txt",
+        )
+        sanitized = _sanitize_read_only_audit_text(
+            " ".join(unsafe) + " safe finding src/README.md"
+        )
+        for raw in unsafe:
+            self.assertNotIn(raw, sanitized)
+        for fragment in (
+            "/tmp",
+            "C:\\",
+            "\\\\server",
+            "\\\\.\\",
+            "..",
+            "%2e",
+            "\x00",
+            "custom:",
+            "./",
+            "//",
+        ):
+            self.assertNotIn(fragment, sanitized)
+        self.assertIn("safe finding src/README.md", sanitized)
+
+    def test_read_only_audit_completion_callback_uses_closed_numeric_fields(self):
+        """Completion callbacks cannot receive unbounded or negative counters."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        events = []
+
+        class Snapshot:
+            root = "/private/fp3a/callback-snapshot"
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
+        class Child:
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+            _delegate_timeout_seconds = 2.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = ""
+            session_id = ""
+            model = "test-model"
+            _credential_pool = None
+            session_prompt_tokens = 10**99
+            session_completion_tokens = -1
+            session_reasoning_tokens = 10**99
+            session_estimated_cost_usd = 10**99
+            session_cost_status = "unknown"
+
+            def __init__(self):
+                self.tool_progress_callback = (
+                    lambda *args, **kwargs: events.append((args, kwargs))
+                )
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def run_conversation(self, **_kwargs):
+                return {
+                    "final_response": "safe finding src/README.md",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+            def close(self):
+                return None
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-callback-contract-parent"
+        register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
+        child = Child()
+        current_revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+        child._delegate_requested_target_revision = current_revision
+        child._delegate_target_revision = current_revision
+        child._delegate_prebuilt_audit_snapshot = Snapshot()
+        try:
+            _run_single_child(
+                0,
+                "audit the fixed source",
+                child,
+                parent,
+            )
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+
+        complete = next(
+            kwargs
+            for args, kwargs in events
+            if args and args[0] == "subagent.complete"
+        )
+        for key, maximum in (
+            ("input_tokens", 1_000_000_000_000),
+            ("output_tokens", 1_000_000_000_000),
+            ("reasoning_tokens", 1_000_000_000_000),
+            ("cost_usd", 1_000_000),
+        ):
+            if key in complete:
+                self.assertIsInstance(complete[key], (int, float))
+                self.assertGreaterEqual(complete[key], 0)
+                self.assertLessEqual(complete[key], maximum)
+
     def test_read_only_audit_credential_error_is_closed_and_sanitized(self):
         """Audit credential/config errors expose only a fixed unavailable result."""
         parent = _make_mock_parent()

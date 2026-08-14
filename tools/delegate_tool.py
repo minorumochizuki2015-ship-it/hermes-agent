@@ -21,6 +21,7 @@ import enum
 import contextvars
 import json
 import logging
+import math
 import re
 import selectors
 import shutil
@@ -38,7 +39,7 @@ from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from toolsets import TOOLSETS
 from agent.interrupt_compat import request_hard_interrupt
@@ -143,6 +144,49 @@ _READ_ONLY_AUDIT_EXCEPTION_RE = re.compile(
 _READ_ONLY_AUDIT_PRIVATE_MARKER_RE = re.compile(
     r"\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)*_(?:CANARY|SECRET|TOKEN|EXCEPTION)\b"
 )
+_READ_ONLY_AUDIT_TEXT_TOKEN_RE = re.compile(r"[^\s<>]+")
+_READ_ONLY_AUDIT_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_READ_ONLY_AUDIT_PATH_EDGE_CHARS = ".,;!?()[]{}\"'"
+_READ_ONLY_AUDIT_ENUM_FIELDS = {
+    "status": frozenset(
+        {"completed", "failed", "error", "timeout", "interrupted", "unavailable"}
+    ),
+    "error_category": frozenset(
+        {
+            _SUBAGENT_TIMEOUT_ERROR_CATEGORY,
+            _SUBAGENT_EXECUTION_ERROR_CATEGORY,
+            "fixed_revision_unavailable",
+            "immutable_snapshot_unavailable",
+            "read_only_audit_unavailable",
+            "capability_runtime_incompatible",
+        }
+    ),
+    "timeout_phase": frozenset({"before_first_llm_call", "after_llm_calls"}),
+    "exit_reason": frozenset(
+        {"completed", "max_iterations", "timeout", "error", "interrupted"}
+    ),
+    "cost_status": frozenset({"unknown", "estimated", "actual"}),
+    "_child_role": frozenset({"leaf", "orchestrator"}),
+}
+_READ_ONLY_AUDIT_BOOL_FIELDS = frozenset(
+    {"launch", "schema_valid", "summary_truncated"}
+)
+_READ_ONLY_AUDIT_NUMERIC_FIELDS = {
+    "task_index": (100_000, True),
+    "api_calls": (1_000_000, True),
+    "duration_seconds": (86_400.0, False),
+    "timeout_seconds": (3_600.0, False),
+    "timed_out_after_seconds": (86_400.0, False),
+    "cost_usd": (1_000_000.0, False),
+    "launch_count": (1, True),
+    "schema_retries": (1, True),
+    "_child_cost_usd": (1_000_000.0, False),
+}
+_READ_ONLY_AUDIT_TEXT_FIELD_LIMITS = {
+    "summary": _READ_ONLY_AUDIT_MAX_PUBLIC_TEXT_CHARS,
+    "error": 2_000,
+    "model": 128,
+}
 _READ_ONLY_AUDIT_RESULT_KEYS = frozenset(
     {
         "task_index",
@@ -201,6 +245,39 @@ def _read_only_audit_private_strings(value: Any, *, _depth: int = 0):
             yield from _read_only_audit_private_strings(item, _depth=_depth + 1)
 
 
+def _read_only_audit_token_is_unsafe_path(token: str) -> bool:
+    """Classify platform absolute, URI, traversal, and encoded path tokens."""
+    candidate = token.strip(_READ_ONLY_AUDIT_PATH_EDGE_CHARS)
+    if not candidate:
+        return False
+    if "\x00" in candidate:
+        return True
+    decoded = unquote(candidate)
+    if "\x00" in decoded:
+        return True
+    if re.match(r"(?i)^[a-z]:[\\/]", candidate):
+        return True
+    if candidate.startswith(("/", "\\\\", "\\\\?\\", "\\\\.\\")):
+        return True
+    if re.search(r"(?i)%2f|%5c|%2e", candidate):
+        return True
+    components = re.split(r"[/\\]", decoded)
+    if any(component in {"", ".", ".."} for component in components):
+        return True
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", candidate):
+        return True
+    return False
+
+
+def _replace_read_only_audit_path_token(match: re.Match) -> str:
+    token = match.group(0)
+    return (
+        _READ_ONLY_AUDIT_PUBLIC_LABEL
+        if _read_only_audit_token_is_unsafe_path(token)
+        else token
+    )
+
+
 def _sanitize_read_only_audit_text(
     value: Any,
     *,
@@ -256,6 +333,10 @@ def _sanitize_read_only_audit_text(
         _READ_ONLY_AUDIT_PUBLIC_LABEL,
         sanitized,
     )
+    sanitized = _READ_ONLY_AUDIT_TEXT_TOKEN_RE.sub(
+        _replace_read_only_audit_path_token,
+        sanitized,
+    )
     sanitized = _READ_ONLY_AUDIT_PRIVATE_MARKER_RE.sub(
         _READ_ONLY_AUDIT_PUBLIC_LABEL,
         sanitized,
@@ -281,47 +362,117 @@ def _project_read_only_audit_result(
     for key in list(entry):
         if key not in _READ_ONLY_AUDIT_RESULT_KEYS:
             entry.pop(key, None)
-    if "summary" in entry:
-        entry["summary"] = _sanitize_read_only_audit_text(
-            entry.get("summary"),
+
+    for field, allowed in _READ_ONLY_AUDIT_ENUM_FIELDS.items():
+        if field in entry and (
+            not isinstance(entry[field], str) or entry[field] not in allowed
+        ):
+            entry.pop(field, None)
+
+    for field in _READ_ONLY_AUDIT_BOOL_FIELDS:
+        if field in entry and type(entry[field]) is not bool:
+            entry.pop(field, None)
+
+    for field, (maximum, integer_only) in _READ_ONLY_AUDIT_NUMERIC_FIELDS.items():
+        if field not in entry:
+            continue
+        value = entry[field]
+        valid = (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and value >= 0
+            and value <= maximum
+            and (not integer_only or isinstance(value, int))
+        )
+        if not valid:
+            entry.pop(field, None)
+
+    for field, limit in _READ_ONLY_AUDIT_TEXT_FIELD_LIMITS.items():
+        if field not in entry:
+            continue
+        raw_value = entry[field]
+        if not isinstance(raw_value, str):
+            entry.pop(field, None)
+            continue
+        sanitized = _sanitize_read_only_audit_text(
+            raw_value,
             goal=goal,
             context=context,
             child=child,
         )
-    if "error" in entry:
-        entry["error"] = _sanitize_read_only_audit_text(
-            entry.get("error"),
-            goal=goal,
-            context=context,
-            child=child,
-        )
-    if isinstance(entry.get("schema_errors"), list):
-        entry["schema_errors"] = [
+        entry[field] = sanitized[:limit]
+
+    if "model" in entry:
+        raw_model = entry["model"]
+        model = (
             _sanitize_read_only_audit_text(
-                item,
+                raw_model,
                 goal=goal,
                 context=context,
                 child=child,
             )
-            for item in entry["schema_errors"]
-            if isinstance(item, str)
-        ][:16]
+            if isinstance(raw_model, str)
+            else None
+        )
+        if (
+            not isinstance(raw_model, str)
+            or not isinstance(model, str)
+            or raw_model != model
+            or not _READ_ONLY_AUDIT_MODEL_RE.fullmatch(model)
+            or _read_only_audit_token_is_unsafe_path(model)
+        ):
+            entry.pop("model", None)
+
+    if isinstance(entry.get("schema_errors"), list):
+        if (
+            len(entry["schema_errors"]) > 16
+            or any(not isinstance(item, str) for item in entry["schema_errors"])
+        ):
+            entry.pop("schema_errors", None)
+        else:
+            entry["schema_errors"] = [
+                _sanitize_read_only_audit_text(
+                    item,
+                    goal=goal,
+                    context=context,
+                    child=child,
+                )[:2_000]
+                for item in entry["schema_errors"]
+            ]
     elif "schema_errors" in entry:
         entry.pop("schema_errors", None)
+
+    if "tokens" in entry:
+        tokens = entry.get("tokens")
+        if not isinstance(tokens, dict) or not tokens:
+            entry.pop("tokens", None)
+        elif set(tokens) - {"input", "output"}:
+            entry.pop("tokens", None)
+        else:
+            cleaned_tokens = {}
+            for key, value in tokens.items():
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(float(value))
+                    or value < 0
+                    or value > 1_000_000_000_000
+                    or not isinstance(value, int)
+                ):
+                    entry.pop("tokens", None)
+                    break
+                cleaned_tokens[key] = value
+            else:
+                entry["tokens"] = cleaned_tokens
+
     for key in ("requested_target_revision", "resolved_target_revision"):
-        if key in entry and not re.fullmatch(r"[0-9a-fA-F]{7,64}", str(entry[key])):
+        if key in entry and (
+            not isinstance(entry[key], str)
+            or not re.fullmatch(r"[0-9a-fA-F]{7,64}", entry[key])
+        ):
             entry.pop(key, None)
-    tokens = entry.get("tokens")
-    if isinstance(tokens, dict):
-        entry["tokens"] = {
-            key: value
-            for key, value in tokens.items()
-            if key in {"input", "output"}
-            and isinstance(value, (int, float))
-            and not isinstance(value, bool)
-        }
-    elif "tokens" in entry:
-        entry.pop("tokens", None)
+
     return entry
 
 
@@ -4427,8 +4578,41 @@ def _run_single_child(
         # a tail of tool-call results.  Fed into the TUI's overlay detail
         # pane + accordion rollups (features 1, 2, 4).  All fields are
         # optional — missing data degrades gracefully on the client.
-        _cost_usd = getattr(child, "session_estimated_cost_usd", None)
-        _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
+        if is_read_only_audit:
+            # Project before any callback can observe the entry.  Audit
+            # telemetry must use only values that passed the closed result
+            # contract; raw child counters are provider-controlled.
+            _project_read_only_audit_result(entry, child=child, goal=goal)
+            _audit_tokens = entry.get("tokens", {})
+            _input_tokens = (
+                _audit_tokens.get("input", 0)
+                if isinstance(_audit_tokens, dict)
+                else 0
+            )
+            _output_tokens = (
+                _audit_tokens.get("output", 0)
+                if isinstance(_audit_tokens, dict)
+                else 0
+            )
+            _raw_reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
+            _reasoning_tokens = (
+                int(_raw_reasoning_tokens)
+                if (
+                    isinstance(_raw_reasoning_tokens, (int, float))
+                    and not isinstance(_raw_reasoning_tokens, bool)
+                    and math.isfinite(float(_raw_reasoning_tokens))
+                    and 0 <= _raw_reasoning_tokens <= 1_000_000_000_000
+                )
+                else 0
+            )
+            _cost_usd = entry.get("cost_usd")
+            duration = entry.get("duration_seconds", 0.0)
+            api_calls = entry.get("api_calls", 0)
+            status = entry.get("status", "unavailable")
+            public_summary = entry.get("summary") or entry.get("error") or ""
+        else:
+            _cost_usd = getattr(child, "session_estimated_cost_usd", None)
+            _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
         if getattr(child, "_delegate_capability_profile", None) == READ_ONLY_AUDIT_PROFILE:
             _files_read = []
         else:
@@ -4495,9 +4679,6 @@ def _run_single_child(
                 complete_kwargs["cost_usd"] = float(_cost_usd)
             except (TypeError, ValueError):
                 pass
-
-        if is_read_only_audit:
-            _project_read_only_audit_result(entry, child=child, goal=goal)
 
         if audit_snapshot is not None:
             audit_snapshot.revoke()
