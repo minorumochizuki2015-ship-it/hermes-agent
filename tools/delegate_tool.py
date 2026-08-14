@@ -3694,6 +3694,10 @@ def _run_single_child(
             initargs=(_get_subagent_approval_callback(),),
         )
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
+        child_user_message = (
+            _READ_ONLY_AUDIT_PUBLIC_LABEL if is_read_only_audit else goal
+        )
+
         def _relay_child_text(delta: str) -> None:
             # Forward the child's streamed reply text up the progress relay so
             # gateway watch windows mirror it live (subagent.text → message.delta).
@@ -3711,7 +3715,7 @@ def _run_single_child(
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=goal,
+                    user_message=child_user_message,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
                 )
@@ -3885,16 +3889,23 @@ def _run_single_child(
                 _retry_result = None
                 try:
                     _retry_result = child.run_conversation(
-                        user_message=build_retry_message(_schema_errors),
+                        user_message=(
+                            _READ_ONLY_AUDIT_PUBLIC_LABEL
+                            if is_read_only_audit
+                            else build_retry_message(_schema_errors)
+                        ),
                         task_id=child_task_id,
                         stream_callback=_relay_child_text,
                     )
                 except Exception as _retry_exc:
-                    logger.warning(
-                        "Subagent %d schema-retry turn failed: %s",
-                        task_index,
-                        _retry_exc,
-                    )
+                    if is_read_only_audit:
+                        logger.warning("Read-only audit schema retry failed")
+                    else:
+                        logger.warning(
+                            "Subagent %d schema-retry turn failed: %s",
+                            task_index,
+                            _retry_exc,
+                        )
                 if isinstance(_retry_result, dict):
                     _retry_text = _retry_result.get("final_response") or ""
                     if _retry_text.strip():
@@ -4687,6 +4698,30 @@ def delegate_task(
     if timeout_error:
         return tool_error(timeout_error)
 
+    # Recover and normalize batch capability profiles before any config or
+    # credential resolution. A task profile may be whitespace/case variant
+    # or arrive as a JSON-encoded batch; it must not reach a credential error
+    # or diagnostic surface in its unnormalized form.
+    recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
+    if tasks_error:
+        return tool_error(tasks_error)
+    if recovered_tasks is not None:
+        tasks = recovered_tasks
+    if isinstance(tasks, list) and not tasks:
+        tasks = None
+    if isinstance(tasks, list):
+        for i, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                return tool_error(
+                    f"Task {i} must be an object, got {type(task).__name__}."
+                )
+            task_profile, task_profile_error = _normalize_capability_profile(
+                task.get("capability_profile", top_profile)
+            )
+            if task_profile_error:
+                return tool_error(f"Task {i}: {task_profile_error}")
+            task["capability_profile"] = task_profile
+
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch is dispatched as ONE async unit: the whole fan-out runs
     # on the daemon executor, joins on every child (see _execute_and_aggregate
@@ -4753,18 +4788,6 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
-    recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
-    if tasks_error:
-        return tool_error(tasks_error)
-    if recovered_tasks is not None:
-        tasks = recovered_tasks
-
-    # Small models frequently emit an empty tasks array ([]) alongside a
-    # single goal. Treat that as "no batch" instead of letting the batch
-    # quality gate below reject the goal-derived single task ("Batch mode
-    # requires at least 2 tasks") — the intent is unambiguous.
-    if isinstance(tasks, list) and not tasks:
-        tasks = None
 
     if tasks and isinstance(tasks, list):
         if len(tasks) > max_children:

@@ -1464,6 +1464,236 @@ class TestDelegateTask(unittest.TestCase):
         self.assertNotIn(canary_url, serialized)
         self.assertNotIn(canary_error, serialized)
 
+    def test_read_only_audit_child_turn_uses_public_message_for_durable_store(self):
+        """The audit child user turn cannot persist the private task goal."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        class Snapshot:
+            def __init__(self, root):
+                self.root = root
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
+        class DurableChild:
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+            _delegate_requested_target_revision = "a" * 40
+            _delegate_target_revision = "b" * 40
+            _delegate_timeout_seconds = 30.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = "fp3a-durable-audit-child"
+            session_id = "audit-child"
+            model = "test-model"
+            tool_progress_callback = None
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def __init__(self, store):
+                self.store = store
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def run_conversation(self, *, user_message, **_kwargs):
+                # This is the child run seam: the fake store models the
+                # SessionDB/turn-context/crash persistence consumers that see
+                # the user turn after AIAgent has accepted it.
+                self.store["messages"].append(user_message)
+                self.store["turn_context"].append({"user_message": user_message})
+                self.store["crash"].append({"user_message": user_message})
+                return {
+                    "final_response": "audit result",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+            def close(self):
+                return None
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-durable-audit-parent"
+        canaries = (
+            "GOAL_CANARY_/private/audit/goal",
+            "CONTEXT_CANARY_/private/audit/context",
+            "sk-AUDIT-TOKEN-CANARY",
+            "https://audit.invalid/private",
+        )
+        private_goal = " ".join(canaries)
+        store = {"messages": [], "turn_context": [], "crash": []}
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-durable-") as root:
+            child = DurableChild(store)
+            child._delegate_prebuilt_audit_snapshot = Snapshot(root)
+            register_task_env_overrides(parent._current_task_id, {"cwd": root})
+            try:
+                result = _run_single_child(0, private_goal, child, parent)
+            finally:
+                clear_task_env_overrides(parent._current_task_id)
+
+        serialized = json.dumps(
+            {"store": store, "result": result},
+            ensure_ascii=False,
+        )
+        self.assertEqual(store["messages"], [READ_ONLY_AUDIT_PROFILE])
+        for canary in canaries:
+            self.assertNotIn(canary, serialized)
+
+    def test_read_only_audit_schema_retry_uses_public_message_too(self):
+        """The bounded schema retry cannot reintroduce the private goal."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        class Snapshot:
+            root = "/private/fp3a-schema-snapshot"
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
+        child = MagicMock()
+        child._delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+        child._delegate_requested_target_revision = "a" * 40
+        child._delegate_target_revision = "b" * 40
+        child._delegate_timeout_seconds = 30.0
+        child._delegate_saved_tool_names = []
+        child._delegate_role = "leaf"
+        child._delegate_depth = 1
+        child._subagent_id = "fp3a-schema-audit-child"
+        child.session_id = "audit-schema-child"
+        child.model = "test-model"
+        child._credential_pool = None
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.session_estimated_cost_usd = 0.0
+        child.session_cost_status = "unknown"
+        child._delegate_output_schema = {
+            "type": "object",
+            "required": ["ok"],
+            "properties": {"ok": {"type": "boolean"}},
+        }
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 1,
+            "max_iterations": 1,
+            "last_activity_ts": time.time(),
+        }
+        child.run_conversation.side_effect = [
+            {
+                "final_response": "not-json",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            },
+            {
+                "final_response": '{"ok": true}',
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            },
+        ]
+        child.close.return_value = None
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-schema-audit-parent"
+        private_goal = "GOAL_CANARY_/private/schema/goal"
+        child._delegate_prebuilt_audit_snapshot = Snapshot()
+        register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
+        try:
+            result = _run_single_child(0, private_goal, child, parent)
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+
+        self.assertEqual(result["status"], "completed")
+        messages = [
+            call.kwargs["user_message"]
+            for call in child.run_conversation.call_args_list
+        ]
+        self.assertEqual(messages, [READ_ONLY_AUDIT_PROFILE, READ_ONLY_AUDIT_PROFILE])
+
+    def test_batch_profiles_normalize_before_credentials(self):
+        """Batch profile normalization precedes credentials and preserves ordinary raw errors."""
+        parent = _make_mock_parent()
+        canary = "credential-CANARY https://audit.invalid/private sk-token-CANARY"
+        audit_task = {
+            "goal": "audit the fixed source",
+            "capability_profile": " READ_ONLY_AUDIT ",
+            "target_revision": "a" * 40,
+        }
+        cases = (
+            ("mapping", [audit_task], True),
+            ("json", json.dumps([audit_task]), True),
+            (
+                "mixed",
+                [
+                    {"goal": "ordinary task"},
+                    dict(audit_task),
+                ],
+                True,
+            ),
+            (
+                "invalid",
+                [{"goal": "invalid task", "capability_profile": "forbidden"}],
+                False,
+            ),
+            ("ordinary", [{"goal": "ordinary task"}], False),
+        )
+
+        for name, tasks, expects_audit in cases:
+            with self.subTest(name=name):
+                with (
+                    patch("tools.delegate_tool._load_config", return_value={}),
+                    patch(
+                        "tools.delegate_tool._resolve_delegation_credentials",
+                        side_effect=ValueError(canary),
+                    ) as resolve_credentials,
+                ):
+                    result = json.loads(
+                        delegate_task(tasks=tasks, parent_agent=parent)
+                    )
+                if expects_audit:
+                    self.assertEqual(result["code"], "read_only_audit_unavailable")
+                    self.assertNotIn(canary, json.dumps(result))
+                elif name == "invalid":
+                    self.assertIn("Unsupported delegate_task capability_profile", result["error"])
+                    self.assertNotIn(canary, json.dumps(result))
+                else:
+                    self.assertIn(canary, result["error"])
+                if name == "invalid":
+                    resolve_credentials.assert_not_called()
+                else:
+                    resolve_credentials.assert_called_once()
+
     def test_fixed_revision_rejects_writable_replaced_git_before_spawn(self):
         """A user-writable Git candidate cannot execute fixed-audit queries."""
         from tools.delegate_tool import ReadOnlyAuditRevisionError, _git_output
