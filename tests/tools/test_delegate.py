@@ -952,36 +952,32 @@ class TestDelegateTask(unittest.TestCase):
 
     def test_fixed_revision_git_reads_disable_lazy_fetch_and_fail_closed(self):
         """Git object reads use a no-fetch environment and typed failure."""
-        import io
-
         from tools.delegate_tool import (
             ReadOnlyAuditRevisionError,
             _git_output,
             _read_git_blob,
         )
 
-        run_envs = []
         popen_envs = []
-
-        def missing_run(_args, **kwargs):
-            run_envs.append(kwargs.get("env"))
-            return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
 
         class MissingBlobProcess:
             returncode = 1
 
             def __init__(self):
-                self.stdout = io.BytesIO(b"")
+                self.stdout = tempfile.TemporaryFile()
+                self.stderr = tempfile.TemporaryFile()
 
-            def communicate(self):
-                return b"", b"missing object"
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
 
         def missing_popen(_args, **kwargs):
             popen_envs.append(kwargs.get("env"))
             return MissingBlobProcess()
 
         with (
-            patch("tools.delegate_tool.subprocess.run", side_effect=missing_run),
             patch("tools.delegate_tool.subprocess.Popen", side_effect=missing_popen),
         ):
             with self.assertRaises(ReadOnlyAuditRevisionError):
@@ -989,11 +985,282 @@ class TestDelegateTask(unittest.TestCase):
             with self.assertRaises(ReadOnlyAuditRevisionError):
                 _read_git_blob(os.getcwd(), "missing")
 
-        for env in run_envs + popen_envs:
+        self.assertEqual(len(popen_envs), 2)
+        for env in popen_envs:
             self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
             self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+            self.assertEqual(env["GIT_OPTIONAL_LOCKS"], "0")
             self.assertNotIn("GIT_DIR", env)
+
+    def test_zero_api_timeout_result_has_no_private_diagnostic_path(self):
+        """Timeout results stay logical even when a diagnostic is written."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-timeout-privacy-parent"
+        register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
+        progress_events = []
+
+        class TimeoutChild:
+            _delegate_capability_profile = None
+            _delegate_timeout_seconds = 0.01
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = "fp3a-timeout-privacy-child"
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = (
+                lambda *args, **kwargs: progress_events.append((args, kwargs))
+            )
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 0,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def close(self):
+                return None
+
+            def run_conversation(self, **_kwargs):
+                time.sleep(0.05)
+                return {"final_response": "late", "completed": True, "api_calls": 0}
+
+        try:
+            with patch(
+                "tools.delegate_tool._dump_subagent_timeout_diagnostic",
+                return_value="/private/snapshot-or-cwd/subagent-timeout.log",
+            ):
+                result = _run_single_child(
+                    0,
+                    "fixed audit timeout",
+                    TimeoutChild(),
+                    parent,
+                )
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+
+        serialized = json.dumps(result, ensure_ascii=False) + repr(progress_events)
+        self.assertEqual(result["status"], "timeout")
+        self.assertNotIn("diagnostic_path", result)
+        self.assertNotIn("/private/snapshot-or-cwd", serialized)
+        self.assertNotIn(os.getcwd(), serialized)
+        self.assertNotIn("subagent-timeout.log", serialized)
+
+    def test_fixed_revision_git_revision_and_tree_timeout_fail_closed(self):
+        """Revision/tree Git stages have a bounded subprocess deadline."""
+        from tools.delegate_tool import ReadOnlyAuditRevisionError, _git_output
+
+        class TimeoutProcess:
+            returncode = None
+
+            def __init__(self):
+                self.stdout = tempfile.TemporaryFile()
+                self.stderr = tempfile.TemporaryFile()
+                self.terminated = False
+                self.killed = False
+                self.wait_calls = 0
+
+            def poll(self):
+                return self.returncode if self.terminated else None
+
+            def wait(self, timeout=None):
+                self.timeout = timeout
+                self.wait_calls += 1
+                if not self.terminated:
+                    raise subprocess.TimeoutExpired(["git"], timeout)
+                self.returncode = -9
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                self.timeout = timeout
+                raise subprocess.TimeoutExpired(["git"], timeout)
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+        processes = []
+
+        def popen(*_args, **_kwargs):
+            process = TimeoutProcess()
+            processes.append(process)
+            return process
+
+        with (
+            patch("tools.delegate_tool.subprocess.Popen", side_effect=popen),
+            patch(
+                "tools.delegate_tool.subprocess.run",
+                side_effect=AssertionError("unbounded subprocess.run used"),
+            ),
+            patch("tools.delegate_tool._READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS", 0.01),
+        ):
+            for args in (
+                ["rev-parse", "--disambiguate=abc1234"],
+                ["ls-tree", "-r", "-z", "--full-tree", "abc1234"],
+            ):
+                with self.subTest(args=args):
+                    with self.assertRaises(ReadOnlyAuditRevisionError):
+                        _git_output(os.getcwd(), args, limit=64)
+
+        self.assertEqual(len(processes), 2)
+        for process in processes:
+            self.assertIsNotNone(process.timeout)
+            self.assertGreater(process.wait_calls, 0)
+            self.assertTrue(process.terminated or process.killed)
+
+    def test_fixed_revision_git_blob_timeout_fails_closed_and_reaps(self):
+        """A stalled blob read is terminated and reaped at the Git boundary."""
+        from tools.delegate_tool import ReadOnlyAuditRevisionError, _read_git_blob
+
+        class TimeoutProcess:
+            returncode = None
+
+            def __init__(self):
+                self.stdout = tempfile.TemporaryFile()
+                self.stderr = tempfile.TemporaryFile()
+                self.terminated = False
+                self.killed = False
+                self.wait_calls = 0
+
+            def poll(self):
+                return self.returncode if self.terminated else None
+
+            def wait(self, timeout=None):
+                self.timeout = timeout
+                self.wait_calls += 1
+                if not self.terminated:
+                    raise subprocess.TimeoutExpired(["git"], timeout)
+                self.returncode = -9
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                self.timeout = timeout
+                raise subprocess.TimeoutExpired(["git"], timeout)
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+        process = TimeoutProcess()
+        with (
+            patch("tools.delegate_tool.subprocess.Popen", return_value=process),
+            patch("tools.delegate_tool._READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS", 0.01),
+        ):
+            with self.assertRaises(ReadOnlyAuditRevisionError):
+                _read_git_blob(os.getcwd(), "deadbeef")
+
+        self.assertIsNotNone(process.timeout)
+        self.assertGreater(process.wait_calls, 0)
+        self.assertTrue(process.terminated or process.killed)
+
+    def test_fixed_revision_git_stream_overflow_terminates_and_reaps(self):
+        """Tree/blob caps are enforced while draining bounded Git streams."""
+        from tools.delegate_tool import (
+            ReadOnlyAuditRevisionError,
+            _git_output,
+            _read_git_blob,
+        )
+
+        class OverflowProcess:
+            returncode = 0
+
+            def __init__(self, stdout, stderr):
+                self.stdout = stdout
+                self.stderr = stderr
+                self.terminated = False
+                self.killed = False
+                self.wait_calls = 0
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                return self.returncode
+
+        processes = []
+
+        def popen(*_args, **_kwargs):
+            stdout = tempfile.TemporaryFile()
+            stderr = tempfile.TemporaryFile()
+            stdout.write(b"x" * 65)
+            stdout.seek(0)
+            process = OverflowProcess(stdout, stderr)
+            process._owned_streams = (stdout, stderr)
+            processes.append(process)
+            return process
+
+        with (
+            patch("tools.delegate_tool.subprocess.Popen", side_effect=popen),
+            patch(
+                "tools.delegate_tool.subprocess.run",
+                side_effect=AssertionError("unbounded subprocess.run used"),
+            ),
+            patch(
+                "tools.delegate_tool._READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES",
+                64,
+            ),
+        ):
+            with self.assertRaises(ReadOnlyAuditRevisionError):
+                _git_output(os.getcwd(), ["ls-tree"], limit=64)
+            with self.assertRaises(ReadOnlyAuditRevisionError):
+                _read_git_blob(os.getcwd(), "deadbeef")
+
+        self.assertEqual(len(processes), 2)
+        for process in processes:
+            self.assertTrue(process.terminated or process.killed)
+            self.assertGreater(process.wait_calls, 0)
+            for stream in process._owned_streams:
+                stream.close()
+
+    def test_fixed_revision_dispatch_leases_reject_forged_and_duplicate_release(self):
+        """Only each exact admitted lease can decrement active dispatches."""
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-lease-nonce-red-") as root:
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            task_id = "fp3a-lease-nonce"
+            snapshot.bind(task_id)
+            first = snapshot.acquire_dispatch(task_id)
+            second = snapshot.acquire_dispatch(task_id)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(first, second)
+
+            forged = (task_id, first[1])
+            snapshot.release_dispatch(forged)
+            self.assertEqual(snapshot._active_dispatches, 2)
+            snapshot.release_dispatch(first)
+            self.assertEqual(snapshot._active_dispatches, 1)
+            snapshot.release_dispatch(first)
+            self.assertEqual(snapshot._active_dispatches, 1)
+            snapshot.release_dispatch(second)
+            self.assertEqual(snapshot._active_dispatches, 0)
+            snapshot.cleanup()
 
     def test_fixed_revision_missing_blob_denies_before_child_or_transcript(self):
         """A missing object is typed unavailable before any child lifecycle starts."""

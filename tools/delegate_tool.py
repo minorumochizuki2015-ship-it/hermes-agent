@@ -22,6 +22,7 @@ import contextvars
 import json
 import logging
 import re
+import selectors
 import shutil
 import subprocess
 import tempfile
@@ -104,6 +105,12 @@ _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 _READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES = 32 * 1024 * 1024
 _READ_ONLY_AUDIT_SNAPSHOT_CLEANUP_GRACE_SECONDS = 0.25
+_READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS = max(
+    0.25,
+    min(30.0, READ_ONLY_AUDIT_DEFAULT_TIMEOUT_SECONDS / 20.0),
+)
+_READ_ONLY_AUDIT_GIT_STDERR_BYTES = 64 * 1024
+_READ_ONLY_AUDIT_GIT_READ_CHUNK_BYTES = 64 * 1024
 
 
 def _read_only_audit_git_env() -> Dict[str, str]:
@@ -115,6 +122,7 @@ def _read_only_audit_git_env() -> Dict[str, str]:
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
     }
     for key in ("LANG", "LC_ALL", "TMPDIR"):
         value = os.environ.get(key)
@@ -136,6 +144,8 @@ class _ReadOnlyAuditSnapshot:
         self._condition = threading.Condition(self._lock)
         self._generation = 0
         self._active_dispatches = 0
+        self._next_dispatch_nonce = 0
+        self._active_leases: set[tuple[str, int, int]] = set()
         self._revoked = False
         self._cleanup_grace_seconds = _READ_ONLY_AUDIT_SNAPSHOT_CLEANUP_GRACE_SECONDS
 
@@ -215,25 +225,23 @@ class _ReadOnlyAuditSnapshot:
                 return None
             return relative.as_posix() or "."
 
-    def acquire_dispatch(self, task_id: str) -> Optional[tuple[str, int]]:
-        """Admit one bounded read/search dispatch and return its generation."""
+    def acquire_dispatch(self, task_id: str) -> Optional[tuple[str, int, int]]:
+        """Admit one bounded read/search dispatch and return its lease nonce."""
         with self._condition:
             if self._active_root_locked(task_id) is None:
                 return None
-            self._active_dispatches += 1
-            return task_id, self._generation
+            self._next_dispatch_nonce += 1
+            lease = (task_id, self._generation, self._next_dispatch_nonce)
+            self._active_leases.add(lease)
+            self._active_dispatches = len(self._active_leases)
+            return lease
 
     def release_dispatch(self, lease: Any) -> None:
         """Release one previously admitted bounded dispatch."""
         with self._condition:
-            if (
-                isinstance(lease, tuple)
-                and len(lease) == 2
-                and isinstance(lease[0], str)
-                and isinstance(lease[1], int)
-                and self._active_dispatches > 0
-            ):
-                self._active_dispatches -= 1
+            if isinstance(lease, tuple) and lease in self._active_leases:
+                self._active_leases.remove(lease)
+                self._active_dispatches = len(self._active_leases)
                 self._condition.notify_all()
 
     def cleanup(self) -> None:
@@ -285,20 +293,149 @@ class _ReadOnlyAuditSnapshot:
             logger.debug("fixed audit snapshot cleanup failed", exc_info=True)
 
 
-def _git_output(repo_root: str, args: List[str], *, limit: int) -> bytes:
-    """Run a bounded read-only Git query without exposing command/path errors."""
+class _GitOutputLimitError(RuntimeError):
+    """Private signal that a bounded Git stream exceeded its cap."""
+
+
+def _terminate_and_reap_git_process(process: Any) -> None:
+    """Terminate a bounded Git child without reading unbounded pipe output."""
     try:
-        completed = subprocess.run(
+        process.terminate()
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        process.wait(timeout=0.2)
+        return
+    except (AttributeError, OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    try:
+        process.kill()
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        process.wait(timeout=0.2)
+    except (AttributeError, OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+
+def _bounded_git_process_output(
+    process: Any,
+    *,
+    stdout_limit: int,
+    timeout_seconds: float,
+) -> bytes:
+    """Drain Git stdout/stderr incrementally under time and memory caps."""
+    stdout_stream = getattr(process, "stdout", None)
+    stderr_stream = getattr(process, "stderr", None)
+    try:
+        stdout_fd = stdout_stream.fileno()
+        stderr_fd = stderr_stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        _terminate_and_reap_git_process(process)
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+
+    selector = selectors.DefaultSelector()
+    stdout_buffer = bytearray()
+    stderr_size = 0
+    deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+    try:
+        os.set_blocking(stdout_fd, False)
+        os.set_blocking(stderr_fd, False)
+        selector.register(stdout_fd, selectors.EVENT_READ, "stdout")
+        selector.register(stderr_fd, selectors.EVENT_READ, "stderr")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            events = selector.select(timeout=min(remaining, 0.05))
+            if not events:
+                try:
+                    process_done = process.poll() is not None
+                except (AttributeError, OSError, ValueError):
+                    process_done = False
+                if process_done:
+                    # A real pipe reports EOF through the selector. This
+                    # fallback also drains descriptors from a process wrapper
+                    # that has exited but does not report regular-file
+                    # readiness (notably on macOS).
+                    events = [
+                        (key, None)
+                        for key in list(selector.get_map().values())
+                    ]
+                else:
+                    continue
+            for key, _ in events:
+                try:
+                    chunk = os.read(key.fd, _READ_ONLY_AUDIT_GIT_READ_CHUNK_BYTES)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    try:
+                        selector.unregister(key.fd)
+                    except (KeyError, ValueError):
+                        pass
+                    continue
+                if key.data == "stdout":
+                    if len(stdout_buffer) + len(chunk) > stdout_limit:
+                        raise _GitOutputLimitError
+                    stdout_buffer.extend(chunk)
+                else:
+                    stderr_size += len(chunk)
+                    if stderr_size > _READ_ONLY_AUDIT_GIT_STDERR_BYTES:
+                        raise _GitOutputLimitError
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError from exc
+        if returncode != 0:
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+        return bytes(stdout_buffer)
+    except ReadOnlyAuditRevisionError:
+        raise
+    except (
+        OSError,
+        ValueError,
+        TimeoutError,
+        _GitOutputLimitError,
+    ) as exc:
+        _terminate_and_reap_git_process(process)
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
+    finally:
+        try:
+            selector.close()
+        except (OSError, ValueError):
+            pass
+        for stream in (stdout_stream, stderr_stream):
+            try:
+                stream.close()
+            except (AttributeError, OSError, ValueError):
+                pass
+
+
+def _bounded_git_query(repo_root: str, args: List[str], *, limit: int) -> bytes:
+    """Run one sanitized, no-fetch, bounded Git query."""
+    try:
+        process = subprocess.Popen(
             ["git", "-C", repo_root, *args],
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=_read_only_audit_git_env(),
         )
     except (OSError, ValueError) as exc:
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
-    if completed.returncode != 0 or len(completed.stdout) > limit:
-        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
-    return completed.stdout
+    return _bounded_git_process_output(
+        process,
+        stdout_limit=limit,
+        timeout_seconds=_READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS,
+    )
+
+
+def _git_output(repo_root: str, args: List[str], *, limit: int) -> bytes:
+    """Run a bounded read-only Git query without exposing command/path errors."""
+    return _bounded_git_query(repo_root, args, limit=limit)
 
 
 def _git_repo_root(candidate: Optional[str]) -> str:
@@ -398,24 +535,11 @@ def _target_tree_entries(repo_root: str, resolved_revision: str) -> List[tuple[s
 
 
 def _read_git_blob(repo_root: str, object_id: str) -> bytes:
-    try:
-        process = subprocess.Popen(
-            ["git", "-C", repo_root, "cat-file", "blob", object_id],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=_read_only_audit_git_env(),
-        )
-        data = process.stdout.read(_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES + 1)
-        if len(data) > _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES:
-            process.kill()
-            process.communicate()
-            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
-        _, _ = process.communicate()
-    except (OSError, ValueError) as exc:
-        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
-    if process.returncode != 0:
-        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
-    return data
+    return _bounded_git_query(
+        repo_root,
+        ["cat-file", "blob", object_id],
+        limit=_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES,
+    )
 
 
 def _create_read_only_audit_snapshot(
@@ -3415,8 +3539,6 @@ def _run_single_child(
                         f"first LLM request (prompt construction, credential "
                         f"resolution, or transport may be stuck)."
                     )
-                    if diagnostic_path:
-                        _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
                         f"Subagent timed out after {child_timeout}s with "
@@ -3424,8 +3546,6 @@ def _run_single_child(
                         f"stuck on a slow API call, tool call, or unresponsive "
                         f"network request."
                     )
-                    if diagnostic_path:
-                        _err += f" Diagnostic: {diagnostic_path}"
             else:
                 _err = str(_timeout_exc)
 
@@ -3445,7 +3565,6 @@ def _run_single_child(
                     else None
                 ),
                 "_child_role": getattr(child, "_delegate_role", None),
-                "diagnostic_path": diagnostic_path,
             }
             if _late_pending_steer:
                 _error_entry["missed_steer"] = _late_pending_steer
