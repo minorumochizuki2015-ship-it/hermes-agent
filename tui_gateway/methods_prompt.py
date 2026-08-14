@@ -692,6 +692,56 @@ def _(rid, params: dict) -> dict:
         # cancel promptly, notices the user once past the slow threshold, and
         # only errors when the build itself fails or the bounded cap expires.
         err = _wait_agent_for_prompt(session, rid, sid)
+        if orch_turn_token is not None:
+            with _orch_ownership_lock(session):
+                if not _orch_turn_token_matches(session, orch_turn_token):
+                    return
+                if err:
+                    terminalized = _orch_terminalize_before_agent_call(
+                        sid, session, orch_turn_token
+                    )
+                    if not terminalized:
+                        return
+                    with session["history_lock"]:
+                        session["running"] = False
+                        session["last_active"] = time.time()
+                    _emit(
+                        "session.info", sid, _session_info(session.get("agent"), session)
+                    )
+                    return
+                cancelled_before_ready = False
+                cancel_message = ""
+                with session["history_lock"]:
+                    if session.get("_turn_cancel_requested") or not session.get(
+                        "running"
+                    ):
+                        session["running"] = False
+                        _clear_inflight_turn(session)
+                        cancelled_before_ready = True
+                        cancel_message = (
+                            "Turn cancelled before the agent was ready"
+                            if session.get("_turn_cancel_requested")
+                            else "Session no longer running before the agent was ready"
+                        )
+                if cancelled_before_ready:
+                    if not _orch_cancel_before_agent_ready(session, orch_turn_token):
+                        return
+                    _emit(
+                        "error",
+                        sid,
+                        {
+                            "message": cancel_message,
+                        },
+                    )
+                    return
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    expected_orch_turn_token=orch_turn_token,
+                )
+            return
         if err:
             terminal_message = (
                 "agent initialization failed"

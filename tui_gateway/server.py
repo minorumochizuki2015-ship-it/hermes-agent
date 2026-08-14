@@ -10411,35 +10411,52 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    expected_orch_turn_token: _OrchTurnBinding | None = None,
 ) -> None:
-    with session["history_lock"]:
+    ownership_context = (
+        _orch_ownership_lock(session)
+        if expected_orch_turn_token is not None
+        else contextlib.nullcontext()
+    )
+    with ownership_context:
         if (
-            queued_prompt_generation is not None
-            and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation
+            expected_orch_turn_token is not None
+            and not _orch_turn_token_matches(session, expected_orch_turn_token)
         ):
-            session["running"] = False
             return
-        if image_paths is None:
-            images = list(session.get("attached_images", []))
-            session["attached_images"] = []
-        else:
-            images = list(image_paths)
-        inflight = session.get("inflight_turn")
-        # A retained failed turn (see _fail_inflight_turn) is a stale leftover
-        # by the time a new turn starts — replace it, never append onto it.
-        if not isinstance(inflight, dict) or inflight.get("status") == "error":
-            _start_inflight_turn(session, text)
-        agent = session["agent"]
-        orch_turn_token = (
-            session.get("_orch_turn_binding")
-            if session.get("_orch_operational") is True
-            else None
-        )
-        if hasattr(agent, "clear_interrupt"):
-            try:
-                agent.clear_interrupt()
-            except Exception:
-                pass
+        with session["history_lock"]:
+            if (
+                queued_prompt_generation is not None
+                and int(session.get("_queued_prompt_generation", 0))
+                != queued_prompt_generation
+            ):
+                session["running"] = False
+                return
+            if image_paths is None:
+                images = list(session.get("attached_images", []))
+                session["attached_images"] = []
+            else:
+                images = list(image_paths)
+            inflight = session.get("inflight_turn")
+            # A retained failed turn (see _fail_inflight_turn) is a stale leftover
+            # by the time a new turn starts — replace it, never append onto it.
+            if not isinstance(inflight, dict) or inflight.get("status") == "error":
+                _start_inflight_turn(session, text)
+            agent = session["agent"]
+            orch_turn_token = (
+                expected_orch_turn_token
+                if expected_orch_turn_token is not None
+                else (
+                    session.get("_orch_turn_binding")
+                    if session.get("_orch_operational") is True
+                    else None
+                )
+            )
+            if hasattr(agent, "clear_interrupt"):
+                try:
+                    agent.clear_interrupt()
+                except Exception:
+                    pass
     _emit("message.start", sid)
 
     def run():

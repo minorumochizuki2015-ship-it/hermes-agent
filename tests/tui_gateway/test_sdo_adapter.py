@@ -1,5 +1,6 @@
 """Focused FP-2 pure-consumer and projection contract."""
 
+import copy
 from contextlib import contextmanager
 import threading
 from types import SimpleNamespace
@@ -1077,6 +1078,337 @@ def test_stale_route_error_terminalization_is_noop_and_current_is_once(
     assert db.calls == ["terminal"]
     assert len(events) == 1
     assert session.get("_orch_turn_binding") is None
+
+
+def _deferred_turn_state(session: dict) -> dict:
+    return copy.deepcopy(
+        {
+            key: session.get(key)
+            for key in (
+                "running",
+                "last_active",
+                "_turn_cancel_requested",
+                "history",
+                "inflight_turn",
+                "_orch_operational",
+                "_orch_operation_id",
+                "_orch_turn_binding",
+                "_orch_gateway_session_id",
+                "_orch_model_route",
+                "_orch_status_operation_id",
+                "_orch_initialization_category",
+                "agent_error",
+            )
+        }
+    )
+
+
+def _install_deferred_prompt_hooks(
+    monkeypatch,
+    session: dict,
+    context: dict,
+    wait_for_agent,
+    run_prompt,
+    events: list,
+    *,
+    terminal_events: list | None = None,
+):
+    real_thread = threading.Thread
+
+    class _InlineThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(
+        server,
+        "_validate_orch_submit_context",
+        lambda _params, _rid: (context, None),
+    )
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_voice_mode_enabled", lambda: False)
+    monkeypatch.setattr(server, "current_transport", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {
+            "turn_isolation": False,
+            "compute_host_heartbeat_secs": 15,
+            "compute_host_respawn_max": 3,
+        },
+    )
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(
+        server,
+        "_consume_orch_sdo_submit",
+        lambda *_args, **_kwargs: {"claim_status": "admitted"},
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: None)
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", wait_for_agent)
+    monkeypatch.setattr(server, "_run_prompt_submit", run_prompt)
+    monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
+    if terminal_events is not None:
+        monkeypatch.setattr(
+            server,
+            "_emit_terminal_turn_error",
+            lambda *args: terminal_events.append(args),
+        )
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    return real_thread
+
+
+def _deferred_session_and_token(operation_id: str, gateway_session_id: str):
+    session = {
+        "session_key": "session-deferred-" + operation_id,
+        "profile_home": None,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "running": False,
+        "agent_ready": threading.Event(),
+        "agent": None,
+        "cols": 80,
+    }
+    context = {
+        "operation_id": operation_id,
+        "decision_binding": {"logical_session_id": "logical-" + operation_id},
+    }
+    token = server._orch_open_orch_turn(session, gateway_session_id, context)
+    return session, context, token
+
+
+def test_deferred_success_stale_operational_owner_has_zero_dispatch_or_mutation(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _deferred_session_and_token(
+        "wait-success-stale", "gateway-wait-success"
+    )
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+    events = []
+    dispatches = []
+
+    def wait_for_agent(*_args):
+        wait_entered.set()
+        assert release_wait.wait(timeout=2.0)
+        return None
+
+    def run_prompt(*args):
+        dispatches.append(args)
+
+    real_thread = _install_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        run_prompt,
+        events,
+    )
+    result_holder = []
+    error_holder = []
+
+    def submit():
+        try:
+            result_holder.append(
+                server._methods["prompt.submit"](
+                    "rid-wait-success",
+                    {
+                        "session_id": "gateway-wait-success",
+                        "text": "synthetic wait-success",
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion
+            error_holder.append(exc)
+
+    submit_thread = real_thread(target=submit)
+    submit_thread.start()
+    assert wait_entered.wait(timeout=1.0)
+
+    server._orch_clear_orch_turn(session)
+    successor_token = server._orch_open_orch_turn(
+        session,
+        "gateway-wait-success-next",
+        {
+            "operation_id": "wait-success-next",
+            "decision_binding": {"logical_session_id": "logical-wait-success-next"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": "synthetic-success-next"}
+    after_successor = _deferred_turn_state(session)
+    release_wait.set()
+    submit_thread.join(timeout=2.0)
+
+    assert not submit_thread.is_alive()
+    assert error_holder == []
+    assert result_holder[0]["result"]["status"] == "streaming"
+    assert dispatches == []
+    assert events == []
+    assert _deferred_turn_state(session) == after_successor
+    assert session["_orch_turn_binding"] == successor_token
+    assert stale_token != successor_token
+
+
+def test_deferred_wait_error_stale_operational_owner_to_ordinary_is_noop(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _deferred_session_and_token(
+        "wait-error-stale", "gateway-wait-error"
+    )
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+    events = []
+    terminal_events = []
+
+    def wait_for_agent(*_args):
+        wait_entered.set()
+        assert release_wait.wait(timeout=2.0)
+        return {"error": {"message": "synthetic wait failure"}}
+
+    real_thread = _install_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        lambda *_args: pytest.fail("stale wait-error turn dispatched"),
+        events,
+        terminal_events=terminal_events,
+    )
+    result_holder = []
+    error_holder = []
+
+    def submit():
+        try:
+            result_holder.append(
+                server._methods["prompt.submit"](
+                    "rid-wait-error",
+                    {
+                        "session_id": "gateway-wait-error",
+                        "text": "synthetic wait-error",
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion
+            error_holder.append(exc)
+
+    submit_thread = real_thread(target=submit)
+    submit_thread.start()
+    assert wait_entered.wait(timeout=1.0)
+    server._orch_clear_orch_turn(session)
+    after_successor = _deferred_turn_state(session)
+    release_wait.set()
+    submit_thread.join(timeout=2.0)
+
+    assert not submit_thread.is_alive()
+    assert error_holder == []
+    assert result_holder[0]["result"]["status"] == "streaming"
+    assert terminal_events == []
+    assert events == []
+    assert _deferred_turn_state(session) == after_successor
+    assert stale_token is not None
+
+
+def test_deferred_cancel_stale_operational_owner_to_ordinary_is_noop(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _deferred_session_and_token(
+        "cancel-stale", "gateway-cancel-wait"
+    )
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+    events = []
+
+    def wait_for_agent(*_args):
+        wait_entered.set()
+        assert release_wait.wait(timeout=2.0)
+        return None
+
+    real_thread = _install_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        lambda *_args: pytest.fail("stale cancellation turn dispatched"),
+        events,
+    )
+    result_holder = []
+    error_holder = []
+
+    def submit():
+        try:
+            result_holder.append(
+                server._methods["prompt.submit"](
+                    "rid-cancel-wait",
+                    {
+                        "session_id": "gateway-cancel-wait",
+                        "text": "synthetic cancellation",
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion
+            error_holder.append(exc)
+
+    submit_thread = real_thread(target=submit)
+    submit_thread.start()
+    assert wait_entered.wait(timeout=1.0)
+    server._orch_clear_orch_turn(session)
+    session["_turn_cancel_requested"] = True
+    after_successor = _deferred_turn_state(session)
+    release_wait.set()
+    submit_thread.join(timeout=2.0)
+
+    assert not submit_thread.is_alive()
+    assert error_holder == []
+    assert result_holder[0]["result"]["status"] == "streaming"
+    assert events == []
+    assert _deferred_turn_state(session) == after_successor
+    assert stale_token is not None
+
+
+def test_deferred_current_operational_success_dispatches_once_with_expected_token(
+    monkeypatch,
+) -> None:
+    session, context, current_token = _deferred_session_and_token(
+        "dispatch-current", "gateway-dispatch-current"
+    )
+    events = []
+    dispatches = []
+
+    def run_prompt(rid, sid, active_session, text, expected_orch_turn_token):
+        dispatches.append(
+            (rid, sid, active_session, text, expected_orch_turn_token)
+        )
+
+    _install_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        lambda *_args: None,
+        run_prompt,
+        events,
+    )
+
+    result = server._methods["prompt.submit"](
+        "rid-dispatch-current",
+        {
+            "session_id": "gateway-dispatch-current",
+            "text": "synthetic dispatch",
+        },
+    )
+
+    assert result["result"]["status"] == "streaming"
+    assert len(dispatches) == 1
+    assert dispatches[0][4] == current_token
+    assert server._orch_turn_token_matches(session, current_token) is True
+    assert events == []
 
 
 def test_operational_inflight_failure_is_fixed_and_value_free() -> None:
