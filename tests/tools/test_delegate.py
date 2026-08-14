@@ -1264,6 +1264,108 @@ class TestDelegateTask(unittest.TestCase):
         for canary in canaries:
             self.assertNotIn(canary, serialized)
 
+    def test_read_only_audit_failure_entries_project_before_return(self):
+        """Timeout and exception paths emit the same bounded closed contract."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+
+        class Snapshot:
+            root = "/private/fp3a/early-failure-snapshot"
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
+        class FailureChild:
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            session_id = ""
+            model = "test-model"
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def __init__(self, mode, events):
+                self.mode = mode
+                self._subagent_id = f"early-failure-{mode}"
+                self._delegate_timeout_seconds = 0.01 if mode == "timeout" else 1.0
+                self.tool_progress_callback = (
+                    lambda *args, **kwargs: events.append((args, kwargs))
+                )
+                self._delegate_prebuilt_audit_snapshot = Snapshot()
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 2_000_001,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def close(self):
+                return None
+
+            def run_conversation(self, **_kwargs):
+                if self.mode == "timeout":
+                    time.sleep(0.05)
+                    return {"final_response": "late", "completed": True}
+                if self.mode == "outer":
+                    return None
+                raise RuntimeError("PRIVATE_FAILURE_CANARY")
+
+        for mode in ("timeout", "future_exception", "outer"):
+            with self.subTest(mode=mode):
+                events = []
+                result = _run_single_child(
+                    0,
+                    "audit failure",
+                    FailureChild(mode, events),
+                    parent,
+                )
+
+                self.assertIn(result["status"], {"timeout", "error"})
+                self.assertEqual(
+                    result["error"],
+                    "Subagent execution failed before completion.",
+                )
+                self.assertEqual(result["api_calls"], 0)
+                self.assertIsInstance(result["duration_seconds"], (int, float))
+                self.assertGreaterEqual(result["duration_seconds"], 0)
+                self.assertLessEqual(result["duration_seconds"], 86_400)
+                self.assertNotIn("PRIVATE_FAILURE_CANARY", repr(result))
+
+                completion = [
+                    (args, kwargs)
+                    for args, kwargs in events
+                    if args and args[0] == "subagent.complete"
+                ]
+                self.assertEqual(len(completion), 1)
+                self.assertEqual(
+                    completion[0][1]["preview"],
+                    "Subagent execution failed before completion.",
+                )
+                self.assertEqual(
+                    completion[0][1]["summary"],
+                    ""
+                    if mode != "outer"
+                    else "Subagent execution failed before completion.",
+                )
+                self.assertIsInstance(
+                    completion[0][1]["duration_seconds"], (int, float)
+                )
+                self.assertLessEqual(completion[0][1]["duration_seconds"], 86_400)
+
     def test_read_only_audit_public_goal_projection_is_fixed_across_callback_and_hook(self):
         """Audit identity/progress/start surfaces never receive the raw goal."""
         parent = _make_mock_parent()
@@ -1314,6 +1416,40 @@ class TestDelegateTask(unittest.TestCase):
             lifecycle_hook.call_args.kwargs["child_goal"],
             "read_only_audit",
         )
+
+    def test_read_only_audit_progress_identity_drops_private_model(self):
+        """Every live progress callback payload excludes an invalid model."""
+        from tools.delegate_tool import _build_child_progress_callback
+
+        parent = _make_mock_parent()
+        parent._delegate_spinner = None
+        events = []
+        parent.tool_progress_callback = (
+            lambda *args, **kwargs: events.append((args, kwargs))
+        )
+        private_model = "PRIVATE_MODEL_CANARY"
+        callback = _build_child_progress_callback(
+            0,
+            "audit goal",
+            parent,
+            subagent_id="audit-child",
+            parent_id="audit-parent",
+            depth=1,
+            model=private_model,
+            toolsets=["file"],
+            capability_profile=READ_ONLY_AUDIT_PROFILE,
+        )
+
+        self.assertIsNotNone(callback)
+        callback("subagent.start", preview="audit started")
+        callback("subagent.text", preview="safe text")
+        callback("subagent.complete", preview="safe done", status="completed")
+
+        serialized = repr(events)
+        self.assertNotIn(private_model, serialized)
+        for event_args, event_kwargs in events:
+            self.assertNotIn(private_model, repr((event_args, event_kwargs)))
+            self.assertNotIn("model", event_kwargs)
 
     def test_read_only_audit_transcript_and_memory_use_public_goal_projection(self):
         """Audit transcript and memory inputs use a fixed public task label."""

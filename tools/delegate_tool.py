@@ -557,6 +557,34 @@ def _sanitize_read_only_audit_value(
     return value
 
 
+def _sanitize_read_only_audit_identity(
+    identity: Dict[str, Any],
+    *,
+    goal: Any = "",
+    context: Any = "",
+) -> Dict[str, Any]:
+    """Sanitize live audit identity metadata before it crosses a callback."""
+    sanitized = _sanitize_read_only_audit_value(
+        identity,
+        goal=goal,
+        context=context,
+    )
+    if not isinstance(sanitized, dict):
+        return {}
+
+    raw_model = identity.get("model")
+    model = sanitized.get("model")
+    if "model" in identity and (
+        not isinstance(raw_model, str)
+        or raw_model != model
+        or not isinstance(model, str)
+        or not _READ_ONLY_AUDIT_MODEL_RE.fullmatch(model)
+        or _read_only_audit_token_is_unsafe_path(model)
+    ):
+        sanitized.pop("model", None)
+    return sanitized
+
+
 def _trusted_git_identity(path: Optional[str]):
     """Return a root-owned, non-writable Git path identity or ``None``."""
     if not isinstance(path, str) or not os.path.isabs(path):
@@ -2677,6 +2705,12 @@ def _build_child_progress_callback(
             }
         payload = _identity_kwargs()
         payload.update(kwargs)  # caller overrides (e.g. status, duration_seconds)
+        if audit_public:
+            payload = _sanitize_read_only_audit_identity(
+                payload,
+                goal=goal,
+                context=audit_private_context,
+            )
         try:
             parent_cb(event_type, tool_name, preview, args, **payload)
         except Exception as e:
@@ -4177,6 +4211,16 @@ def _run_single_child(
 
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
+            public_duration = (
+                duration
+                if (
+                    isinstance(duration, (int, float))
+                    and not isinstance(duration, bool)
+                    and math.isfinite(float(duration))
+                    and 0 <= duration <= 86_400
+                )
+                else 0.0
+            )
             logger.warning(
                 "Subagent %d %s after %.1fs",
                 task_index,
@@ -4190,6 +4234,11 @@ def _run_single_child(
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
             except Exception:
                 pass
+            public_api_calls = (
+                child_api_calls
+                if 0 <= child_api_calls <= 1_000_000
+                else 0
+            )
 
             if is_timeout and child_api_calls == 0 and not is_read_only_audit:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
@@ -4212,22 +4261,26 @@ def _run_single_child(
                     child_progress_cb(
                         "subagent.complete",
                         preview=(
-                            f"Timed out after {duration}s"
-                            if is_timeout
+                            _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                            if is_read_only_audit
                             else (
-                                _SUBAGENT_EXECUTION_FAILURE_MESSAGE
-                                if is_read_only_audit
+                                f"Timed out after {duration}s"
+                                if is_timeout
                                 else str(_timeout_exc)
                             )
                         ),
                         status="timeout" if is_timeout else "error",
-                        duration_seconds=duration,
+                        duration_seconds=(
+                            public_duration if is_read_only_audit else duration
+                        ),
                         summary="",
                     )
                 except Exception:
                     pass
 
-            if is_timeout:
+            if is_read_only_audit:
+                _err = _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+            elif is_timeout:
                 if child_api_calls == 0:
                     _err = (
                         f"Subagent timed out after {child_timeout}s without "
@@ -4255,10 +4308,17 @@ def _run_single_child(
                 "summary": None,
                 "error": _err,
                 "exit_reason": "timeout" if is_timeout else "error",
-                "api_calls": child_api_calls,
-                "duration_seconds": duration,
+                "api_calls": (
+                    public_api_calls if is_read_only_audit else child_api_calls
+                ),
+                "duration_seconds": (
+                    public_duration if is_read_only_audit else duration
+                ),
                 "timeout_seconds": child_timeout if is_timeout else None,
-                "timed_out_after_seconds": duration if is_timeout else None,
+                "timed_out_after_seconds": (
+                    public_duration if is_read_only_audit and is_timeout
+                    else duration if is_timeout else None
+                ),
                 "timeout_phase": (
                     "before_first_llm_call" if is_timeout and child_api_calls == 0
                     else "after_llm_calls" if is_timeout
@@ -4279,6 +4339,12 @@ def _run_single_child(
                     f"{_late_pending_steer}]"
                 )
             _attach_audit_revision_receipt(_error_entry)
+            if is_read_only_audit:
+                _project_read_only_audit_result(
+                    _error_entry,
+                    child=child,
+                    goal=goal,
+                )
             _attach_worktree(_error_entry)
             return _error_entry
         finally:
@@ -4729,6 +4795,16 @@ def _run_single_child(
             else None
         )
         duration = round(time.monotonic() - child_start, 2)
+        public_duration = (
+            duration
+            if (
+                isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and math.isfinite(float(duration))
+                and 0 <= duration <= 86_400
+            )
+            else 0.0
+        )
         if is_read_only_audit:
             logger.warning("Subagent %d failed before completion", task_index)
         else:
@@ -4743,7 +4819,9 @@ def _run_single_child(
                         else str(exc)
                     ),
                     status="failed",
-                    duration_seconds=duration,
+                    duration_seconds=(
+                        public_duration if is_read_only_audit else duration
+                    ),
                     summary=(
                         _SUBAGENT_EXECUTION_FAILURE_MESSAGE
                         if is_read_only_audit
@@ -4765,7 +4843,9 @@ def _run_single_child(
                 else str(exc)
             ),
             "api_calls": 0,
-            "duration_seconds": duration,
+            "duration_seconds": (
+                public_duration if is_read_only_audit else duration
+            ),
             "_child_role": getattr(child, "_delegate_role", None),
         }
         if is_read_only_audit:
@@ -4777,6 +4857,12 @@ def _run_single_child(
                 f"{_late_pending_steer}]"
             )
         _attach_audit_revision_receipt(_error_entry)
+        if is_read_only_audit:
+            _project_read_only_audit_result(
+                _error_entry,
+                child=child,
+                goal=goal,
+            )
         # _attach_worktree defaults to a no-op when isolation never engaged.
         _attach_worktree(_error_entry)
         return _error_entry
