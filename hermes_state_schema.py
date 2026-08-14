@@ -767,6 +767,94 @@ class SessionSchemaMixin:
         finally:
             cursor.execute("PRAGMA foreign_keys=ON")
 
+    def _heal_orch_observation_replay_fence(self, cursor: sqlite3.Cursor) -> None:
+        """Detach authority replay fences from transcript/session deletion.
+
+        Schema v24 attached ``orch_task_observations.session_id`` to
+        ``sessions`` with ``ON DELETE CASCADE``.  That made ordinary session
+        cleanup erase the store-global operation-id reservation and allowed a
+        later recreation of the same logical session to reach authority again.
+        Rebuild the existing table in place, preserving every sanitized row,
+        but keep ``session_id`` as an immutable identifier snapshot rather
+        than a lifecycle foreign key.  No second tombstone/schema family is
+        introduced.
+        """
+        foreign_keys = cursor.execute(
+            'PRAGMA foreign_key_list("orch_task_observations")'
+        ).fetchall()
+        if not foreign_keys:
+            return
+        if not any(
+            (row[2] if isinstance(row, (tuple, list)) else row["table"])
+            == "sessions"
+            for row in foreign_keys
+        ):
+            return
+
+        logger.info(
+            "orch_task_observations has session cascade; rebuilding durable "
+            "operation replay fence"
+        )
+        cursor.execute("SAVEPOINT heal_orch_observation_replay_fence")
+        try:
+            before = cursor.execute(
+                "SELECT COUNT(*) FROM orch_task_observations"
+            ).fetchone()[0]
+            cursor.execute(
+                "ALTER TABLE orch_task_observations "
+                "RENAME TO orch_task_observations_v24"
+            )
+            cursor.execute(
+                """CREATE TABLE orch_task_observations (
+    operation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    profile_name TEXT NOT NULL DEFAULT '',
+    context_version TEXT NOT NULL,
+    authority_bundle_id TEXT NOT NULL,
+    authority_bundle_version TEXT NOT NULL,
+    authority_bundle_digest TEXT NOT NULL,
+    threshold_policy_version TEXT NOT NULL,
+    threshold_policy_digest TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    target TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    observation_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running',
+    started_at REAL NOT NULL,
+    first_delta_at REAL,
+    finished_at REAL
+)"""
+            )
+            cursor.execute(
+                """INSERT INTO orch_task_observations (
+    operation_id, session_id, profile_name, context_version,
+    authority_bundle_id, authority_bundle_version, authority_bundle_digest,
+    threshold_policy_version, threshold_policy_digest, goal, operation,
+    target, revision, observation_json, state, started_at, first_delta_at,
+    finished_at
+)
+SELECT operation_id, session_id, profile_name, context_version,
+       authority_bundle_id, authority_bundle_version, authority_bundle_digest,
+       threshold_policy_version, threshold_policy_digest, goal, operation,
+       target, revision, observation_json, state, started_at, first_delta_at,
+       finished_at
+FROM orch_task_observations_v24"""
+            )
+            after = cursor.execute(
+                "SELECT COUNT(*) FROM orch_task_observations"
+            ).fetchone()[0]
+            if after != before:
+                raise sqlite3.IntegrityError(
+                    "ORCH replay-fence migration changed row count"
+                )
+            cursor.execute("DROP TABLE orch_task_observations_v24")
+            cursor.execute("RELEASE heal_orch_observation_replay_fence")
+        except Exception:
+            cursor.execute("ROLLBACK TO heal_orch_observation_replay_fence")
+            cursor.execute("RELEASE heal_orch_observation_replay_fence")
+            raise
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -801,6 +889,10 @@ class SessionSchemaMixin:
         # landed — the version-gated rebuild is unreachable there, #73823).
         # Same PK-rebuild constraint as gateway_routing above.
         self._heal_session_model_usage_pk(cursor)
+
+        # Keep ORCH operation replay fences independent of transcript/session
+        # deletion when opening a database created by an earlier schema.
+        self._heal_orch_observation_replay_fence(cursor)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL

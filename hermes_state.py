@@ -170,6 +170,334 @@ def _system_prompt_hash(system_prompt: str) -> str:
     return hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
 
 
+# ORCH-Next operational telemetry consumes Maestro's immutable authority
+# bundle.  Hermes validates the pinned identity before it starts any ORCH-class
+# turn; it does not become an authority source and it never falls back to a
+# Maestro/Codex execution path when the bundle is unavailable or mismatched.
+HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION = "hermes-orch-operational-context.v1"
+HERMES_MAESTRO_AUTHORITY_BUNDLE_ID = "HERMES_MAESTRO_AUTHORITY_BUNDLE_V3"
+HERMES_MAESTRO_AUTHORITY_BUNDLE_VERSION = "hermes-maestro-authority-bundle.v3"
+HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST = (
+    "7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e"
+)
+HERMES_ORCH_OPERATIONAL_GOAL = "hermes_exclusive_harness_complete_migration"
+HERMES_ORCH_OPERATIONAL_TARGET = "hermes"
+HERMES_ORCH_OPERATIONAL_REVISION = 1
+HERMES_ORCH_CONTEXT_MAX_TTL_SECONDS = 300.0
+
+HERMES_ORCH_TELEMETRY_FIELDS = frozenset(
+    {
+        "task_class", "model", "effort", "prompt_contract_version",
+        "prompt_contract_digest", "read_write_manifest", "first_delta",
+        "result", "user_correction", "capability_delta", "blocker_delta",
+        "token_context", "rework", "scope", "false_completion", "coordination",
+    }
+)
+_ORCH_CONTEXT_FIELDS = frozenset(
+    {
+        "contract_version",
+        "authority_bundle",
+        "threshold_policy",
+        "decision_binding",
+        "goal",
+        "operation",
+        "target",
+        "revision",
+        "issued_at",
+        "expires_at",
+        "operation_id",
+        "task_declaration",
+    }
+)
+_ORCH_AUTHORITY_FIELDS = frozenset({"identity", "version", "digest"})
+_ORCH_THRESHOLD_FIELDS = frozenset({"version", "digest"})
+_ORCH_TASK_DECLARATION_FIELDS = frozenset(
+    {"task_class", "prompt_contract_version", "prompt_contract_digest"}
+)
+_ORCH_DECISION_BINDING_FIELDS = frozenset(
+    {
+        "decision_id",
+        "requester",
+        "account_id",
+        "project_id",
+        "logical_session_id",
+        "method",
+        "target",
+        "runtime_revision",
+    }
+)
+_ORCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@\-]{0,95}$")
+_ORCH_VERSION_RE = re.compile(r"^[a-z][a-z0-9._\-]{0,63}$")
+_ORCH_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ORCH_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_ORCH_SECRET_PREFIX_RE = re.compile(
+    r"^(?:sk-|gh[opurs]_|xox[baprs]-|AIza|eyJ[A-Za-z0-9_-]*\.)"
+)
+_ORCH_TASK_CLASSES = frozenset(
+    {"mechanical", "implementation", "audit", "operations", "product", "research", "migration"}
+)
+_ORCH_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+_ORCH_RESULT_STATUSES = frozenset(
+    {"complete", "error", "interrupted", "blocked", "failed"}
+)
+_ORCH_INITIALIZATION_TERMINAL_CATEGORIES = frozenset(
+    {
+        "model_provider_unconfigured",
+        "model_provider_unavailable",
+        "agent_initialization_failed",
+    }
+)
+_ORCH_TOKEN_DELTA_KEYS = frozenset(
+    {
+        "input_tokens", "output_tokens", "reasoning_tokens", "prompt_tokens",
+        "completion_tokens", "total_tokens", "api_calls", "compressions",
+    }
+)
+_ORCH_CONTEXT_AFTER_KEYS = frozenset(
+    {"context_used", "context_max", "context_percent"}
+)
+
+
+def _canonical_orch_model_id(value: Any) -> Optional[str]:
+    """Return a bounded non-secret model identity safe for telemetry.
+
+    Provider-defined ``custom`` identifiers may contain endpoints, account
+    routing fragments, or local paths.  They are represented only by a stable
+    one-way digest; ordinary canonical provider/model tokens remain readable.
+    """
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    model_segments = value.split("/")
+    if (
+        "\n" in value
+        or "\r" in value
+        or any(_ORCH_SECRET_PREFIX_RE.match(segment) for segment in model_segments)
+    ):
+        return None
+    lowered = value.lower()
+    if re.fullmatch(r"custom:sha256:[0-9a-f]{24}", value):
+        return value
+    path_like = bool(
+        value.startswith(("/", "~", "./", "../", ".\\", "..\\", "file:"))
+        or re.match(r"^[A-Za-z]:[\\/]", value)
+        or value.startswith("Users/")
+        or "\\" in value
+    )
+    if lowered.startswith("custom") or "://" in value or path_like:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+        return f"custom:sha256:{digest}"
+    if len(model_segments) > 2 or any(part in {".", "..", ""} for part in model_segments):
+        return None
+    return value if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+@\-]*(?:/[A-Za-z0-9][A-Za-z0-9._+@\-]*)?", value) else None
+
+
+def _not_observed() -> Dict[str, str]:
+    return {"status": "not_observed", "provenance": "runtime"}
+
+
+def _initial_orch_observation(
+    declaration: Dict[str, str], *, profile_name: str
+) -> Dict[str, Any]:
+    return {
+        "task_class": {
+            "value": declaration["task_class"],
+            "provenance": "client_declaration",
+        },
+        "model": _not_observed(),
+        "effort": _not_observed(),
+        "prompt_contract_version": {
+            "value": declaration["prompt_contract_version"],
+            "provenance": "client_declaration",
+        },
+        "prompt_contract_digest": {
+            "value": declaration["prompt_contract_digest"],
+            "provenance": "client_declaration",
+        },
+        "read_write_manifest": _not_observed(),
+        "first_delta": {
+            "status": "not_observed",
+            "present": False,
+            "provenance": "stream_callback",
+        },
+        "result": {"status": "running", "provenance": "runtime"},
+        "user_correction": _not_observed(),
+        "capability_delta": _not_observed(),
+        "blocker_delta": _not_observed(),
+        "token_context": _not_observed(),
+        "rework": _not_observed(),
+        "scope": {
+            "status": "observed",
+            "profile_bound": bool(profile_name),
+            "logical_session_bound": True,
+            "provenance": "session_state",
+        },
+        "false_completion": _not_observed(),
+        "coordination": _not_observed(),
+    }
+
+
+def _canonical_orch_effort(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in _ORCH_EFFORTS else "unknown"
+
+
+def validate_orch_operational_context(
+    value: Any,
+    *,
+    now: Optional[float] = None,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Validate and sanitize one out-of-band ORCH prompt-submit contract.
+
+    The return code is intentionally value-free so callers can surface typed
+    failures without reflecting a prompt, secret, path, digest candidate, or
+    provider payload.  Threshold metadata is required and persisted, but
+    Hermes does not assert which policy is current; that remains Maestro's
+    authority responsibility.
+    """
+    if not isinstance(value, dict):
+        return "context_invalid", None
+    keys = set(value)
+    if keys - _ORCH_CONTEXT_FIELDS:
+        return "context_invalid", None
+    missing = _ORCH_CONTEXT_FIELDS - keys
+    if "authority_bundle" in missing:
+        return "authority_unavailable", None
+    if "threshold_policy" in missing:
+        return "threshold_policy_unavailable", None
+    if "decision_binding" in missing:
+        return "authority_contract_unavailable", None
+    if "task_declaration" in missing:
+        return "telemetry_invalid", None
+    if missing:
+        return "context_invalid", None
+
+    if value.get("contract_version") != HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION:
+        return "context_version_mismatch", None
+    authority = value.get("authority_bundle")
+    if not isinstance(authority, dict) or set(authority) != _ORCH_AUTHORITY_FIELDS:
+        return "authority_unavailable", None
+    if (
+        authority.get("identity") != HERMES_MAESTRO_AUTHORITY_BUNDLE_ID
+        or authority.get("version") != HERMES_MAESTRO_AUTHORITY_BUNDLE_VERSION
+        or authority.get("digest") != HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST
+    ):
+        return "authority_mismatch", None
+
+    threshold = value.get("threshold_policy")
+    if not isinstance(threshold, dict) or set(threshold) != _ORCH_THRESHOLD_FIELDS:
+        return "threshold_policy_unavailable", None
+
+    decision_binding = value.get("decision_binding")
+    if (
+        not isinstance(decision_binding, dict)
+        or set(decision_binding) != _ORCH_DECISION_BINDING_FIELDS
+    ):
+        return "authority_contract_unavailable", None
+    for binding_key in (
+        "decision_id",
+        "account_id",
+        "project_id",
+        "logical_session_id",
+    ):
+        binding_value = decision_binding.get(binding_key)
+        if not isinstance(binding_value, str) or not _ORCH_ID_RE.fullmatch(binding_value):
+            return "authority_contract_unavailable", None
+    if (
+        decision_binding.get("requester") != "hermes_operational_harness"
+        or decision_binding.get("method") != "prompt.submit"
+        or decision_binding.get("target") != HERMES_ORCH_OPERATIONAL_TARGET
+        or type(decision_binding.get("runtime_revision")) is not str
+        or _ORCH_GIT_SHA_RE.fullmatch(decision_binding["runtime_revision"]) is None
+    ):
+        return "authority_mismatch", None
+    threshold_version = threshold.get("version")
+    threshold_digest = threshold.get("digest")
+    if (
+        not isinstance(threshold_version, str)
+        or not _ORCH_VERSION_RE.fullmatch(threshold_version)
+        or not isinstance(threshold_digest, str)
+        or not _ORCH_SHA256_RE.fullmatch(threshold_digest)
+    ):
+        return "threshold_policy_unavailable", None
+
+    if value.get("goal") != HERMES_ORCH_OPERATIONAL_GOAL:
+        return "goal_mismatch", None
+    if value.get("operation") != "prompt.submit":
+        return "operation_mismatch", None
+    if value.get("target") != HERMES_ORCH_OPERATIONAL_TARGET:
+        return "target_mismatch", None
+    revision = value.get("revision")
+    if isinstance(revision, bool) or revision != HERMES_ORCH_OPERATIONAL_REVISION:
+        return "revision_mismatch", None
+    operation_id = value.get("operation_id")
+    if not isinstance(operation_id, str) or not _ORCH_ID_RE.fullmatch(operation_id):
+        return "context_invalid", None
+
+    issued_at = value.get("issued_at")
+    expires_at = value.get("expires_at")
+    if (
+        isinstance(issued_at, bool)
+        or isinstance(expires_at, bool)
+        or not isinstance(issued_at, (int, float))
+        or not isinstance(expires_at, (int, float))
+    ):
+        return "context_invalid", None
+    checked_now = time.time() if now is None else now
+    if (
+        issued_at > checked_now + 5.0
+        or expires_at <= checked_now
+        or expires_at <= issued_at
+        or expires_at - issued_at > HERMES_ORCH_CONTEXT_MAX_TTL_SECONDS
+    ):
+        return "context_stale", None
+
+    declaration = value.get("task_declaration")
+    if (
+        not isinstance(declaration, dict)
+        or set(declaration) != _ORCH_TASK_DECLARATION_FIELDS
+    ):
+        return "telemetry_invalid", None
+    task_class = declaration.get("task_class")
+    prompt_version = declaration.get("prompt_contract_version")
+    prompt_digest = declaration.get("prompt_contract_digest")
+    if not isinstance(task_class, str) or task_class not in _ORCH_TASK_CLASSES:
+        return "telemetry_unsafe", None
+    if not isinstance(prompt_version, str) or not _ORCH_VERSION_RE.fullmatch(prompt_version):
+        return "telemetry_unsafe", None
+    if not isinstance(prompt_digest, str) or not _ORCH_SHA256_RE.fullmatch(prompt_digest):
+        return "telemetry_unsafe", None
+
+    sanitized = {
+        "contract_version": HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION,
+        "authority_bundle": {
+            "identity": HERMES_MAESTRO_AUTHORITY_BUNDLE_ID,
+            "version": HERMES_MAESTRO_AUTHORITY_BUNDLE_VERSION,
+            "digest": HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST,
+        },
+        "threshold_policy": {
+            "version": threshold_version,
+            "digest": threshold_digest,
+        },
+        "decision_binding": dict(decision_binding),
+        "goal": HERMES_ORCH_OPERATIONAL_GOAL,
+        "operation": "prompt.submit",
+        "target": HERMES_ORCH_OPERATIONAL_TARGET,
+        "revision": HERMES_ORCH_OPERATIONAL_REVISION,
+        "issued_at": float(issued_at),
+        "expires_at": float(expires_at),
+        "operation_id": operation_id,
+        "task_declaration": {
+            "task_class": task_class,
+            "prompt_contract_version": prompt_version,
+            "prompt_contract_digest": prompt_digest,
+        },
+    }
+    if len(json.dumps(sanitized, sort_keys=True, separators=(",", ":"))) > 8192:
+        return "telemetry_unsafe", None
+    return "context_accepted", sanitized
+
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     """Return True only when a structured lock holder's local PID is gone.
 
@@ -2794,13 +3122,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 data["system_prompt"] = resolved
         return data
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self,
+        db_path: Path = None,
+        read_only: bool = False,
+        immutable: bool = False,
+    ):
         self.db_path = db_path or _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
+        self.immutable = bool(immutable and read_only)
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -2901,8 +3235,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # must already exist + be initialised (callers guard on
                 # db_path.exists()); a SELECT against an empty file raises and
                 # the caller degrades per-profile.
+                read_only_uri = f"file:{self.db_path}?mode=ro"
+                if self.immutable:
+                    # Retained identity probes must not create or update
+                    # WAL/SHM sidecars in the profile store.
+                    read_only_uri += "&immutable=1"
                 self._conn = _connect_tracked_db(
-                    f"file:{self.db_path}?mode=ro",
+                    read_only_uri,
                     tracking_path=self.db_path,
                     uri=True,
                     check_same_thread=False,
@@ -3136,8 +3475,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # the top of the real failure.
         conn = None
         try:
+            read_only_uri = f"file:{self.db_path}?mode=ro"
+            if self.immutable:
+                read_only_uri += "&immutable=1"
             conn = _connect_tracked_db(
-                f"file:{self.db_path}?mode=ro",
+                read_only_uri,
                 tracking_path=self.db_path,
                 uri=True,
                 # Pooled connections are borrowed by whichever thread runs
@@ -4032,6 +4374,517 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
     # Session lifecycle
     # =========================================================================
+
+    def preflight_orch_task_observation(
+        self,
+        session_id: str,
+        operation_id: str,
+        *,
+        profile_name: str = "",
+    ) -> bool:
+        """Prove the owning store is writable before authority consumption.
+
+        The callback runs through ``_execute_write`` so SQLite must acquire the
+        same write transaction used by the eventual observation insert, but it
+        deliberately changes no rows.  ``False`` means the operation id already
+        exists and must be rejected as a replay before an external authority
+        consumer burns its exact-once decision.
+        """
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_unavailable")
+        if not isinstance(operation_id, str) or not _ORCH_ID_RE.fullmatch(operation_id):
+            raise ValueError("context_invalid")
+        if not isinstance(profile_name, str) or len(profile_name) > 128:
+            raise ValueError("profile_mismatch")
+
+        def _do(conn):
+            session_row = conn.execute(
+                "SELECT COALESCE(profile_name, '') AS profile_name "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if session_row is None:
+                raise ValueError("session_unavailable")
+            if str(session_row["profile_name"] or "") != profile_name:
+                raise ValueError("profile_mismatch")
+            replay = conn.execute(
+                "SELECT 1 FROM orch_task_observations WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            return replay is None
+
+        return self._execute_write(_do)
+
+    def begin_orch_task_observation(
+        self,
+        session_id: str,
+        context: Dict[str, Any],
+        *,
+        profile_name: str = "",
+        started_at: Optional[float] = None,
+    ) -> bool:
+        """Insert one validated ORCH observation (first writer wins).
+
+        ``context`` must be the sanitized result of
+        :func:`validate_orch_operational_context`.  The method revalidates it
+        at the persistence boundary so direct callers cannot bypass the
+        gateway contract.  A duplicate operation id returns ``False`` without
+        modifying the existing row.
+        """
+        code, checked = validate_orch_operational_context(context)
+        if code != "context_accepted" or checked is None:
+            raise ValueError(code)
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_unavailable")
+        if not isinstance(profile_name, str) or len(profile_name) > 128:
+            raise ValueError("profile_mismatch")
+        when = time.time() if started_at is None else float(started_at)
+        observation = _initial_orch_observation(
+            checked["task_declaration"], profile_name=profile_name
+        )
+        observation_json = json.dumps(
+            observation, sort_keys=True, separators=(",", ":")
+        )
+
+        def _do(conn):
+            session_row = conn.execute(
+                "SELECT COALESCE(profile_name, '') AS profile_name "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if session_row is None:
+                raise ValueError("session_unavailable")
+            stored_profile = str(session_row["profile_name"] or "")
+            if stored_profile != profile_name:
+                raise ValueError("profile_mismatch")
+            cursor = conn.execute(
+                """INSERT INTO orch_task_observations (
+                       operation_id, session_id, profile_name, context_version,
+                       authority_bundle_id, authority_bundle_version,
+                       authority_bundle_digest, threshold_policy_version,
+                       threshold_policy_digest, goal, operation, target,
+                       revision, observation_json, state, started_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)
+                   ON CONFLICT(operation_id) DO NOTHING""",
+                (
+                    checked["operation_id"],
+                    session_id,
+                    profile_name,
+                    checked["contract_version"],
+                    checked["authority_bundle"]["identity"],
+                    checked["authority_bundle"]["version"],
+                    checked["authority_bundle"]["digest"],
+                    checked["threshold_policy"]["version"],
+                    checked["threshold_policy"]["digest"],
+                    checked["goal"],
+                    checked["operation"],
+                    checked["target"],
+                    checked["revision"],
+                    observation_json,
+                    when,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def claim_orch_sdo_receipt(
+        self,
+        operation_id: str,
+        *,
+        receipt_digest: str,
+        binding: Dict[str, str],
+        expires_at: float,
+        outcome: Optional[Dict[str, Any]] = None,
+        now: Optional[float] = None,
+    ) -> bool:
+        """Durably claim one SDO receipt on the existing ORCH observation.
+
+        This reuses the operation observation's JSON projection as the bounded
+        private replay fence.  It deliberately adds no table or schema: a
+        receipt digest is one-use across gateway restarts and sessions, while
+        expired SDO claims are garbage-collected in place.  The binding is
+        stored alongside the digest so a claim cannot be detached from its
+        project, repo/worktree, goal, request, or transition.
+        """
+        required = {
+            "project_id",
+            "repo_id",
+            "worktree_id",
+            "goal_ref",
+            "request_ref",
+            "transition",
+            "logical_session_id",
+            "operation_id",
+        }
+        if (
+            not isinstance(operation_id, str)
+            or not operation_id
+            or not isinstance(receipt_digest, str)
+            or len(receipt_digest) != 64
+            or not isinstance(binding, dict)
+            or set(binding) != required
+            or any(not isinstance(value, str) or not value for value in binding.values())
+            or binding["operation_id"] != operation_id
+            or isinstance(expires_at, bool)
+            or not isinstance(expires_at, (int, float))
+        ):
+            raise ValueError("sdo_binding_invalid")
+        safe_outcome = None
+        if outcome is not None:
+            outcome_fields = {
+                "selected_action_id",
+                "base_selected_action_id",
+                "decision",
+                "dispatch_mode",
+                "action_changed",
+                "replan_required",
+                "model",
+                "reasoning_effort",
+                "service_tier_preference",
+            }
+            if type(outcome) is not dict or set(outcome) != outcome_fields:
+                raise ValueError("sdo_outcome_invalid")
+            for key in ("selected_action_id", "base_selected_action_id", "model"):
+                value = outcome[key]
+                if value is not None and (
+                    not isinstance(value, str) or not value or len(value) > 160
+                ):
+                    raise ValueError("sdo_outcome_invalid")
+            if (
+                outcome["decision"] not in {"CONTINUE_LOCAL", "REPLAN_NOW"}
+                or outcome["dispatch_mode"] not in {"continue_local", "replan_local"}
+                or type(outcome["action_changed"]) is not bool
+                or type(outcome["replan_required"]) is not bool
+                or outcome["reasoning_effort"] not in {None, "high", "max", "ultra"}
+                or outcome["service_tier_preference"] not in {None, "fast", "standard"}
+            ):
+                raise ValueError("sdo_outcome_invalid")
+            safe_outcome = dict(outcome)
+        checked_now = time.time() if now is None else float(now)
+        claim = {
+            "receipt_digest": receipt_digest,
+            **{key: binding[key] for key in sorted(required)},
+            "expires_at": float(expires_at),
+        }
+        if safe_outcome is not None:
+            claim["outcome"] = safe_outcome
+
+        def _do(conn):
+            # Expiry is the only permitted garbage-collection condition.  Do
+            # not clear a bounded set by count: old live claims remain replay
+            # fences after process restart.
+            rows = conn.execute(
+                "SELECT operation_id, observation_json "
+                "FROM orch_task_observations "
+                "WHERE observation_json LIKE '%\"sdo_claim\"%'"
+            ).fetchall()
+            for row in rows:
+                try:
+                    observation = json.loads(row["observation_json"])
+                    prior = observation.get("sdo_claim")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(prior, dict):
+                    continue
+                prior_expiry = prior.get("expires_at")
+                if (
+                    isinstance(prior_expiry, (int, float))
+                    and not isinstance(prior_expiry, bool)
+                    and prior_expiry <= checked_now
+                ):
+                    observation.pop("sdo_claim", None)
+                    conn.execute(
+                        "UPDATE orch_task_observations SET observation_json = ? "
+                        "WHERE operation_id = ?",
+                        (
+                            json.dumps(observation, sort_keys=True, separators=(",", ":")),
+                            row["operation_id"],
+                        ),
+                    )
+                    continue
+                if prior.get("receipt_digest") == receipt_digest:
+                    return False
+
+            row = conn.execute(
+                "SELECT observation_json FROM orch_task_observations "
+                "WHERE operation_id = ? AND finished_at IS NULL",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                observation = json.loads(row["observation_json"])
+            except (TypeError, ValueError):
+                return False
+            if isinstance(observation.get("sdo_claim"), dict):
+                return False
+            observation["sdo_claim"] = claim
+            cursor = conn.execute(
+                "UPDATE orch_task_observations SET observation_json = ? "
+                "WHERE operation_id = ? AND finished_at IS NULL",
+                (
+                    json.dumps(observation, sort_keys=True, separators=(",", ":")),
+                    operation_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def record_orch_task_runtime_identity(
+        self,
+        operation_id: str,
+        *,
+        model: Any,
+        effort: Any,
+    ) -> bool:
+        """Record model/effort from the live agent, never from the client."""
+        safe_model = _canonical_orch_model_id(model) or "unknown"
+        safe_effort = _canonical_orch_effort(effort)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT observation_json FROM orch_task_observations "
+                "WHERE operation_id = ? AND finished_at IS NULL",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            observation = json.loads(row["observation_json"])
+            observation["model"] = {
+                "status": "observed" if safe_model != "unknown" else "not_observed",
+                "value": safe_model,
+                "provenance": "live_agent",
+            }
+            observation["effort"] = {
+                "status": "observed" if safe_effort != "unknown" else "not_observed",
+                "value": safe_effort,
+                "provenance": "live_agent",
+            }
+            cursor = conn.execute(
+                "UPDATE orch_task_observations SET observation_json = ? "
+                "WHERE operation_id = ? AND finished_at IS NULL",
+                (
+                    json.dumps(observation, sort_keys=True, separators=(",", ":")),
+                    operation_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def mark_orch_task_first_delta(
+        self,
+        operation_id: str,
+        *,
+        observed_at: Optional[float] = None,
+    ) -> bool:
+        """Record first-delta presence/timing only (first writer wins)."""
+        when = time.time() if observed_at is None else float(observed_at)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT observation_json, started_at FROM orch_task_observations "
+                "WHERE operation_id = ? AND first_delta_at IS NULL "
+                "AND finished_at IS NULL",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            observation = json.loads(row["observation_json"])
+            elapsed_ms = max(0, int(round((when - float(row["started_at"])) * 1000)))
+            observation["first_delta"] = {
+                "status": "observed",
+                "present": True,
+                "elapsed_ms": elapsed_ms,
+                "provenance": "stream_callback",
+            }
+            cursor = conn.execute(
+                "UPDATE orch_task_observations "
+                "SET first_delta_at = ?, observation_json = ? "
+                "WHERE operation_id = ? AND first_delta_at IS NULL "
+                "AND finished_at IS NULL",
+                (
+                    when,
+                    json.dumps(observation, sort_keys=True, separators=(",", ":")),
+                    operation_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def finish_orch_task_observation(
+        self,
+        operation_id: str,
+        *,
+        result_status: str,
+        token_delta: Optional[Dict[str, Any]] = None,
+        context_after: Optional[Dict[str, Any]] = None,
+        max_active_subagents: Optional[int] = None,
+        finished_at: Optional[float] = None,
+        terminal_category: Optional[str] = None,
+    ) -> bool:
+        """Finalize exactly once with per-operation deltas and trusted facts."""
+        if result_status not in _ORCH_RESULT_STATUSES:
+            raise ValueError("telemetry_unsafe")
+        if terminal_category is not None and (
+            not isinstance(terminal_category, str)
+            or terminal_category not in _ORCH_INITIALIZATION_TERMINAL_CATEGORIES
+        ):
+            raise ValueError("telemetry_unsafe")
+        if (token_delta is None) != (context_after is None):
+            raise ValueError("telemetry_unsafe")
+        if token_delta is not None and context_after is not None:
+            if set(token_delta) != _ORCH_TOKEN_DELTA_KEYS:
+                raise ValueError("telemetry_unsafe")
+            if set(context_after) != _ORCH_CONTEXT_AFTER_KEYS:
+                raise ValueError("telemetry_unsafe")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 0 <= value <= 10**15
+                for value in (*token_delta.values(), *context_after.values())
+            ):
+                raise ValueError("telemetry_unsafe")
+        if (
+            max_active_subagents is not None
+            and (
+                isinstance(max_active_subagents, bool)
+                or not isinstance(max_active_subagents, int)
+                or not 0 <= max_active_subagents <= 10_000
+            )
+        ):
+            raise ValueError("telemetry_unsafe")
+        when = time.time() if finished_at is None else float(finished_at)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT observation_json FROM orch_task_observations "
+                "WHERE operation_id = ? AND finished_at IS NULL",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            observation = json.loads(row["observation_json"])
+            observation["result"] = {
+                "status": result_status,
+                "provenance": "runtime",
+            }
+            if terminal_category is not None:
+                observation["result"]["terminal_category"] = terminal_category
+            if token_delta is not None and context_after is not None:
+                observation["token_context"] = {
+                    "status": "observed",
+                    "delta": dict(token_delta),
+                    "context_after": dict(context_after),
+                    "provenance": "runtime_usage_baseline_delta",
+                }
+            if max_active_subagents is not None:
+                observation["coordination"] = {
+                    "status": "observed",
+                    "max_active_subagents": max_active_subagents,
+                    "provenance": "session_subagent_lifecycle",
+                }
+            cursor = conn.execute(
+                "UPDATE orch_task_observations "
+                "SET state = ?, finished_at = ?, observation_json = ? "
+                "WHERE operation_id = ? AND finished_at IS NULL",
+                (
+                    result_status,
+                    when,
+                    json.dumps(observation, sort_keys=True, separators=(",", ":")),
+                    operation_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def mark_orch_task_finalization_unavailable(
+        self,
+        operation_id: str,
+        *,
+        finished_at: Optional[float] = None,
+        terminal_category: Optional[str] = None,
+    ) -> bool:
+        """Persist a typed terminal state when rich finalization is unavailable.
+
+        This updates only the exact operation being finalized; it never scans
+        for or infers dead owners, so it cannot retire another live writer.
+        """
+        if not isinstance(operation_id, str) or not _ORCH_ID_RE.fullmatch(operation_id):
+            raise ValueError("context_invalid")
+        if terminal_category is not None and (
+            not isinstance(terminal_category, str)
+            or terminal_category not in _ORCH_INITIALIZATION_TERMINAL_CATEGORIES
+        ):
+            raise ValueError("telemetry_unsafe")
+        when = time.time() if finished_at is None else float(finished_at)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT observation_json FROM orch_task_observations "
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND finished_at IS NULL",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            observation = json.loads(row["observation_json"])
+            observation["result"] = {
+                "status": "failed",
+                "telemetry_status": "finalization_unavailable",
+                "provenance": "runtime",
+            }
+            if terminal_category is not None:
+                observation["result"]["terminal_category"] = terminal_category
+            cursor = conn.execute(
+                "UPDATE orch_task_observations "
+                "SET state = 'failed', finished_at = ?, observation_json = ? "
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND finished_at IS NULL",
+                (
+                    when,
+                    json.dumps(observation, sort_keys=True, separators=(",", ":")),
+                    operation_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return self._execute_write(_do)
+
+    def read_orch_task_observations(
+        self,
+        session_id: str,
+        *,
+        profile_name: str = "",
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Read a bounded profile/session-scoped observation projection."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer from 1 through 100")
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT operation_id, session_id, profile_name,
+                          context_version, authority_bundle_id,
+                          authority_bundle_version, authority_bundle_digest,
+                          threshold_policy_version, threshold_policy_digest,
+                          goal, operation, target, revision, observation_json,
+                          state, started_at, first_delta_at, finished_at
+                   FROM orch_task_observations
+                   WHERE session_id = ? AND profile_name = ?
+                   ORDER BY started_at DESC, operation_id DESC LIMIT ?""",
+                (session_id, profile_name, limit),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["observation"] = json.loads(item.pop("observation_json"))
+            result.append(item)
+        return result
+
 
     def _insert_session_row(
         self,

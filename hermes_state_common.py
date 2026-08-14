@@ -363,6 +363,33 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- ORCH-Next operational observations retain the session identifier they
+-- describe, but their replay-fence lifetime is deliberately independent of
+-- transcript/session deletion.  This is an additive, privacy-bounded
+-- projection; prompts, messages, tool payloads and provider responses remain
+-- in their existing stores and are never copied here.
+CREATE TABLE IF NOT EXISTS orch_task_observations (
+    operation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    profile_name TEXT NOT NULL DEFAULT '',
+    context_version TEXT NOT NULL,
+    authority_bundle_id TEXT NOT NULL,
+    authority_bundle_version TEXT NOT NULL,
+    authority_bundle_digest TEXT NOT NULL,
+    threshold_policy_version TEXT NOT NULL,
+    threshold_policy_digest TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    target TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    observation_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running',
+    started_at REAL NOT NULL,
+    first_delta_at REAL,
+    finished_at REAL
+);
+
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT

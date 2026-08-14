@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -11,6 +12,65 @@ import pytest
 import hermes_state
 from agent.session_activity import ActivityProvenance
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+
+
+def _orch_context(operation_id="orch-op-1"):
+    now = time.time()
+    return {
+        "contract_version": hermes_state.HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION,
+        "authority_bundle": {
+            "identity": hermes_state.HERMES_MAESTRO_AUTHORITY_BUNDLE_ID,
+            "version": hermes_state.HERMES_MAESTRO_AUTHORITY_BUNDLE_VERSION,
+            "digest": hermes_state.HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST,
+        },
+        "threshold_policy": {
+            "version": "synthetic-threshold-policy.v1",
+            "digest": "b" * 64,
+        },
+        "decision_binding": {
+            "decision_id": f"decision-{operation_id}",
+            "requester": "hermes_operational_harness",
+            "account_id": "account-test",
+            "project_id": "project-test",
+            "logical_session_id": "s1",
+            "method": "prompt.submit",
+            "target": "hermes",
+            "runtime_revision": "1" * 40,
+        },
+        "goal": hermes_state.HERMES_ORCH_OPERATIONAL_GOAL,
+        "operation": "prompt.submit",
+        "target": "hermes",
+        "revision": 1,
+        "issued_at": now - 1,
+        "expires_at": now + 120,
+        "operation_id": operation_id,
+        "task_declaration": {
+            "task_class": "implementation",
+            "prompt_contract_version": "prompt.v1",
+            "prompt_contract_digest": "a" * 64,
+        },
+    }
+
+
+def _orch_token_delta(**overrides):
+    values = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "api_calls": 0,
+        "compressions": 0,
+    }
+    values.update(overrides)
+    return values
+
+
+def _orch_context_after(**overrides):
+    values = {"context_used": 0, "context_max": 0, "context_percent": 0}
+    values.update(overrides)
+    return values
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -95,6 +155,34 @@ def _no_fts_rebuild_throttle(monkeypatch):
     """
     monkeypatch.setattr(SessionDB, "_FTS_REBUILD_MIN_PAUSE", 0.0)
     monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
+
+
+def test_orch_observation_schema_and_replay_fence_are_durable(db):
+    db.create_session("s1", source="cli", profile_name="alpha")
+    context = _orch_context()
+
+    assert db.begin_orch_task_observation(
+        "s1", context, profile_name="alpha"
+    ) is True
+    assert db.preflight_orch_task_observation(
+        "s1", "orch-op-1", profile_name="alpha"
+    ) is False
+    row = db.read_orch_task_observations("s1", profile_name="alpha")[0]
+    assert row["operation_id"] == "orch-op-1"
+    assert row["observation"]["first_delta"]["present"] is False
+
+
+def test_immutable_read_only_session_uses_checkpointed_store(tmp_path):
+    path = tmp_path / "state.db"
+    writable = SessionDB(db_path=path)
+    writable.create_session("s1", source="cli")
+    writable.close()
+
+    read_only = SessionDB(db_path=path, read_only=True, immutable=True)
+    try:
+        assert read_only.get_session("s1")["id"] == "s1"
+    finally:
+        read_only.close()
 
 
 # =========================================================================
@@ -4761,3 +4849,380 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+class TestOrchOperationalObservations:
+    def test_fresh_schema_and_v23_open_create_additive_table(self, tmp_path):
+        fresh_path = tmp_path / "fresh.db"
+        fresh = SessionDB(db_path=fresh_path)
+        try:
+            assert SCHEMA_VERSION == 25
+            assert fresh._conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='orch_task_observations'"
+            ).fetchone()
+        finally:
+            fresh.close()
+
+        migrated_path = tmp_path / "v23.db"
+        conn = sqlite3.connect(migrated_path)
+        conn.executescript(SCHEMA_SQL)
+        conn.execute("DROP TABLE orch_task_observations")
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version VALUES (23)")
+        conn.commit()
+        conn.close()
+        migrated = SessionDB(db_path=migrated_path)
+        try:
+            assert migrated._conn.execute("SELECT version FROM schema_version").fetchone()[0] == 25
+            assert migrated._conn.execute(
+                "SELECT name FROM sqlite_master WHERE name='orch_task_observations'"
+            ).fetchone()
+            assert migrated.read_orch_task_observations("absent") == []
+        finally:
+            migrated.close()
+
+    def test_lifecycle_restart_profile_isolation_and_durable_fence(self, tmp_path):
+        alpha_home = tmp_path / "alpha"
+        beta_home = tmp_path / "beta"
+        alpha_home.mkdir()
+        beta_home.mkdir()
+        path = alpha_home / "state.db"
+        db = SessionDB(db_path=path)
+        db.create_session("s1", source="cli", profile_name="alpha")
+        beta = SessionDB(db_path=beta_home / "state.db")
+        beta.create_session("s1", source="cli", profile_name="beta")
+        context = _orch_context()
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-1", profile_name="alpha"
+        ) is True
+        assert db.begin_orch_task_observation("s1", context, profile_name="alpha") is True
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-1", profile_name="alpha"
+        ) is False
+        assert db.begin_orch_task_observation("s1", context, profile_name="alpha") is False
+        assert beta.begin_orch_task_observation(
+            "s1", _orch_context(operation_id="orch-op-beta"), profile_name="beta"
+        ) is True
+        assert db.read_orch_task_observations("s1", profile_name="beta") == []
+        assert beta.read_orch_task_observations("s1", profile_name="alpha") == []
+        with pytest.raises(ValueError, match="profile_mismatch"):
+            db.preflight_orch_task_observation(
+                "s1", "unused-operation", profile_name="beta"
+            )
+        assert db.record_orch_task_runtime_identity(
+            "orch-op-1", model="openai/gpt-5", effort="high"
+        ) is True
+        assert db.mark_orch_task_first_delta("orch-op-1", observed_at=time.time() + 0.01) is True
+        assert db.mark_orch_task_first_delta("orch-op-1") is False
+        assert db.finish_orch_task_observation(
+            "orch-op-1",
+            result_status="complete",
+            token_delta=_orch_token_delta(
+                input_tokens=12, output_tokens=3, total_tokens=15
+            ),
+            context_after=_orch_context_after(context_used=21, context_max=100),
+        ) is True
+        assert db.finish_orch_task_observation(
+            "orch-op-1",
+            result_status="error",
+            token_delta=_orch_token_delta(input_tokens=999),
+            context_after=_orch_context_after(),
+        ) is False
+        assert db.read_orch_task_observations("s1", profile_name="") == []
+        row = db.read_orch_task_observations("s1", profile_name="alpha")[0]
+        assert row["state"] == "complete"
+        assert row["observation"]["first_delta"]["present"] is True
+        assert row["observation"]["result"] == {
+            "status": "complete",
+            "provenance": "runtime",
+        }
+        assert row["observation"]["model"]["value"] == "openai/gpt-5"
+        assert row["observation"]["effort"]["value"] == "high"
+        assert row["observation"]["token_context"]["delta"]["total_tokens"] == 15
+        assert row["observation"]["token_context"]["context_after"]["context_used"] == 21
+        for field in (
+            "read_write_manifest",
+            "capability_delta",
+            "blocker_delta",
+            "false_completion",
+            "user_correction",
+            "rework",
+            "coordination",
+        ):
+            assert row["observation"][field] == {
+                "status": "not_observed",
+                "provenance": "runtime",
+            }
+        db.close()
+        beta.close()
+
+        reopened = SessionDB(db_path=path)
+        try:
+            assert reopened.read_orch_task_observations(
+                "s1", profile_name="alpha"
+            )[0]["operation_id"] == "orch-op-1"
+            assert reopened.delete_session("s1") is True
+            rows = reopened.read_orch_task_observations(
+                "s1", profile_name="alpha"
+            )
+            assert len(rows) == 1
+            assert rows[0]["operation_id"] == "orch-op-1"
+            reopened.create_session("s1", source="cli", profile_name="alpha")
+            assert reopened.preflight_orch_task_observation(
+                "s1", "orch-op-1", profile_name="alpha"
+            ) is False
+            assert reopened.begin_orch_task_observation(
+                "s1", context, profile_name="alpha"
+            ) is False
+        finally:
+            reopened.close()
+
+    def test_v24_session_cascade_migrates_without_erasing_replay_fence(
+        self, tmp_path
+    ):
+        path = tmp_path / "v24-cascade.db"
+        seeded = SessionDB(db_path=path)
+        seeded.create_session("s1", source="cli", profile_name="alpha")
+        context = _orch_context()
+        assert seeded.begin_orch_task_observation(
+            "s1", context, profile_name="alpha"
+        ) is True
+        seeded.close()
+
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(
+            "ALTER TABLE orch_task_observations "
+            "RENAME TO orch_task_observations_v25"
+        )
+        conn.execute(
+            """CREATE TABLE orch_task_observations (
+    operation_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    profile_name TEXT NOT NULL DEFAULT '',
+    context_version TEXT NOT NULL,
+    authority_bundle_id TEXT NOT NULL,
+    authority_bundle_version TEXT NOT NULL,
+    authority_bundle_digest TEXT NOT NULL,
+    threshold_policy_version TEXT NOT NULL,
+    threshold_policy_digest TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    target TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    observation_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running',
+    started_at REAL NOT NULL,
+    first_delta_at REAL,
+    finished_at REAL
+)"""
+        )
+        columns = (
+            "operation_id, session_id, profile_name, context_version, "
+            "authority_bundle_id, authority_bundle_version, "
+            "authority_bundle_digest, threshold_policy_version, "
+            "threshold_policy_digest, goal, operation, target, revision, "
+            "observation_json, state, started_at, first_delta_at, finished_at"
+        )
+        conn.execute(
+            f"INSERT INTO orch_task_observations ({columns}) "
+            f"SELECT {columns} FROM orch_task_observations_v25"
+        )
+        conn.execute("DROP TABLE orch_task_observations_v25")
+        conn.execute("UPDATE schema_version SET version = 24")
+        conn.commit()
+        conn.close()
+
+        migrated = SessionDB(db_path=path)
+        try:
+            assert migrated._conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchone()[0] == 25
+            assert migrated._conn.execute(
+                'PRAGMA foreign_key_list("orch_task_observations")'
+            ).fetchall() == []
+            assert migrated.delete_session("s1") is True
+            rows = migrated.read_orch_task_observations(
+                "s1", profile_name="alpha"
+            )
+            assert len(rows) == 1
+            assert rows[0]["operation_id"] == "orch-op-1"
+            migrated.create_session("s1", source="cli", profile_name="alpha")
+            assert migrated.preflight_orch_task_observation(
+                "s1", "orch-op-1", profile_name="alpha"
+            ) is False
+        finally:
+            migrated.close()
+
+    def test_two_connections_converge_on_one_writer_and_one_finish(self, tmp_path):
+        path = tmp_path / "state.db"
+        seed = SessionDB(db_path=path)
+        seed.create_session("s1", source="cli")
+        seed.close()
+        db1 = SessionDB(db_path=path)
+        db2 = SessionDB(db_path=path)
+        context = _orch_context()
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(
+                    lambda db: db.begin_orch_task_observation("s1", context),
+                    (db1, db2),
+                ))
+            assert sorted(results) == [False, True]
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                finished = list(pool.map(
+                    lambda db: db.finish_orch_task_observation(
+                        "orch-op-1",
+                        result_status="complete",
+                        token_delta=_orch_token_delta(input_tokens=1),
+                        context_after=_orch_context_after(),
+                    ),
+                    (db1, db2),
+                ))
+            assert sorted(finished) == [False, True]
+            assert len(db1.read_orch_task_observations("s1")) == 1
+        finally:
+            db1.close()
+            db2.close()
+
+    def test_runtime_revision_is_structural_full_sha_not_local_self_assertion(self):
+        context = _orch_context()
+        context["decision_binding"]["runtime_revision"] = "2" * 40
+        code, checked = hermes_state.validate_orch_operational_context(context)
+        assert code == "context_accepted"
+        assert checked["decision_binding"]["runtime_revision"] == "2" * 40
+
+        class RevisionSubclass(str):
+            pass
+
+        for invalid in (
+            "1" * 39,
+            "G" * 40,
+            "A" * 40,
+            True,
+            RevisionSubclass("1" * 40),
+        ):
+            rejected = _orch_context()
+            rejected["decision_binding"]["runtime_revision"] = invalid
+            assert hermes_state.validate_orch_operational_context(rejected)[0] == (
+                "authority_mismatch"
+            )
+
+    def test_strict_validation_custom_model_and_canary_exclusion(self, tmp_path):
+        canary = "CANARY_PRIVATE_PROMPT_PAYLOAD"
+        unsafe = _orch_context()
+        code, checked = hermes_state.validate_orch_operational_context(unsafe)
+        assert code == "context_accepted"
+        assert "/private/provider/account" not in json.dumps(checked)
+
+        for mutation, expected in (
+            (("unknown", canary), "telemetry_invalid"),
+            (("raw_prompt", canary), "telemetry_invalid"),
+        ):
+            rejected = _orch_context(operation_id=f"reject-{mutation[0]}")
+            rejected["task_declaration"][mutation[0]] = mutation[1]
+            assert hermes_state.validate_orch_operational_context(rejected)[0] == expected
+
+        rejected = _orch_context(operation_id="reject-nested")
+        rejected["task_declaration"]["scope"] = {"hidden_reasoning": canary}
+        assert hermes_state.validate_orch_operational_context(rejected)[0] == "telemetry_invalid"
+
+        forged_values = [
+            {"scope": {"api_key": canary}},
+            {"scope": {"chain_of_thought": canary}},
+            {"scope": {"user_prompt": canary}},
+            {"user_correction": {"value": True}},
+            {"false_completion": "complete"},
+            {"rework": {"count": 9}},
+        ]
+        for index, forged in enumerate(forged_values):
+            rejected = _orch_context(operation_id=f"forgery-{index}")
+            rejected["task_declaration"].update(forged)
+            assert hermes_state.validate_orch_operational_context(rejected)[0] == "telemetry_invalid"
+        for path_value in ("Users/moc/private.txt", "C:/Users/moc/private.txt"):
+            rejected = _orch_context(operation_id="path-forgery")
+            rejected["task_declaration"]["prompt_contract_version"] = path_value
+            assert hermes_state.validate_orch_operational_context(rejected)[0] == "telemetry_unsafe"
+        rejected = _orch_context(operation_id="typed-forgery")
+        rejected["task_declaration"]["task_class"] = {"value": "implementation"}
+        assert hermes_state.validate_orch_operational_context(rejected)[0] == "telemetry_unsafe"
+
+        path = tmp_path / "canary.db"
+        db = SessionDB(db_path=path)
+        db.create_session("s1", source="cli")
+        db.begin_orch_task_observation("s1", checked)
+        db.record_orch_task_runtime_identity(
+            "orch-op-1", model="custom:/private/provider/account", effort="credentialvalue"
+        )
+        for secret_model in (
+            "provider/sk-SECRET_FRAGMENT",
+            "provider/ghp_SECRET_FRAGMENT",
+            "provider/xoxb-SECRET_FRAGMENT",
+            "provider/eyJheader.payload",
+        ):
+            assert hermes_state._canonical_orch_model_id(secret_model) is None
+        with pytest.raises(TypeError):
+            db.finish_orch_task_observation(
+                "orch-op-1",
+                result_status="failed",
+                user_correction_count=7,
+            )
+        with pytest.raises(ValueError, match="telemetry_unsafe"):
+            db.finish_orch_task_observation(
+                "orch-op-1",
+                result_status=canary,
+                token_delta={"arbitrary": 1},
+                context_after=_orch_context_after(),
+            )
+        db.close()
+        assert canary.encode() not in path.read_bytes()
+        assert b"/private/provider/account" not in path.read_bytes()
+        assert b"credentialvalue" not in path.read_bytes()
+
+    def test_exact_operation_can_terminalize_as_finalization_unavailable(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "recovery.db")
+        db.create_session("s1", source="cli")
+        assert db.begin_orch_task_observation("s1", _orch_context()) is True
+
+        assert db.mark_orch_task_finalization_unavailable("orch-op-1") is True
+        row = db.read_orch_task_observations("s1")[0]
+        assert row["state"] == "failed"
+        assert row["finished_at"] is not None
+        assert row["observation"]["result"] == {
+            "status": "failed",
+            "telemetry_status": "finalization_unavailable",
+            "provenance": "runtime",
+        }
+        assert db.mark_orch_task_finalization_unavailable("orch-op-1") is False
+        db.close()
+
+    def test_unknown_additive_table_survives_v23_sessiondb(self, tmp_path, monkeypatch):
+        """A v23-configured SessionDB ignores, and does not destroy, v24 data."""
+        import re
+        import hermes_state_schema
+
+        path = tmp_path / "state.db"
+        db = SessionDB(db_path=path)
+        db.create_session("s1", source="cli")
+        db.begin_orch_task_observation("s1", _orch_context())
+        db.close()
+
+        v23_schema = re.sub(
+            r"\n-- ORCH-Next operational observations.*?\nCREATE TABLE IF NOT EXISTS "
+            r"orch_task_observations \(.*?\n\);\n",
+            "\n",
+            SCHEMA_SQL,
+            flags=re.DOTALL,
+        )
+        assert "orch_task_observations" not in v23_schema
+        monkeypatch.setattr(hermes_state_schema, "SCHEMA_SQL", v23_schema)
+        monkeypatch.setattr(hermes_state_schema, "SCHEMA_VERSION", 23)
+        old_db = SessionDB(db_path=path)
+        try:
+            assert old_db.get_session("s1")["id"] == "s1"
+            old_db.set_session_title("s1", "old-client-write")
+            assert old_db._conn.execute(
+                "SELECT COUNT(*) FROM orch_task_observations"
+            ).fetchone()[0] == 1
+        finally:
+            old_db.close()
