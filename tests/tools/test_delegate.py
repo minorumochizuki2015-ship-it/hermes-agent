@@ -760,6 +760,288 @@ class TestDelegateTask(unittest.TestCase):
             snapshot.cleanup()
             self.assertFalse(os.path.exists(root))
 
+    def test_fixed_revision_cleanup_has_bounded_grace_for_stuck_dispatch(self):
+        """A stuck lease cannot hold the private snapshot teardown forever."""
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-grace-red-") as root:
+            tracked = os.path.join(root, "tracked.txt")
+            with open(tracked, "w", encoding="utf-8") as handle:
+                handle.write("TARGET_ONLY\n")
+            task_id = "fp3a-grace-stuck"
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot._cleanup_grace_seconds = 0.05
+            lease = snapshot.acquire_dispatch(task_id)
+            self.assertIsNone(lease)
+
+            snapshot.bind(task_id)
+            lease = snapshot.acquire_dispatch(task_id)
+            self.assertIsNotNone(lease)
+            cleanup_done = threading.Event()
+            cleanup_thread = threading.Thread(
+                target=lambda: (snapshot.cleanup(), cleanup_done.set())
+            )
+            cleanup_thread.start()
+            try:
+                self.assertTrue(cleanup_done.wait(0.2))
+                self.assertFalse(os.path.exists(root))
+                self.assertIsNone(snapshot.prepare_path(task_id, "tracked.txt"))
+            finally:
+                snapshot.release_dispatch(lease)
+                cleanup_thread.join(1)
+            self.assertFalse(cleanup_thread.is_alive())
+
+    def test_fixed_revision_cleanup_keeps_quick_dispatch_and_removes_once(self):
+        """A quick admitted read completes before grace and cleans normally."""
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-grace-red-") as root:
+            task_id = "fp3a-grace-quick"
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot._cleanup_grace_seconds = 0.2
+            snapshot.bind(task_id)
+            lease = snapshot.acquire_dispatch(task_id)
+            self.assertIsNotNone(lease)
+            cleanup_done = threading.Event()
+
+            def release_quickly():
+                time.sleep(0.01)
+                snapshot.release_dispatch(lease)
+
+            release_thread = threading.Thread(target=release_quickly)
+            cleanup_thread = threading.Thread(
+                target=lambda: (snapshot.cleanup(), cleanup_done.set())
+            )
+            cleanup_thread.start()
+            release_thread.start()
+            self.assertTrue(cleanup_done.wait(0.5))
+            release_thread.join(1)
+            cleanup_thread.join(1)
+            self.assertFalse(release_thread.is_alive())
+            self.assertFalse(cleanup_thread.is_alive())
+            self.assertFalse(os.path.exists(root))
+            snapshot.cleanup()
+            self.assertFalse(os.path.exists(root))
+
+    def test_fixed_revision_dispatch_near_grace_expiry_never_reopens_live_cwd(self):
+        """Grace expiry yields target bytes or safe-unavailable, never live data."""
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-grace-red-") as root:
+            task_id = "fp3a-grace-boundary"
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot._cleanup_grace_seconds = 0.05
+            snapshot.bind(task_id)
+            lease = snapshot.acquire_dispatch(task_id)
+            self.assertIsNotNone(lease)
+            dispatch_started = threading.Event()
+            release_dispatch = threading.Event()
+            cleanup_done = threading.Event()
+            result_holder = {}
+
+            def admitted_dispatch():
+                dispatch_started.set()
+                release_dispatch.wait(1)
+                result_holder["value"] = (
+                    "TARGET_ONLY"
+                    if os.path.isdir(root)
+                    else "read_only_audit immutable snapshot unavailable"
+                )
+                snapshot.release_dispatch(lease)
+
+            dispatch_thread = threading.Thread(target=admitted_dispatch)
+            cleanup_thread = threading.Thread(
+                target=lambda: (snapshot.cleanup(), cleanup_done.set())
+            )
+            dispatch_thread.start()
+            self.assertTrue(dispatch_started.wait(1))
+            cleanup_thread.start()
+            try:
+                self.assertTrue(cleanup_done.wait(0.2))
+                self.assertFalse(os.path.exists(root))
+                self.assertIsNone(snapshot.prepare_path(task_id, "tracked.txt"))
+            finally:
+                release_dispatch.set()
+                dispatch_thread.join(1)
+                cleanup_thread.join(1)
+            self.assertFalse(dispatch_thread.is_alive())
+            self.assertFalse(cleanup_thread.is_alive())
+            self.assertIn(
+                result_holder["value"],
+                {"TARGET_ONLY", "read_only_audit immutable snapshot unavailable"},
+            )
+            snapshot.cleanup()
+            self.assertFalse(os.path.exists(root))
+
+    def test_fixed_revision_callbacks_expose_logical_path_only(self):
+        """Success, blocked, and error hooks never receive snapshot roots."""
+        from agent.tool_executor import (
+            _begin_tool_execution,
+            _emit_terminal_post_tool_call,
+        )
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-privacy-red-") as root:
+            tracked = os.path.join(root, "tracked.txt")
+            with open(tracked, "w", encoding="utf-8") as handle:
+                handle.write("TARGET_ONLY\n")
+            task_id = "fp3a-privacy-callbacks"
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot.bind(task_id)
+            progress_events = []
+            start_events = []
+            hook_events = []
+            agent = types.SimpleNamespace(
+                _delegate_capability_profile=READ_ONLY_AUDIT_PROFILE,
+                _delegate_snapshot_root=root,
+                _delegate_audit_snapshot=snapshot,
+                _subagent_id=task_id,
+                session_id="",
+                _current_turn_id="",
+                _current_api_request_id="",
+                quiet_mode=True,
+                tool_progress_mode="all",
+                verbose_logging=False,
+                log_prefix_chars=200,
+                _touch_activity=lambda *_args: None,
+                _checkpoint_mgr=types.SimpleNamespace(enabled=False),
+                tool_progress_callback=lambda *args: progress_events.append(args),
+                tool_start_callback=lambda *args: start_events.append(args),
+            )
+
+            with patch(
+                "model_tools._emit_post_tool_call_hook",
+                side_effect=lambda **kwargs: hook_events.append(kwargs),
+            ):
+                _begin_tool_execution(
+                    agent,
+                    function_name="read_file",
+                    function_args={"path": tracked},
+                    effective_task_id=task_id,
+                    tool_call_id="privacy-start",
+                    display_index=1,
+                )
+                for status, error_type, result in (
+                    ("completed", None, "TARGET_ONLY"),
+                    ("blocked", "tool_scope_block", "fixed snapshot unavailable"),
+                    ("error", "handler_error", "fixed snapshot unavailable"),
+                ):
+                    _emit_terminal_post_tool_call(
+                        agent,
+                        function_name="read_file",
+                        function_args={"path": tracked},
+                        result=result,
+                        effective_task_id=task_id,
+                        tool_call_id=f"privacy-{status}",
+                        status=status,
+                        error_type=error_type,
+                        middleware_trace=[{"path": tracked}],
+                    )
+
+            serialized = json.dumps(
+                {"progress": progress_events, "start": start_events, "hooks": hook_events},
+                ensure_ascii=False,
+            )
+            self.assertNotIn(root, serialized)
+            self.assertIn("tracked.txt", serialized)
+            self.assertEqual(len(hook_events), 3)
+            for event in hook_events:
+                self.assertEqual(event["function_args"].get("path"), "tracked.txt")
+                self.assertEqual(event["middleware_trace"], [])
+            snapshot.cleanup()
+
+    def test_fixed_revision_git_reads_disable_lazy_fetch_and_fail_closed(self):
+        """Git object reads use a no-fetch environment and typed failure."""
+        import io
+
+        from tools.delegate_tool import (
+            ReadOnlyAuditRevisionError,
+            _git_output,
+            _read_git_blob,
+        )
+
+        run_envs = []
+        popen_envs = []
+
+        def missing_run(_args, **kwargs):
+            run_envs.append(kwargs.get("env"))
+            return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+
+        class MissingBlobProcess:
+            returncode = 1
+
+            def __init__(self):
+                self.stdout = io.BytesIO(b"")
+
+            def communicate(self):
+                return b"", b"missing object"
+
+        def missing_popen(_args, **kwargs):
+            popen_envs.append(kwargs.get("env"))
+            return MissingBlobProcess()
+
+        with (
+            patch("tools.delegate_tool.subprocess.run", side_effect=missing_run),
+            patch("tools.delegate_tool.subprocess.Popen", side_effect=missing_popen),
+        ):
+            with self.assertRaises(ReadOnlyAuditRevisionError):
+                _git_output(os.getcwd(), ["cat-file", "-t", "missing"], limit=64)
+            with self.assertRaises(ReadOnlyAuditRevisionError):
+                _read_git_blob(os.getcwd(), "missing")
+
+        for env in run_envs + popen_envs:
+            self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+            self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+            self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+            self.assertNotIn("GIT_DIR", env)
+
+    def test_fixed_revision_missing_blob_denies_before_child_or_transcript(self):
+        """A missing object is typed unavailable before any child lifecycle starts."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+        from tools.delegate_tool import ReadOnlyAuditRevisionError
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-missing-blob-parent"
+        register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
+        target_revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        try:
+            with (
+                patch(
+                    "tools.delegate_tool._resolve_child_execution_runtime",
+                    return_value={},
+                ),
+                patch(
+                    "tools.delegate_tool._create_read_only_audit_snapshot",
+                    side_effect=ReadOnlyAuditRevisionError("missing promisor object"),
+                ),
+                patch("tools.delegation_live_log.create_live_transcripts") as transcripts,
+                patch("tools.delegate_tool._build_child_preserving_parent_tools") as child_builder,
+            ):
+                result = json.loads(
+                    delegate_task(
+                        goal="audit the fixed source",
+                        capability_profile=READ_ONLY_AUDIT_PROFILE,
+                        target_revision=target_revision,
+                        parent_agent=parent,
+                    )
+                )
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+
+        self.assertEqual(result["code"], "fixed_revision_unavailable")
+        self.assertFalse(result["launch"])
+        self.assertEqual(result["launch_count"], 0)
+        transcripts.assert_not_called()
+        child_builder.assert_not_called()
+
     def test_read_only_audit_rejects_missing_commit_before_transcript_or_child(self):
         from tools.terminal_tool import (
             clear_task_env_overrides,

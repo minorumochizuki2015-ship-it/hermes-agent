@@ -103,6 +103,24 @@ _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILES = 20000
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 _READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES = 32 * 1024 * 1024
+_READ_ONLY_AUDIT_SNAPSHOT_CLEANUP_GRACE_SECONDS = 0.25
+
+
+def _read_only_audit_git_env() -> Dict[str, str]:
+    """Return a bounded Git environment that cannot lazy-fetch or prompt."""
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    for key in ("LANG", "LC_ALL", "TMPDIR"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
 
 
 class _ReadOnlyAuditSnapshot:
@@ -119,6 +137,7 @@ class _ReadOnlyAuditSnapshot:
         self._generation = 0
         self._active_dispatches = 0
         self._revoked = False
+        self._cleanup_grace_seconds = _READ_ONLY_AUDIT_SNAPSHOT_CLEANUP_GRACE_SECONDS
 
     def bind(self, task_id: str) -> None:
         if not isinstance(task_id, str) or not task_id:
@@ -181,6 +200,21 @@ class _ReadOnlyAuditSnapshot:
                 return None
             return str(resolved)
 
+    def public_path(self, task_id: str, raw_path: str) -> Optional[str]:
+        """Return only the logical path visible to callbacks and hooks."""
+        with self._condition:
+            root = self._active_root_locked(task_id)
+            if root is None:
+                return None
+            try:
+                expanded = Path(os.path.expanduser(raw_path))
+                candidate = expanded if expanded.is_absolute() else root / expanded
+                resolved = candidate.resolve(strict=False)
+                relative = resolved.relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                return None
+            return relative.as_posix() or "."
+
     def acquire_dispatch(self, task_id: str) -> Optional[tuple[str, int]]:
         """Admit one bounded read/search dispatch and return its generation."""
         with self._condition:
@@ -213,8 +247,16 @@ class _ReadOnlyAuditSnapshot:
             self._cleaned = True
             task_id = self._task_id
             self._task_id = None
+            try:
+                grace_seconds = max(0.0, float(self._cleanup_grace_seconds))
+            except (TypeError, ValueError):
+                grace_seconds = _READ_ONLY_AUDIT_SNAPSHOT_CLEANUP_GRACE_SECONDS
+            deadline = time.monotonic() + grace_seconds
             while self._active_dispatches:
-                self._condition.wait()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(timeout=remaining)
 
         if task_id:
             try:
@@ -250,6 +292,7 @@ def _git_output(repo_root: str, args: List[str], *, limit: int) -> bytes:
             ["git", "-C", repo_root, *args],
             check=False,
             capture_output=True,
+            env=_read_only_audit_git_env(),
         )
     except (OSError, ValueError) as exc:
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
@@ -360,6 +403,7 @@ def _read_git_blob(repo_root: str, object_id: str) -> bytes:
             ["git", "-C", repo_root, "cat-file", "blob", object_id],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=_read_only_audit_git_env(),
         )
         data = process.stdout.read(_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES + 1)
         if len(data) > _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES:
@@ -1325,6 +1369,35 @@ def _fixed_revision_file_arguments(
     return safe_args, None
 
 
+def _fixed_revision_public_arguments(
+    agent: Any,
+    function_name: str,
+    function_args: Dict[str, Any],
+    *,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Project fixed-audit handler arguments without exposing its root."""
+    if (
+        getattr(agent, "_delegate_capability_profile", None)
+        != READ_ONLY_AUDIT_PROFILE
+        or function_name not in {"read_file", "search_files"}
+    ):
+        return dict(function_args or {})
+    snapshot = getattr(agent, "_delegate_audit_snapshot", None)
+    effective_task_id = task_id or getattr(agent, "_subagent_id", None)
+    if snapshot is None or not isinstance(effective_task_id, str) or not effective_task_id:
+        return {}
+    raw_path = (function_args or {}).get("path", ".")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raw_path = "."
+    public_path = snapshot.public_path(effective_task_id, raw_path)
+    if public_path is None:
+        return {}
+    safe_args = dict(function_args or {})
+    safe_args["path"] = public_path
+    return safe_args
+
+
 def _resolve_child_execution_runtime(
     *,
     parent_agent: Any,
@@ -2069,6 +2142,7 @@ def _build_child_agent(
     timeout_seconds: Optional[float] = None,
     requested_target_revision: Optional[str] = None,
     target_repo_root: Optional[str] = None,
+    prebuilt_audit_snapshot: Optional[_ReadOnlyAuditSnapshot] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -2438,6 +2512,7 @@ def _build_child_agent(
         requested_target_revision or target_revision
     )
     child._delegate_target_repo_root = target_repo_root
+    child._delegate_prebuilt_audit_snapshot = prebuilt_audit_snapshot
     child._delegate_timeout_seconds = timeout_seconds
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
@@ -3123,17 +3198,21 @@ def _run_single_child(
                 )
                 resolved_revision = getattr(child, "_delegate_target_revision", None)
                 repo_root = getattr(child, "_delegate_target_repo_root", None)
-                if not isinstance(repo_root, str) or not repo_root:
-                    from tools.terminal_tool import get_session_cwd
-
-                    repo_root = get_session_cwd(child_task_id)
-                repo_root = _git_repo_root(repo_root)
-                resolved_revision = _resolve_unique_commit(repo_root, resolved_revision)
-                audit_snapshot = _create_read_only_audit_snapshot(
-                    repo_root,
-                    requested_revision,
-                    resolved_revision,
+                audit_snapshot = getattr(
+                    child, "_delegate_prebuilt_audit_snapshot", None
                 )
+                if audit_snapshot is None:
+                    if not isinstance(repo_root, str) or not repo_root:
+                        from tools.terminal_tool import get_session_cwd
+
+                        repo_root = get_session_cwd(child_task_id)
+                    repo_root = _git_repo_root(repo_root)
+                    resolved_revision = _resolve_unique_commit(repo_root, resolved_revision)
+                    audit_snapshot = _create_read_only_audit_snapshot(
+                        repo_root,
+                        requested_revision,
+                        resolved_revision,
+                    )
                 audit_snapshot.bind(child_task_id)
                 child._delegate_target_repo_root = repo_root
                 child._delegate_target_revision = resolved_revision
@@ -3833,6 +3912,7 @@ def _run_single_child(
         if audit_snapshot is not None:
             child._delegate_snapshot_root = None
             child._delegate_audit_snapshot = None
+            child._delegate_prebuilt_audit_snapshot = None
             audit_snapshot.cleanup()
 
 
@@ -4323,12 +4403,14 @@ def delegate_task(
             launch_count=0,
         )
 
-    # Resolve every fixed-revision audit target to one full commit object
-    # before any transcript or child is created. The live working tree is only
-    # used to locate the owned repository; bytes are exported later from Git
-    # objects and never from that mutable path.
+    # Resolve and materialize every fixed-revision audit target before any
+    # transcript or child is created. The live working tree is only used to
+    # locate the owned repository; bytes are exported from Git objects and
+    # never from that mutable path. This also makes a missing promisor blob a
+    # preflight denial rather than a child-construction/runtime failure.
+    prebuilt_audit_snapshots: Dict[int, _ReadOnlyAuditSnapshot] = {}
     try:
-        for task in task_list:
+        for task_index, task in enumerate(task_list):
             if task.get("capability_profile") != READ_ONLY_AUDIT_PROFILE:
                 continue
             requested_revision = task.get("target_revision")
@@ -4337,14 +4419,18 @@ def delegate_task(
                 repo_root,
                 requested_revision,
             )
-            # Reject unsafe target trees before child construction. The
-            # snapshot exporter repeats this check at its object-binding seam
-            # to cover direct/internal callers that bypass delegate_task.
-            _target_tree_entries(repo_root, resolved_revision)
+            snapshot = _create_read_only_audit_snapshot(
+                repo_root,
+                requested_revision,
+                resolved_revision,
+            )
+            prebuilt_audit_snapshots[task_index] = snapshot
             task["_requested_target_revision"] = requested_revision
             task["target_revision"] = resolved_revision
             task["_target_repo_root"] = repo_root
     except ReadOnlyAuditRevisionError as exc:
+        for snapshot in prebuilt_audit_snapshots.values():
+            snapshot.cleanup()
         return tool_error(
             _FIXED_REVISION_UNAVAILABLE_MESSAGE,
             code=exc.code,
@@ -4441,6 +4527,7 @@ def delegate_task(
                 "_requested_target_revision", t.get("target_revision")
             ),
             target_repo_root=t.get("_target_repo_root"),
+            prebuilt_audit_snapshot=prebuilt_audit_snapshots.get(i),
         )
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.

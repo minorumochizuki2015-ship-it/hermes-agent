@@ -272,9 +272,22 @@ def _emit_terminal_post_tool_call(
 ) -> None:
     try:
         from model_tools import _emit_post_tool_call_hook
+        from tools.delegate_tool import _fixed_revision_public_arguments
+
+        public_args = _fixed_revision_public_arguments(
+            agent,
+            function_name,
+            function_args,
+            task_id=effective_task_id,
+        )
+        is_fixed_file = (
+            getattr(agent, "_delegate_capability_profile", None)
+            == "read_only_audit"
+            and function_name in {"read_file", "search_files"}
+        )
         _emit_post_tool_call_hook(
             function_name=function_name,
-            function_args=function_args,
+            function_args=public_args,
             result=result,
             task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "",
@@ -285,7 +298,7 @@ def _emit_terminal_post_tool_call(
             status=status,
             error_type=error_type,
             error_message=error_message,
-            middleware_trace=list(middleware_trace or []),
+            middleware_trace=[] if is_fixed_file else list(middleware_trace or []),
         )
     except Exception:
         pass
@@ -526,10 +539,21 @@ def _run_agent_tool_execution_middleware(
         fixed_scope_block = None
     if fixed_scope_block is not None:
         scope_block = fixed_scope_block
+    try:
+        from tools.delegate_tool import _fixed_revision_public_arguments
+
+        public_function_args = _fixed_revision_public_arguments(
+            agent,
+            function_name,
+            function_args,
+            task_id=effective_task_id,
+        )
+    except Exception:
+        public_function_args = {}
 
     trace = middleware_trace if middleware_trace is not None else []
     state = {
-        "args": function_args,
+        "args": public_function_args,
         "middleware_trace": trace,
         "blocked": False,
         "dispatched": False,
@@ -551,6 +575,17 @@ def _run_agent_tool_execution_middleware(
             fixed_scope_block = None
         if fixed_scope_block is not None:
             scope_block = fixed_scope_block
+        try:
+            from tools.delegate_tool import _fixed_revision_public_arguments
+
+            public_final_args = _fixed_revision_public_arguments(
+                agent,
+                function_name,
+                final_args,
+                task_id=effective_task_id,
+            )
+        except Exception:
+            public_final_args = {}
         with dispatch_lock:
             if state["dispatched"]:
                 raise RuntimeError(
@@ -558,13 +593,13 @@ def _run_agent_tool_execution_middleware(
                 )
             state["dispatched"] = True
             state["blocked"] = False
-            state["args"] = final_args
+            state["args"] = public_final_args
 
         def _begin() -> None:
             _begin_tool_execution(
                 agent,
                 function_name=function_name,
-                function_args=final_args,
+                function_args=public_final_args,
                 effective_task_id=effective_task_id,
                 tool_call_id=tool_call_id,
                 display_index=display_index,
@@ -588,7 +623,7 @@ def _run_agent_tool_execution_middleware(
 
                     return resolve_pre_tool_block(
                         function_name,
-                        final_args,
+                        public_final_args,
                         task_id=effective_task_id or "",
                         session_id=getattr(agent, "session_id", "") or "",
                         tool_call_id=tool_call_id or "",
@@ -609,7 +644,7 @@ def _run_agent_tool_execution_middleware(
         guardrail_decision = None
         if block_message is None:
             guardrail_decision = agent._tool_guardrails.before_call(
-                function_name, final_args
+                function_name, public_final_args
             )
             if guardrail_decision.allows_execution:
                 guardrail_decision = None
@@ -629,9 +664,9 @@ def _run_agent_tool_execution_middleware(
                     or "Tool blocked by guardrail policy"
                 )
             _emit_terminal_post_tool_call(
-                agent,
-                function_name=function_name,
-                function_args=final_args,
+                    agent,
+                    function_name=function_name,
+                    function_args=public_final_args,
                 result=result,
                 effective_task_id=effective_task_id,
                 tool_call_id=tool_call_id,
@@ -726,15 +761,26 @@ def _run_agent_tool_execution_middleware(
         if fixed_scope_block is not None:
             nonlocal scope_block
             scope_block = fixed_scope_block
+        try:
+            from tools.delegate_tool import _fixed_revision_public_arguments
+
+            public_request_args = _fixed_revision_public_arguments(
+                agent,
+                function_name,
+                request_args,
+                task_id=effective_task_id,
+            )
+        except Exception:
+            public_request_args = {}
         trace.clear()
         trace.extend(request_result.trace)
         return run_tool_execution_middleware(
             function_name,
-            request_args,
+            public_request_args,
             lambda next_args: _authorized_dispatch(
                 next_args if isinstance(next_args, dict) else request_args
             ),
-            original_args=function_args,
+            original_args=public_function_args,
             task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "",
             tool_call_id=tool_call_id or "",
@@ -744,7 +790,7 @@ def _run_agent_tool_execution_middleware(
 
     result, _relay_args = relay_tools.execute(
         function_name,
-        function_args,
+        public_function_args,
         _hermes_pipeline,
         session_id=str(getattr(agent, "session_id", "") or ""),
         metadata={
@@ -773,9 +819,20 @@ def _begin_tool_execution(
     display_index: int | None,
 ) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
+    try:
+        from tools.delegate_tool import _fixed_revision_public_arguments
+
+        public_args = _fixed_revision_public_arguments(
+            agent,
+            function_name,
+            function_args,
+            task_id=effective_task_id,
+        )
+    except Exception:
+        public_args = {}
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         display_args = (
-            _redact_tool_args_for_display(function_name, function_args) or function_args
+            _redact_tool_args_for_display(function_name, public_args) or public_args
         )
         args_str = json.dumps(display_args, ensure_ascii=False)
         prefix = f"Tool {display_index}" if display_index is not None else "Tool"
@@ -793,7 +850,7 @@ def _begin_tool_execution(
                 else args_str
             )
             print(
-                f"  📞 {prefix}: {function_name}({list(function_args.keys())}) - "
+                f"  📞 {prefix}: {function_name}({list(public_args.keys())}) - "
                 f"{args_preview}"
             )
 
@@ -809,8 +866,8 @@ def _begin_tool_execution(
     if agent.tool_progress_callback:
         try:
             display_args = (
-                _redact_tool_args_for_display(function_name, function_args)
-                or function_args
+                _redact_tool_args_for_display(function_name, public_args)
+                or public_args
             )
             preview = _build_tool_preview(function_name, display_args)
             agent.tool_progress_callback(
@@ -822,8 +879,8 @@ def _begin_tool_execution(
     if agent.tool_start_callback:
         try:
             display_args = (
-                _redact_tool_args_for_display(function_name, function_args)
-                or function_args
+                _redact_tool_args_for_display(function_name, public_args)
+                or public_args
             )
             agent.tool_start_callback(
                 tool_call_id, function_name, display_args
@@ -836,7 +893,7 @@ def _begin_tool_execution(
             _ensure_file_checkpoint(
                 agent,
                 function_name,
-                function_args,
+                public_args,
                 effective_task_id,
             )
         except Exception:
