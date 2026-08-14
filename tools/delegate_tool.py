@@ -121,6 +121,59 @@ _READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS = max(
 )
 _READ_ONLY_AUDIT_GIT_STDERR_BYTES = 64 * 1024
 _READ_ONLY_AUDIT_GIT_READ_CHUNK_BYTES = 64 * 1024
+_READ_ONLY_AUDIT_MAX_PUBLIC_TEXT_CHARS = 8000
+_READ_ONLY_AUDIT_URL_RE = re.compile(
+    r"(?i)\b(?:https?|ssh|ftp|file|mailto):[^\s<>\"']+"
+)
+_READ_ONLY_AUDIT_SECRET_RE = re.compile(
+    r"(?i)\b(?:bearer\s+[A-Za-z0-9._~-]+|"
+    r"(?:sk|rk|pk)-[A-Za-z0-9._~-]+|"
+    r"(?:gh[pousr]_[A-Za-z0-9_-]+|github_pat_[A-Za-z0-9_-]+|"
+    r"xox[baprs]-[A-Za-z0-9-]+)|"
+    r"(?:api[_-]?key|token|secret|password|credential)\s*[:=]\s*"
+    r"[^\s,;]+)"
+)
+_READ_ONLY_AUDIT_ABSOLUTE_PATH_RE = re.compile(
+    r'''(?<![\w:])/(?:[^/\s<>"']+/)+[^/\s<>"']*'''
+)
+_READ_ONLY_AUDIT_EXCEPTION_RE = re.compile(
+    r"(?im)(?:traceback \(most recent call last\):.*|"
+    r"(?:runtimeerror|valueerror|keyerror|oserror|exception|error)\s*:\s*[^\n;]*)"
+)
+_READ_ONLY_AUDIT_PRIVATE_MARKER_RE = re.compile(
+    r"\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)*_(?:CANARY|SECRET|TOKEN|EXCEPTION)\b"
+)
+_READ_ONLY_AUDIT_RESULT_KEYS = frozenset(
+    {
+        "task_index",
+        "status",
+        "summary",
+        "error",
+        "error_category",
+        "api_calls",
+        "duration_seconds",
+        "timeout_seconds",
+        "timed_out_after_seconds",
+        "timeout_phase",
+        "exit_reason",
+        "model",
+        "tokens",
+        "cost_usd",
+        "cost_status",
+        "requested_target_revision",
+        "resolved_target_revision",
+        "launch",
+        "launch_count",
+        "schema_valid",
+        "schema_retries",
+        "schema_errors",
+        "summary_truncated",
+        # These are consumed and removed by _finalize_child_results before the
+        # result crosses the public batch boundary.
+        "_child_role",
+        "_child_cost_usd",
+    }
+)
 
 
 def _public_delegate_goal(goal: Any, capability_profile: Optional[str]) -> str:
@@ -130,37 +183,201 @@ def _public_delegate_goal(goal: Any, capability_profile: Optional[str]) -> str:
     return str(goal or "")
 
 
+def _read_only_audit_private_strings(value: Any, *, _depth: int = 0):
+    """Yield bounded private strings used only for an audit egress filter."""
+    if _depth > 4:
+        return
+    if isinstance(value, str):
+        if value:
+            yield value
+        return
+    if isinstance(value, dict):
+        for key, item in list(value.items())[:64]:
+            yield from _read_only_audit_private_strings(key, _depth=_depth + 1)
+            yield from _read_only_audit_private_strings(item, _depth=_depth + 1)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in list(value)[:64]:
+            yield from _read_only_audit_private_strings(item, _depth=_depth + 1)
+
+
 def _sanitize_read_only_audit_text(
     value: Any,
     *,
     goal: Any = "",
+    context: Any = "",
     child: Any = None,
 ) -> Any:
-    """Remove known private audit inputs from a public text projection."""
+    """Project audit text through a bounded, closed privacy filter."""
     if not isinstance(value, str):
-        return value
-    private_values = {str(goal or "")}
-    for attr in ("base_url", "api_key", "_delegate_snapshot_root", "_delegate_target_repo_root"):
+        return ""
+    private_values = set()
+    for source in (goal, context):
+        private_values.update(_read_only_audit_private_strings(source))
+    for attr in (
+        "base_url",
+        "api_key",
+        "_delegate_snapshot_root",
+        "_delegate_target_repo_root",
+        "_delegate_private_context",
+        "_subagent_goal",
+    ):
         try:
             candidate = getattr(child, attr, None)
         except Exception:
             candidate = None
-        if isinstance(candidate, str) and candidate:
-            private_values.add(candidate)
+        private_values.update(_read_only_audit_private_strings(candidate))
     try:
         client_kwargs = getattr(child, "_client_kwargs", None)
         if isinstance(client_kwargs, dict):
-            for key in ("base_url", "api_key"):
-                candidate = client_kwargs.get(key)
-                if isinstance(candidate, str) and candidate:
-                    private_values.add(candidate)
+            for key in ("base_url", "api_key", "required_context"):
+                private_values.update(
+                    _read_only_audit_private_strings(client_kwargs.get(key))
+                )
     except Exception:
         pass
     sanitized = value
     for private in sorted(private_values, key=len, reverse=True):
         if private:
             sanitized = sanitized.replace(private, _READ_ONLY_AUDIT_PUBLIC_LABEL)
+    sanitized = _READ_ONLY_AUDIT_URL_RE.sub(
+        _READ_ONLY_AUDIT_PUBLIC_LABEL,
+        sanitized,
+    )
+    sanitized = _READ_ONLY_AUDIT_SECRET_RE.sub(
+        _READ_ONLY_AUDIT_PUBLIC_LABEL,
+        sanitized,
+    )
+    sanitized = _READ_ONLY_AUDIT_EXCEPTION_RE.sub(
+        _READ_ONLY_AUDIT_PUBLIC_LABEL,
+        sanitized,
+    )
+    sanitized = _READ_ONLY_AUDIT_ABSOLUTE_PATH_RE.sub(
+        _READ_ONLY_AUDIT_PUBLIC_LABEL,
+        sanitized,
+    )
+    sanitized = _READ_ONLY_AUDIT_PRIVATE_MARKER_RE.sub(
+        _READ_ONLY_AUDIT_PUBLIC_LABEL,
+        sanitized,
+    )
+    if len(sanitized) > _READ_ONLY_AUDIT_MAX_PUBLIC_TEXT_CHARS:
+        sanitized = (
+            sanitized[:_READ_ONLY_AUDIT_MAX_PUBLIC_TEXT_CHARS]
+            + "\n[read_only_audit output truncated]"
+        )
     return sanitized
+
+
+def _project_read_only_audit_result(
+    entry: Dict[str, Any],
+    *,
+    child: Any = None,
+    goal: Any = "",
+) -> Dict[str, Any]:
+    """Keep only the closed, sanitized result shape for an audit child."""
+    if not isinstance(entry, dict):
+        return {}
+    context = getattr(child, "_delegate_private_context", "")
+    for key in list(entry):
+        if key not in _READ_ONLY_AUDIT_RESULT_KEYS:
+            entry.pop(key, None)
+    if "summary" in entry:
+        entry["summary"] = _sanitize_read_only_audit_text(
+            entry.get("summary"),
+            goal=goal,
+            context=context,
+            child=child,
+        )
+    if "error" in entry:
+        entry["error"] = _sanitize_read_only_audit_text(
+            entry.get("error"),
+            goal=goal,
+            context=context,
+            child=child,
+        )
+    if isinstance(entry.get("schema_errors"), list):
+        entry["schema_errors"] = [
+            _sanitize_read_only_audit_text(
+                item,
+                goal=goal,
+                context=context,
+                child=child,
+            )
+            for item in entry["schema_errors"]
+            if isinstance(item, str)
+        ][:16]
+    elif "schema_errors" in entry:
+        entry.pop("schema_errors", None)
+    for key in ("requested_target_revision", "resolved_target_revision"):
+        if key in entry and not re.fullmatch(r"[0-9a-fA-F]{7,64}", str(entry[key])):
+            entry.pop(key, None)
+    tokens = entry.get("tokens")
+    if isinstance(tokens, dict):
+        entry["tokens"] = {
+            key: value
+            for key, value in tokens.items()
+            if key in {"input", "output"}
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        }
+    elif "tokens" in entry:
+        entry.pop("tokens", None)
+    return entry
+
+
+def _sanitize_read_only_audit_value(
+    value: Any,
+    *,
+    goal: Any = "",
+    context: Any = "",
+    child: Any = None,
+) -> Any:
+    """Recursively sanitize callback payloads without changing primitives."""
+    if isinstance(value, str):
+        return _sanitize_read_only_audit_text(
+            value,
+            goal=goal,
+            context=context,
+            child=child,
+        )
+    if isinstance(value, dict):
+        return {
+            _sanitize_read_only_audit_text(
+                key,
+                goal=goal,
+                context=context,
+                child=child,
+            )
+            if isinstance(key, str)
+            else key: _sanitize_read_only_audit_value(
+                item,
+                goal=goal,
+                context=context,
+                child=child,
+            )
+            for key, item in list(value.items())[:64]
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_read_only_audit_value(
+                item,
+                goal=goal,
+                context=context,
+                child=child,
+            )
+            for item in value[:64]
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _sanitize_read_only_audit_value(
+                item,
+                goal=goal,
+                context=context,
+                child=child,
+            )
+            for item in value[:64]
+        )
+    return value
 
 
 def _trusted_git_identity(path: Optional[str]):
@@ -2200,6 +2417,7 @@ def _build_child_progress_callback(
     toolsets: Optional[List[str]] = None,
     session_ref: Optional[Dict[str, Any]] = None,
     capability_profile: Optional[str] = None,
+    audit_private_context: Any = "",
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -2263,14 +2481,20 @@ def _build_child_progress_callback(
             return
         if audit_public:
             preview = (
-                _READ_ONLY_AUDIT_PUBLIC_LABEL if preview is not None else None
+                _sanitize_read_only_audit_text(
+                    preview,
+                    goal=goal,
+                    context=audit_private_context,
+                )
+                if preview is not None
+                else None
             )
             args = None
             kwargs = {
-                key: (
-                    _READ_ONLY_AUDIT_PUBLIC_LABEL
-                    if isinstance(value, str)
-                    else value
+                key: _sanitize_read_only_audit_value(
+                    value,
+                    goal=goal,
+                    context=audit_private_context,
                 )
                 for key, value in kwargs.items()
             }
@@ -2651,6 +2875,9 @@ def _build_child_agent(
         toolsets=child_toolsets,
         session_ref=child_session_ref,
         capability_profile=capability_profile,
+        audit_private_context=context
+        if capability_profile == READ_ONLY_AUDIT_PROFILE
+        else "",
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -2906,6 +3133,10 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        # Keep required context available only to the private egress filter;
+        # the child user turn itself is the fixed public audit label.
+        child._delegate_private_context = context
     child._delegate_public_goal = public_goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Ownership chain for the model-facing control plane (action=list/steer/
@@ -3249,7 +3480,12 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         return None
 
 
-def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
+def _apply_summary_budget(
+    results: List[Dict[str, Any]],
+    parent_agent,
+    *,
+    audit_task_indices: Optional[set] = None,
+) -> None:
     """Trim subagent summaries in-place so the batch can't overflow the
     parent's context window, spilling full text to disk so nothing is lost.
 
@@ -3288,6 +3524,15 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         if len(summary) <= cap:
             continue
         original_len = len(summary)
+        if entry.get("task_index") in (audit_task_indices or set()):
+            # Never create a public pointer to a private audit spill file.
+            # The audit projection is already bounded; truncate in memory
+            # when the parent's ordinary context budget is smaller.
+            entry["summary"] = (
+                summary[:cap] + "\n[read_only_audit output truncated]"
+            )
+            entry["summary_truncated"] = True
+            continue
         model_text, spill_path = _trim_summary_with_footer(
             summary, cap, entry.get("task_index", -1)
         )
@@ -3704,6 +3949,13 @@ def _run_single_child(
             # Inert under CLI/TUI: their progress handlers ignore non-tool events.
             if not delta or not child_progress_cb:
                 return
+            if is_read_only_audit:
+                delta = _sanitize_read_only_audit_text(
+                    delta,
+                    goal=goal,
+                    context=getattr(child, "_delegate_private_context", ""),
+                    child=child,
+                )
             try:
                 child_progress_cb("subagent.text", preview=delta)
             except Exception as e:
@@ -3954,7 +4206,12 @@ def _run_single_child(
 
         summary = result.get("final_response") or ""
         public_summary = (
-            _sanitize_read_only_audit_text(summary, goal=goal, child=child)
+            _sanitize_read_only_audit_text(
+                summary,
+                goal=goal,
+                context=getattr(child, "_delegate_private_context", ""),
+                child=child,
+            )
             if is_read_only_audit
             else summary
         )
@@ -4085,6 +4342,7 @@ def _run_single_child(
                 _sanitize_read_only_audit_text(
                     result.get("error", "Subagent did not produce a response."),
                     goal=goal,
+                    context=getattr(child, "_delegate_private_context", ""),
                     child=child,
                 )
                 if is_read_only_audit
@@ -4099,7 +4357,19 @@ def _run_single_child(
             if _schema_retries:
                 entry["schema_retries"] = _schema_retries
             if not _schema_valid and _schema_errors:
-                entry["schema_errors"] = _schema_errors
+                entry["schema_errors"] = (
+                    [
+                        _sanitize_read_only_audit_text(
+                            item,
+                            goal=goal,
+                            context=getattr(child, "_delegate_private_context", ""),
+                            child=child,
+                        )
+                        for item in _schema_errors
+                    ]
+                    if is_read_only_audit
+                    else _schema_errors
+                )
 
         # A steer that queued after the child's final assistant turn had no
         # tool batch left to drain into.  The finalizer hands the undelivered
@@ -4225,6 +4495,9 @@ def _run_single_child(
                 complete_kwargs["cost_usd"] = float(_cost_usd)
             except (TypeError, ValueError):
                 pass
+
+        if is_read_only_audit:
+            _project_read_only_audit_result(entry, child=child, goal=goal)
 
         if audit_snapshot is not None:
             audit_snapshot.revoke()
@@ -4430,8 +4703,31 @@ def _finalize_child_results(
 ) -> None:
     """Apply host-owned summary, memory, hook, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
-        _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
+        audit_task_indices = set()
+        for entry in results:
+            task_index = entry.get("task_index", -1)
+            child = child_by_index.get(task_index)
+            if (
+                getattr(child, "_delegate_capability_profile", None)
+                == READ_ONLY_AUDIT_PROFILE
+            ):
+                audit_task_indices.add(task_index)
+                _project_read_only_audit_result(
+                    entry,
+                    child=child,
+                    goal=(
+                        task_list[task_index].get("goal", "")
+                        if isinstance(task_index, int)
+                        and 0 <= task_index < len(task_list)
+                        else _READ_ONLY_AUDIT_PUBLIC_LABEL
+                    ),
+                )
+        _apply_summary_budget(
+            results,
+            parent_agent,
+            audit_task_indices=audit_task_indices,
+        )
 
         if parent_agent and getattr(parent_agent, "_memory_manager", None):
             for entry in results:
@@ -4961,6 +5257,9 @@ def delegate_task(
         if task.get("capability_profile") == READ_ONLY_AUDIT_PROFILE:
             public_task["goal"] = _READ_ONLY_AUDIT_PUBLIC_LABEL
             public_task["context"] = _READ_ONLY_AUDIT_PUBLIC_LABEL
+            for key in list(public_task):
+                if key.startswith("_"):
+                    public_task.pop(key, None)
         public_task_list.append(public_task)
     public_context = (
         _READ_ONLY_AUDIT_PUBLIC_LABEL
@@ -5288,7 +5587,7 @@ def delegate_task(
                     _w.finalize(entry)
                 except Exception:
                     logger.debug("Live transcript finalize failed", exc_info=True)
-                if _idx < len(live_paths):
+                if not audit_requested and _idx < len(live_paths):
                     entry["live_transcript"] = live_paths[_idx]
         update_manifest_statuses(live_deleg_id, results)
 
@@ -5296,7 +5595,7 @@ def delegate_task(
             "results": results,
             "total_duration_seconds": total_duration,
         }
-        if live_paths:
+        if live_paths and not audit_requested:
             combined["live_transcripts"] = list(live_paths)
         return combined
 
@@ -5519,7 +5818,7 @@ def delegate_task(
                     "redirect one, action='stop' with subagent_id to end one "
                     "early."
                 )
-            if live_paths:
+            if live_paths and not audit_requested:
                 payload["live_transcripts"] = list(live_paths)
                 payload["live_transcripts_hint"] = (
                     "Each subagent streams a human-readable transcript of its "

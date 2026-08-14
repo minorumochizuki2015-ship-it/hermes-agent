@@ -1343,11 +1343,12 @@ class TestDelegateTask(unittest.TestCase):
         child._delegate_role = "leaf"
         child._subagent_id = "fp3a-public-goal-child"
         child.session_id = "audit-child"
+        private_live_transcript = "/private/fp3a/live-transcript-canary"
 
         def capture_transcripts(tasks_arg, context_arg):
             captured["tasks"] = [dict(task) for task in tasks_arg]
             captured["context"] = context_arg
-            return "delegation-id", [None], []
+            return "delegation-id", [None], [private_live_transcript]
 
         register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
         try:
@@ -1396,13 +1397,14 @@ class TestDelegateTask(unittest.TestCase):
                 }),
                 patch("hermes_cli.plugins.invoke_hook"),
             ):
-                delegate_task(
+                result = delegate_task(
                     goal=canary_goal,
                     context=canary_context,
                     capability_profile=READ_ONLY_AUDIT_PROFILE,
                     target_revision="a" * 40,
                     parent_agent=parent,
                 )
+                captured["result"] = json.loads(result)
         finally:
             clear_task_env_overrides(parent._current_task_id)
 
@@ -1412,6 +1414,177 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(memory_call.kwargs["task"], "read_only_audit")
         self.assertNotIn(canary_goal, repr(captured))
         self.assertNotIn(canary_context, repr(captured))
+        self.assertNotIn(private_live_transcript, repr(captured["result"]))
+
+    def test_read_only_audit_result_egress_redacts_reflected_private_values(self):
+        """The real child result path keeps reflected private data off egress."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-result-egress-parent"
+        private_goal = "PRIVATE_GOAL_CANARY"
+        private_context = (
+            "PRIVATE_CONTEXT_CANARY /private/fp3a/context "
+            "https://audit.invalid/context"
+        )
+        private_path = "/private/fp3a/reflected-secret.txt"
+        private_token = "sk-AUDIT-REFLECTED-TOKEN"
+        private_url = "https://audit.invalid/private?token=REFLECTED"
+        private_exception = "RuntimeError: PRIVATE_EXCEPTION_CANARY"
+        private_values = (
+            private_goal,
+            private_context,
+            private_path,
+            private_token,
+            private_url,
+            private_exception,
+        )
+        safe_prose = "safe finding in src/README.md"
+        reflected_summary = " ".join((safe_prose, *private_values))
+        reflected_error = "error-shaped reflection: " + " ".join(private_values)
+
+        class Snapshot:
+            def __init__(self, root):
+                self.root = root
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
+        class ReflectingChild:
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+            _delegate_timeout_seconds = 2.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = ""
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = None
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_reasoning_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def __init__(self, final_response, error=None):
+                self.final_response = final_response
+                self.error = error
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def run_conversation(self, **_kwargs):
+                return {
+                    "final_response": self.final_response,
+                    "error": self.error,
+                    "completed": bool(self.final_response),
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-egress-") as root:
+            register_task_env_overrides(parent._current_task_id, {"cwd": root})
+            try:
+                for final_response, error in (
+                    (reflected_summary, None),
+                    ("", reflected_error),
+                ):
+                    progress_events = []
+                    child = ReflectingChild(final_response, error)
+                    child.tool_progress_callback = (
+                        lambda *args, **kwargs: progress_events.append((args, kwargs))
+                    )
+                    child._delegate_private_context = private_context
+                    child._delegate_target_repo_root = root
+                    child._delegate_snapshot_root = root
+                    child._delegate_prebuilt_audit_snapshot = Snapshot(root)
+                    result = _run_single_child(
+                        0,
+                        private_goal,
+                        child,
+                        parent,
+                    )
+                    serialized = json.dumps(
+                        {"result": result, "progress": progress_events},
+                        ensure_ascii=False,
+                    )
+                    for private_value in private_values:
+                        self.assertNotIn(private_value, serialized)
+                    if final_response:
+                        self.assertIn(safe_prose, serialized)
+            finally:
+                clear_task_env_overrides(parent._current_task_id)
+
+    def test_read_only_audit_batch_aggregation_projects_closed_result(self):
+        """Memory, hooks, and returned batch entries receive the safe projection."""
+        from tools.delegate_tool import _finalize_child_results
+
+        parent = _make_mock_parent()
+        parent._memory_manager = MagicMock()
+        parent.session_id = "fp3a-batch-parent"
+        parent._current_turn_id = "fp3a-batch-turn"
+        private_values = (
+            "PRIVATE_CONTEXT_CANARY",
+            "/private/fp3a/batch-result.txt",
+            "ghp_AUDIT_BATCH_TOKEN",
+            "https://audit.invalid/batch?token=CANARY",
+            "ValueError: PRIVATE_BATCH_EXCEPTION",
+        )
+        summary = "safe finding in src/README.md " + " ".join(private_values)
+        child = types.SimpleNamespace(
+            _delegate_capability_profile=READ_ONLY_AUDIT_PROFILE,
+            _delegate_private_context="PRIVATE_CONTEXT_CANARY /private/fp3a/context",
+            _delegate_target_repo_root="/private/fp3a/repo",
+            _delegate_snapshot_root="/private/fp3a/snapshot",
+            session_id="fp3a-batch-child",
+        )
+        entry = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": summary,
+            "error": summary,
+            "tool_trace": [{"input_summary": private_values[1]}],
+            "files_read": [private_values[1]],
+            "files_written": [private_values[1]],
+            "output_tail": [private_values[3]],
+            "summary_full_path": private_values[1],
+            "_child_role": "leaf",
+            "_child_cost_usd": 0.0,
+        }
+
+        with patch("hermes_cli.plugins.invoke_hook") as invoke_hook:
+            _finalize_child_results(
+                [entry],
+                [{"goal": READ_ONLY_AUDIT_PROFILE}],
+                [(0, {"goal": READ_ONLY_AUDIT_PROFILE}, child)],
+                parent,
+            )
+
+        serialized = repr(entry) + repr(parent._memory_manager.mock_calls)
+        serialized += repr(invoke_hook.call_args_list)
+        for private_value in private_values:
+            self.assertNotIn(private_value, serialized)
+        self.assertIn("src/README.md", serialized)
 
     def test_read_only_audit_credential_error_is_closed_and_sanitized(self):
         """Audit credential/config errors expose only a fixed unavailable result."""
@@ -1600,6 +1773,20 @@ class TestDelegateTask(unittest.TestCase):
             "required": ["ok"],
             "properties": {"ok": {"type": "boolean"}},
         }
+        private_schema_values = (
+            "PRIVATE_SCHEMA_CONTEXT_CANARY",
+            "/private/fp3a/schema/reflected.txt",
+            "sk-SCHEMA-REFLECTED-TOKEN",
+            "https://audit.invalid/schema?token=REFLECTED",
+            "RuntimeError: PRIVATE_SCHEMA_EXCEPTION",
+        )
+        retry_response = json.dumps(
+            {
+                "ok": True,
+                "finding": "safe finding in src/README.md "
+                + " ".join(private_schema_values),
+            }
+        )
         child.get_activity_summary.return_value = {
             "current_tool": None,
             "api_call_count": 1,
@@ -1615,18 +1802,33 @@ class TestDelegateTask(unittest.TestCase):
                 "messages": [],
             },
             {
-                "final_response": '{"ok": true}',
+                "final_response": retry_response,
                 "completed": True,
                 "interrupted": False,
                 "api_calls": 1,
                 "messages": [],
             },
+            {
+                "final_response": "not-json",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            },
+            RuntimeError(
+                "RuntimeError: PRIVATE_SCHEMA_RETRY_FAILURE "
+                "/private/fp3a/schema/retry-failure.txt "
+                "https://audit.invalid/schema/retry?token=FAIL"
+            ),
         ]
         child.close.return_value = None
 
         parent = _make_mock_parent()
         parent._current_task_id = "fp3a-schema-audit-parent"
         private_goal = "GOAL_CANARY_/private/schema/goal"
+        child._delegate_private_context = (
+            "PRIVATE_SCHEMA_CONTEXT_CANARY /private/fp3a/schema/context"
+        )
         child._delegate_prebuilt_audit_snapshot = Snapshot()
         register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
         try:
@@ -1640,6 +1842,24 @@ class TestDelegateTask(unittest.TestCase):
             for call in child.run_conversation.call_args_list
         ]
         self.assertEqual(messages, [READ_ONLY_AUDIT_PROFILE, READ_ONLY_AUDIT_PROFILE])
+        serialized = json.dumps(result, ensure_ascii=False)
+        for private_value in private_schema_values:
+            self.assertNotIn(private_value, serialized)
+        self.assertIn("safe finding in src/README.md", serialized)
+
+        child._delegate_prebuilt_audit_snapshot = Snapshot()
+        result_after_retry_failure = _run_single_child(0, private_goal, child, parent)
+        failure_serialized = json.dumps(result_after_retry_failure, ensure_ascii=False)
+        for private_value in (
+            "PRIVATE_SCHEMA_RETRY_FAILURE",
+            "/private/fp3a/schema/retry-failure.txt",
+            "https://audit.invalid/schema/retry?token=FAIL",
+        ):
+            self.assertNotIn(private_value, failure_serialized)
+        self.assertEqual(
+            [call.kwargs["user_message"] for call in child.run_conversation.call_args_list],
+            [READ_ONLY_AUDIT_PROFILE] * 4,
+        )
 
     def test_batch_profiles_normalize_before_credentials(self):
         """Batch profile normalization precedes credentials and preserves ordinary raw errors."""
