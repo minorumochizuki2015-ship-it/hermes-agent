@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
@@ -14,8 +15,8 @@ from agent.session_activity import ActivityProvenance
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
-def _orch_context(operation_id="orch-op-1", logical_session_id="s1"):
-    now = time.time()
+def _orch_context(operation_id="orch-op-1", logical_session_id="s1", issued_now=None):
+    now = time.time() if issued_now is None else issued_now
     return {
         "contract_version": hermes_state.HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION,
         "authority_bundle": {
@@ -102,6 +103,16 @@ def _orch_sdo_outcome(**overrides):
     }
     values.update(overrides)
     return values
+
+
+class _CallbackClock:
+    def __init__(self, value):
+        self.value = value
+        self.called = threading.Event()
+
+    def __call__(self):
+        self.called.set()
+        return self.value
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -196,7 +207,7 @@ def test_orch_observation_schema_and_replay_fence_are_durable(db):
         "s1", context, profile_name="alpha"
     ) is True
     assert db.preflight_orch_task_observation(
-        "s1", "orch-op-1", profile_name="alpha"
+        "s1", "orch-op-1", profile_name="alpha", context=context
     ) is False
     row = db.read_orch_task_observations("s1", profile_name="alpha")[0]
     assert row["operation_id"] == "orch-op-1"
@@ -220,10 +231,13 @@ def test_preflight_reserves_operation_before_external_authority(tmp_path):
     seed.close()
     db1 = SessionDB(db_path=path)
     db2 = SessionDB(db_path=path)
+    context = _orch_context("orch-op-race")
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(
-                lambda db: db.preflight_orch_task_observation("s1", "orch-op-race"),
+                lambda db: db.preflight_orch_task_observation(
+                    "s1", "orch-op-race", context=context
+                ),
                 (db1, db2),
             ))
         assert sorted(results) == [False, True]
@@ -232,26 +246,175 @@ def test_preflight_reserves_operation_before_external_authority(tmp_path):
         db2.close()
 
 
+def test_reserved_context_digest_binds_complete_validated_context(tmp_path):
+    path = tmp_path / "reservation-context.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli")
+    context = _orch_context("orch-op-context")
+    try:
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-context", context=context
+        ) is True
+        replacement = json.loads(json.dumps(context))
+        replacement["threshold_policy"]["digest"] = "c" * 64
+        assert db.begin_orch_task_observation("s1", replacement) is False
+        assert db.begin_orch_task_observation("s1", context) is True
+    finally:
+        db.close()
+
+
+def test_preflight_expiry_is_checked_after_write_lock(tmp_path):
+    path = tmp_path / "preflight-lock-expiry.db"
+    seed = SessionDB(db_path=path)
+    seed.create_session("s1", source="cli")
+    context = _orch_context("orch-op-preflight-lock", issued_now=1000.0)
+    assert seed.preflight_orch_task_observation(
+        "s1", "orch-op-preflight-lock", context=context, now=1000.0
+    ) is True
+    seed.close()
+
+    locker = SessionDB(db_path=path)
+    contender = SessionDB(db_path=path)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        locker._conn.execute("BEGIN IMMEDIATE")
+        clock = _CallbackClock(1000.0)
+        future = pool.submit(
+            contender.preflight_orch_task_observation,
+            "s1",
+            "orch-op-preflight-lock",
+            context=context,
+            now=clock,
+        )
+        assert not clock.called.wait(0.25)
+        clock.value = 1031.0
+        locker._conn.commit()
+        assert future.result(timeout=5.0) is False
+        assert clock.called.is_set()
+        row = contender.read_orch_task_observations("s1")[0]
+        assert row["state"] == "failed"
+        assert row["observation"]["result"]["telemetry_status"] == (
+            "reservation_expired"
+        )
+    finally:
+        if locker._conn.in_transaction:
+            locker._conn.rollback()
+        pool.shutdown(wait=True)
+        locker.close()
+        contender.close()
+
+
+def test_begin_expiry_is_checked_after_write_lock(tmp_path):
+    path = tmp_path / "begin-lock-expiry.db"
+    seed = SessionDB(db_path=path)
+    seed.create_session("s1", source="cli")
+    context = _orch_context("orch-op-begin-lock", issued_now=1000.0)
+    assert seed.preflight_orch_task_observation(
+        "s1", "orch-op-begin-lock", context=context, now=1000.0
+    ) is True
+    seed.close()
+
+    locker = SessionDB(db_path=path)
+    contender = SessionDB(db_path=path)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        locker._conn.execute("BEGIN IMMEDIATE")
+        clock = _CallbackClock(1000.0)
+        future = pool.submit(
+            contender.begin_orch_task_observation,
+            "s1",
+            context,
+            now=clock,
+        )
+        assert not clock.called.wait(0.25)
+        clock.value = 1031.0
+        locker._conn.commit()
+        assert future.result(timeout=5.0) is False
+        assert clock.called.is_set()
+        row = contender.read_orch_task_observations("s1")[0]
+        assert row["state"] == "failed"
+        assert row["observation"]["result"]["telemetry_status"] == (
+            "reservation_expired"
+        )
+    finally:
+        if locker._conn.in_transaction:
+            locker._conn.rollback()
+        pool.shutdown(wait=True)
+        locker.close()
+        contender.close()
+
+
+def test_receipt_expiry_is_checked_after_write_lock(tmp_path):
+    path = tmp_path / "receipt-lock-expiry.db"
+    seed = SessionDB(db_path=path)
+    seed.create_session("s1", source="cli")
+    operation_id = "orch-op-receipt-lock"
+    assert seed.begin_orch_task_observation(
+        "s1", _orch_context(operation_id)
+    ) is True
+    seed.close()
+
+    locker = SessionDB(db_path=path)
+    contender = SessionDB(db_path=path)
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        locker._conn.execute("BEGIN IMMEDIATE")
+        clock = _CallbackClock(1000.0)
+        future = pool.submit(
+            contender.claim_orch_sdo_receipt,
+            operation_id,
+            receipt_digest="e" * 64,
+            binding=_orch_sdo_binding(operation_id),
+            expires_at=1001.0,
+            now=clock,
+        )
+        assert not clock.called.wait(0.25)
+        clock.value = 1002.0
+        locker._conn.commit()
+        with pytest.raises(ValueError, match="sdo_binding_invalid"):
+            future.result(timeout=5.0)
+        assert clock.called.is_set()
+        raw = contender._conn.execute(
+            "SELECT observation_json FROM orch_task_observations "
+            "WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()[0]
+        assert "sdo_claim" not in raw
+    finally:
+        if locker._conn.in_transaction:
+            locker._conn.rollback()
+        pool.shutdown(wait=True)
+        locker.close()
+        contender.close()
+
+
 def test_expired_preflight_reservation_is_terminal_fence(tmp_path, monkeypatch):
     path = tmp_path / "expired-reservation.db"
     db = SessionDB(db_path=path)
     db.create_session("s1", source="cli")
     try:
         monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
-        assert db.preflight_orch_task_observation("s1", "orch-op-expired") is True
+        context = _orch_context("orch-op-expired")
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-expired", context=context
+        ) is True
 
         monkeypatch.setattr(
             hermes_state.time,
             "time",
             lambda: 1000.0 + hermes_state.HERMES_ORCH_RESERVATION_TTL_SECONDS + 1.0,
         )
-        assert db.preflight_orch_task_observation("s1", "orch-op-expired") is False
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-expired", context=context
+        ) is False
         row = db.read_orch_task_observations("s1")[0]
         assert row["state"] == "failed"
         assert row["observation"]["result"]["telemetry_status"] == (
             "reservation_expired"
         )
-        assert db.preflight_orch_task_observation("s1", "orch-op-expired") is False
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-expired", context=context
+        ) is False
     finally:
         db.close()
 
@@ -262,8 +425,10 @@ def test_reservation_owner_and_running_state_fence(tmp_path):
     db.create_session("s1", source="cli", profile_name="alpha")
     db.create_session("s2", source="cli", profile_name="beta")
     try:
+        reservation_context = _orch_context("orch-op-owner", logical_session_id="s1")
         assert db.preflight_orch_task_observation(
-            "s1", "orch-op-owner", profile_name="alpha"
+            "s1", "orch-op-owner", profile_name="alpha",
+            context=reservation_context,
         ) is True
         wrong_context = _orch_context("orch-op-owner", logical_session_id="s2")
         assert db.begin_orch_task_observation(
@@ -283,7 +448,7 @@ def test_reservation_owner_and_running_state_fence(tmp_path):
             "orch-op-owner", terminal_category="agent_initialization_failed"
         ) is False
 
-        owner_context = _orch_context("orch-op-owner", logical_session_id="s1")
+        owner_context = reservation_context
         assert db.begin_orch_task_observation(
             "s1", owner_context, profile_name="alpha"
         ) is True
@@ -300,7 +465,10 @@ def test_expired_reservation_preserves_receipt_tombstone(tmp_path, monkeypatch):
     db.create_session("s1", source="cli")
     try:
         monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
-        assert db.preflight_orch_task_observation("s1", "orch-op-tombstone") is True
+        context = _orch_context("orch-op-tombstone")
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-tombstone", context=context
+        ) is True
         digest = "c" * 64
         assert db.claim_orch_sdo_receipt(
             "orch-op-tombstone",
@@ -311,7 +479,9 @@ def test_expired_reservation_preserves_receipt_tombstone(tmp_path, monkeypatch):
         ) is True
 
         monkeypatch.setattr(hermes_state.time, "time", lambda: 1032.0)
-        assert db.preflight_orch_task_observation("s1", "orch-op-tombstone") is False
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-tombstone", context=context
+        ) is False
         raw = db._conn.execute(
             "SELECT observation_json FROM orch_task_observations "
             "WHERE operation_id = ?",
@@ -330,6 +500,47 @@ def test_expired_reservation_preserves_receipt_tombstone(tmp_path, monkeypatch):
             expires_at=1040.0,
             now=1032.0,
         ) is False
+    finally:
+        db.close()
+
+
+def test_claim_expiry_terminalizes_reserved_operation_and_keeps_tombstone(
+    tmp_path,
+):
+    path = tmp_path / "claim-reservation-expiry.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli")
+    try:
+        context = _orch_context("orch-op-claim-reservation-expiry", issued_now=1000.0)
+        assert db.preflight_orch_task_observation(
+            "s1",
+            "orch-op-claim-reservation-expiry",
+            context=context,
+            now=1000.0,
+        ) is True
+        digest = "f" * 64
+        assert db.claim_orch_sdo_receipt(
+            "orch-op-claim-reservation-expiry",
+            receipt_digest=digest,
+            binding=_orch_sdo_binding("orch-op-claim-reservation-expiry"),
+            expires_at=1005.0,
+            now=1000.0,
+        ) is True
+        assert db.claim_orch_sdo_receipt(
+            "orch-op-claim-reservation-expiry",
+            receipt_digest="a" * 64,
+            binding=_orch_sdo_binding("orch-op-claim-reservation-expiry"),
+            expires_at=2000.0,
+            now=1031.0,
+        ) is False
+        row = db.read_orch_task_observations("s1")[0]
+        assert row["state"] == "failed"
+        assert digest in db._conn.execute(
+            "SELECT observation_json FROM orch_task_observations "
+            "WHERE operation_id = ?",
+            ("orch-op-claim-reservation-expiry",),
+        ).fetchone()[0]
+        assert "sdo_claim" not in row["observation"]
     finally:
         db.close()
 
@@ -394,6 +605,19 @@ def test_sdo_claim_requires_finite_future_expiry_and_global_sanitized_fence(tmp_
         expires_at=1003.0,
         now=1002.0,
     ) is False
+    assert db.claim_orch_sdo_receipt(
+        "orch-op-claim-2",
+        receipt_digest="d" * 64,
+        binding=_orch_sdo_binding("orch-op-claim-2"),
+        expires_at=1004.0,
+        now=1002.0,
+    ) is True
+    op2_raw = db._conn.execute(
+        "SELECT observation_json FROM orch_task_observations "
+        "WHERE operation_id = ?",
+        ("orch-op-claim-2",),
+    ).fetchone()[0]
+    assert "d" * 64 in op2_raw
     db.close()
 
 
@@ -5184,11 +5408,11 @@ class TestOrchOperationalObservations:
         beta.create_session("s1", source="cli", profile_name="beta")
         context = _orch_context()
         assert db.preflight_orch_task_observation(
-            "s1", "orch-op-1", profile_name="alpha"
+            "s1", "orch-op-1", profile_name="alpha", context=context
         ) is True
         assert db.begin_orch_task_observation("s1", context, profile_name="alpha") is True
         assert db.preflight_orch_task_observation(
-            "s1", "orch-op-1", profile_name="alpha"
+            "s1", "orch-op-1", profile_name="alpha", context=context
         ) is False
         assert db.begin_orch_task_observation("s1", context, profile_name="alpha") is False
         assert beta.begin_orch_task_observation(
@@ -5260,7 +5484,7 @@ class TestOrchOperationalObservations:
             assert rows[0]["operation_id"] == "orch-op-1"
             reopened.create_session("s1", source="cli", profile_name="alpha")
             assert reopened.preflight_orch_task_observation(
-                "s1", "orch-op-1", profile_name="alpha"
+                "s1", "orch-op-1", profile_name="alpha", context=context
             ) is False
             assert reopened.begin_orch_task_observation(
                 "s1", context, profile_name="alpha"
@@ -5340,7 +5564,7 @@ class TestOrchOperationalObservations:
             assert rows[0]["operation_id"] == "orch-op-1"
             migrated.create_session("s1", source="cli", profile_name="alpha")
             assert migrated.preflight_orch_task_observation(
-                "s1", "orch-op-1", profile_name="alpha"
+                "s1", "orch-op-1", profile_name="alpha", context=context
             ) is False
         finally:
             migrated.close()
