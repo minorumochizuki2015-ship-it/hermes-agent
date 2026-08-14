@@ -24,6 +24,7 @@ import logging
 import re
 import selectors
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -105,6 +106,10 @@ _SUBAGENT_EXECUTION_ERROR_CATEGORY = "subagent_execution_failed"
 _SUBAGENT_EXECUTION_FAILURE_MESSAGE = (
     "Subagent execution failed before completion."
 )
+_READ_ONLY_AUDIT_PUBLIC_LABEL = "read_only_audit"
+_READ_ONLY_AUDIT_UNAVAILABLE_MESSAGE = (
+    "read_only_audit is unavailable; no child was launched."
+)
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILES = 20000
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
@@ -118,8 +123,83 @@ _READ_ONLY_AUDIT_GIT_STDERR_BYTES = 64 * 1024
 _READ_ONLY_AUDIT_GIT_READ_CHUNK_BYTES = 64 * 1024
 
 
+def _public_delegate_goal(goal: Any, capability_profile: Optional[str]) -> str:
+    """Return the only goal representation allowed on public audit surfaces."""
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        return _READ_ONLY_AUDIT_PUBLIC_LABEL
+    return str(goal or "")
+
+
+def _sanitize_read_only_audit_text(
+    value: Any,
+    *,
+    goal: Any = "",
+    child: Any = None,
+) -> Any:
+    """Remove known private audit inputs from a public text projection."""
+    if not isinstance(value, str):
+        return value
+    private_values = {str(goal or "")}
+    for attr in ("base_url", "api_key", "_delegate_snapshot_root", "_delegate_target_repo_root"):
+        try:
+            candidate = getattr(child, attr, None)
+        except Exception:
+            candidate = None
+        if isinstance(candidate, str) and candidate:
+            private_values.add(candidate)
+    try:
+        client_kwargs = getattr(child, "_client_kwargs", None)
+        if isinstance(client_kwargs, dict):
+            for key in ("base_url", "api_key"):
+                candidate = client_kwargs.get(key)
+                if isinstance(candidate, str) and candidate:
+                    private_values.add(candidate)
+    except Exception:
+        pass
+    sanitized = value
+    for private in sorted(private_values, key=len, reverse=True):
+        if private:
+            sanitized = sanitized.replace(private, _READ_ONLY_AUDIT_PUBLIC_LABEL)
+    return sanitized
+
+
+def _trusted_git_identity(path: Optional[str]):
+    """Return a root-owned, non-writable Git path identity or ``None``."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return None
+    try:
+        absolute = os.path.abspath(path)
+        current = Path(os.path.sep)
+        parts = Path(absolute).parts
+        if not parts or parts[0] != os.path.sep:
+            return None
+        for index, part in enumerate(parts[1:], start=1):
+            current = current / part
+            info = os.lstat(current)
+            mode = info.st_mode
+            if (
+                info.st_uid != 0
+                or mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or (
+                    info.st_uid == os.geteuid()
+                    and mode & stat.S_IWUSR
+                )
+                or stat.S_ISLNK(mode)
+            ):
+                return None
+            if index < len(parts) - 1:
+                if not stat.S_ISDIR(mode):
+                    return None
+            elif not (stat.S_ISREG(mode) and os.access(current, os.X_OK)):
+                return None
+        info = os.lstat(absolute)
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid)
+    except (OSError, ValueError):
+        return None
+
+
 def _resolve_trusted_git_executable() -> Optional[str]:
-    """Resolve one absolute, non-symlink Git executable before audit use."""
+    """Resolve one OS-owned, non-writable Git executable before audit use."""
     candidates = (
         "/usr/bin/git",
         "/bin/git",
@@ -128,21 +208,25 @@ def _resolve_trusted_git_executable() -> Optional[str]:
         "/opt/local/bin/git",
     )
     for candidate in candidates:
-        try:
-            path = Path(candidate)
-            if (
-                path.is_absolute()
-                and path.is_file()
-                and not path.is_symlink()
-                and os.access(path, os.X_OK)
-            ):
-                return str(path)
-        except (OSError, ValueError):
-            continue
+        if _trusted_git_identity(candidate) is not None:
+            return candidate
     return None
 
 
 _TRUSTED_GIT_EXECUTABLE = _resolve_trusted_git_executable()
+_TRUSTED_GIT_EXECUTABLE_IDENTITY = _trusted_git_identity(_TRUSTED_GIT_EXECUTABLE)
+
+
+def _validated_trusted_git_executable() -> Optional[str]:
+    """Revalidate the bound Git path and inode immediately before spawning."""
+    executable = _TRUSTED_GIT_EXECUTABLE
+    if (
+        not executable
+        or _TRUSTED_GIT_EXECUTABLE_IDENTITY is None
+        or _trusted_git_identity(executable) != _TRUSTED_GIT_EXECUTABLE_IDENTITY
+    ):
+        return None
+    return executable
 
 
 def _read_only_audit_git_env() -> Dict[str, str]:
@@ -304,25 +388,25 @@ class _ReadOnlyAuditSnapshot:
 
                 clear_file_ops_cache(task_id)
             except Exception:
-                logger.debug("fixed audit file-op cleanup failed", exc_info=True)
+                logger.debug("fixed audit file-op cleanup failed")
             try:
                 from tools.terminal_tool import _evict_environment_for_task
 
                 _evict_environment_for_task(task_id)
             except Exception:
-                logger.debug("fixed audit environment cleanup failed", exc_info=True)
+                logger.debug("fixed audit environment cleanup failed")
             try:
                 from tools.terminal_tool import clear_task_env_overrides
 
                 clear_task_env_overrides(task_id)
             except Exception:
-                logger.debug("fixed audit cwd cleanup failed", exc_info=True)
+                logger.debug("fixed audit cwd cleanup failed")
         try:
             shutil.rmtree(self.root)
         except FileNotFoundError:
             pass
         except OSError:
-            logger.debug("fixed audit snapshot cleanup failed", exc_info=True)
+            logger.debug("fixed audit snapshot cleanup failed")
 
 
 class _GitOutputLimitError(RuntimeError):
@@ -475,11 +559,12 @@ def _bounded_git_query(
 ) -> bytes:
     """Run one sanitized, no-fetch, bounded Git query."""
     timeout_seconds = _remaining_audit_deadline(deadline)
-    if not _TRUSTED_GIT_EXECUTABLE:
+    trusted_git = _validated_trusted_git_executable()
+    if not trusted_git:
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
     try:
         process = subprocess.Popen(
-            [_TRUSTED_GIT_EXECUTABLE, "-C", repo_root, *args],
+            [trusted_git, "-C", repo_root, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=_read_only_audit_git_env(),
@@ -2114,6 +2199,7 @@ def _build_child_progress_callback(
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     session_ref: Optional[Dict[str, Any]] = None,
+    capability_profile: Optional[str] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -2138,7 +2224,8 @@ def _build_child_progress_callback(
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
-    goal_label = (goal or "").strip()
+    audit_public = capability_profile == READ_ONLY_AUDIT_PROFILE
+    goal_label = _public_delegate_goal(goal, capability_profile).strip()
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
@@ -2174,12 +2261,28 @@ def _build_child_progress_callback(
     ):
         if not parent_cb:
             return
+        if audit_public:
+            preview = (
+                _READ_ONLY_AUDIT_PUBLIC_LABEL if preview is not None else None
+            )
+            args = None
+            kwargs = {
+                key: (
+                    _READ_ONLY_AUDIT_PUBLIC_LABEL
+                    if isinstance(value, str)
+                    else value
+                )
+                for key, value in kwargs.items()
+            }
         payload = _identity_kwargs()
         payload.update(kwargs)  # caller overrides (e.g. status, duration_seconds)
         try:
             parent_cb(event_type, tool_name, preview, args, **payload)
         except Exception as e:
-            logger.debug("Parent callback failed: %s", e)
+            if audit_public:
+                logger.debug("Parent callback failed for read_only_audit")
+            else:
+                logger.debug("Parent callback failed: %s", e)
 
     def _callback(
         event_type, tool_name: str = None, preview: str = None, args=None, **kwargs
@@ -2194,7 +2297,10 @@ def _build_child_progress_callback(
                 try:
                     spinner.print_above(f" {prefix}├─ 🔀 {short}")
                 except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
+                    if audit_public:
+                        logger.debug("Audit spinner relay failed")
+                    else:
+                        logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
             return
 
@@ -2226,13 +2332,20 @@ def _build_child_progress_callback(
                     return  # Unknown event — ignore
 
         if event == DelegateEvent.TASK_THINKING:
-            text = preview or tool_name or ""
+            text = (
+                _READ_ONLY_AUDIT_PUBLIC_LABEL
+                if audit_public
+                else preview or tool_name or ""
+            )
             if spinner:
                 short = (text[:55] + "...") if len(text) > 55 else text
                 try:
                     spinner.print_above(f' {prefix}├─ 💭 "{short}"')
                 except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
+                    if audit_public:
+                        logger.debug("Audit spinner relay failed")
+                    else:
+                        logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.thinking", preview=text)
             return
 
@@ -2247,17 +2360,30 @@ def _build_child_progress_callback(
             # a pass-through: render distinctly (not via the tool-start
             # emoji lookup, which would mistake the summary string for a
             # tool name) and relay upward without re-batching.
-            summary_text = tool_name or preview or ""
+            summary_text = (
+                _READ_ONLY_AUDIT_PUBLIC_LABEL
+                if audit_public
+                else tool_name or preview or ""
+            )
             if spinner and summary_text:
                 try:
                     spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
                 except Exception as e:
-                    logger.debug("Spinner print_above failed: %s", e)
+                    if audit_public:
+                        logger.debug("Audit spinner relay failed")
+                    else:
+                        logger.debug("Spinner print_above failed: %s", e)
             if parent_cb:
                 try:
-                    parent_cb("subagent_progress", f"{prefix}{summary_text}")
+                    parent_cb(
+                        "subagent_progress",
+                        f"{prefix}{summary_text}",
+                    )
                 except Exception as e:
-                    logger.debug("Parent callback relay failed: %s", e)
+                    if audit_public:
+                        logger.debug("Audit parent progress relay failed")
+                    else:
+                        logger.debug("Parent callback relay failed: %s", e)
             return
 
         # TASK_TOOL_STARTED — display and batch for parent relay
@@ -2269,10 +2395,13 @@ def _build_child_progress_callback(
                     rec["tool_count"] = _tool_count[0]
                     rec["last_tool"] = tool_name or ""
         if spinner:
+            display_preview = (
+                _READ_ONLY_AUDIT_PUBLIC_LABEL if audit_public else preview
+            )
             short = (
-                (preview[:35] + "...")
-                if preview and len(preview) > 35
-                else (preview or "")
+                (display_preview[:35] + "...")
+                if display_preview and len(display_preview) > 35
+                else (display_preview or "")
             )
             from agent.display import get_tool_emoji
 
@@ -2283,7 +2412,10 @@ def _build_child_progress_callback(
             try:
                 spinner.print_above(line)
             except Exception as e:
-                logger.debug("Spinner print_above failed: %s", e)
+                if audit_public:
+                    logger.debug("Audit spinner relay failed")
+                else:
+                    logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
             _relay("subagent.tool", tool_name, preview, args)
@@ -2505,6 +2637,7 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
     # TUI can reconstruct the spawn tree and route per-branch controls.
+    public_goal = _public_delegate_goal(goal, capability_profile)
     child_session_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index,
@@ -2517,6 +2650,7 @@ def _build_child_agent(
         model=effective_model_for_cb,
         toolsets=child_toolsets,
         session_ref=child_session_ref,
+        capability_profile=capability_profile,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -2533,7 +2667,10 @@ def _build_child_agent(
             try:
                 child_progress_cb("_thinking", text)
             except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
+                if capability_profile == READ_ONLY_AUDIT_PROFILE:
+                    logger.debug("Child thinking callback relay failed for read_only_audit")
+                else:
+                    logger.debug("Child thinking callback relay failed: %s", e)
 
         child_thinking_cb = _child_thinking
 
@@ -2589,11 +2726,16 @@ def _build_child_agent(
         import shutil as _shutil
 
         if not _shutil.which(override_acp_command):
-            logger.warning(
-                "Ignoring acp_command=%r: binary not found on PATH; "
-                "falling back to default transport.",
-                override_acp_command,
-            )
+            if capability_profile == READ_ONLY_AUDIT_PROFILE:
+                logger.warning(
+                    "Ignoring unavailable ACP transport for read_only_audit"
+                )
+            else:
+                logger.warning(
+                    "Ignoring acp_command=%r: binary not found on PATH; "
+                    "falling back to default transport.",
+                    override_acp_command,
+                )
             override_acp_command = None
             override_acp_args = None
     effective_acp_command = override_acp_command or getattr(
@@ -2634,12 +2776,20 @@ def _build_child_agent(
             if parsed is not None:
                 child_reasoning = parsed
             else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
+                if capability_profile == READ_ONLY_AUDIT_PROFILE:
+                    logger.warning(
+                        "Unknown reasoning configuration for read_only_audit"
+                    )
+                else:
+                    logger.warning(
+                        "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                        delegation_effort,
+                    )
     except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+        if capability_profile == READ_ONLY_AUDIT_PROFILE:
+            logger.debug("Could not load reasoning configuration for read_only_audit")
+        else:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -2756,6 +2906,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_public_goal = public_goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Ownership chain for the model-facing control plane (action=list/steer/
     # stop): a parent may only control agents whose weakref chain reaches it.
@@ -2778,7 +2929,10 @@ def _build_child_agent(
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
     child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
+        effective_provider,
+        parent_agent,
+        effective_base_url,
+        sanitize_errors=capability_profile == READ_ONLY_AUDIT_PROFILE,
     )
     if child_pool is not None:
         child._credential_pool = child_pool
@@ -2797,9 +2951,12 @@ def _build_child_agent(
     # wants a node in the tree before run starts.
     if child_progress_cb:
         try:
-            child_progress_cb("subagent.spawn_requested", preview=goal)
+            child_progress_cb("subagent.spawn_requested", preview=public_goal)
         except Exception as exc:
-            logger.debug("spawn_requested relay failed: %s", exc)
+            if capability_profile == READ_ONLY_AUDIT_PROFILE:
+                logger.debug("Audit spawn relay failed")
+            else:
+                logger.debug("spawn_requested relay failed: %s", exc)
 
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
@@ -2811,12 +2968,160 @@ def _build_child_agent(
             child_session_id=getattr(child, "session_id", None),
             child_subagent_id=subagent_id,
             child_role=effective_role,
-            child_goal=goal,
+            child_goal=public_goal,
         )
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
 
     return child
+
+
+def _dump_subagent_timeout_diagnostic(
+    *,
+    child: Any,
+    task_index: int,
+    timeout_seconds: float,
+    duration_seconds: float,
+    worker_thread: Optional[threading.Thread],
+    goal: str,
+) -> Optional[str]:
+    """Write the historical ordinary-delegation 0-API timeout diagnostic."""
+    try:
+        from hermes_constants import get_hermes_home
+        import datetime as _dt
+        import sys as _sys
+        import traceback as _traceback
+        import threading as _threading
+
+        logs_dir = get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        subagent_id = getattr(child, "_subagent_id", None) or f"idx{task_index}"
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        dump_path = logs_dir / f"subagent-timeout-{subagent_id}-{ts}.log"
+        lines: List[str] = []
+
+        def _w(line: str = "") -> None:
+            lines.append(line)
+
+        _w("# Subagent timeout diagnostic — issue #14726")
+        _w(f"# Generated: {_dt.datetime.now().isoformat()}")
+        _w("")
+        _w("## Timeout")
+        _w(f"  task_index:        {task_index}")
+        _w(f"  subagent_id:       {subagent_id}")
+        _w(f"  configured_timeout: {timeout_seconds}s")
+        _w(f"  actual_duration:   {duration_seconds:.2f}s")
+        _w("")
+        _w("## Goal")
+        goal_preview = (goal or "").strip()
+        if len(goal_preview) > 1000:
+            goal_preview = goal_preview[:1000] + " ...[truncated]"
+        _w(goal_preview or "(empty)")
+        _w("")
+        _w("## Child config")
+        for attr in (
+            "model", "provider", "api_mode", "base_url", "max_iterations",
+            "quiet_mode", "skip_memory", "skip_context_files", "platform",
+            "_delegate_role", "_delegate_depth",
+        ):
+            try:
+                _w(f"  {attr}: {getattr(child, attr, None)!r}")
+            except Exception:
+                _w(f"  {attr}: <unreadable>")
+        _w("")
+        _w("## Toolsets")
+        enabled = getattr(child, "enabled_toolsets", None)
+        _w(f"  enabled_toolsets:  {enabled!r}")
+        tool_names = getattr(child, "valid_tool_names", None)
+        if tool_names:
+            _w(f"  loaded tool count: {len(tool_names)}")
+            try:
+                _w(f"  loaded tools:      {sorted(tool_names)}")
+            except Exception:
+                pass
+        _w("")
+        _w("## Prompt / schema sizes")
+        try:
+            system_prompt = (
+                getattr(child, "ephemeral_system_prompt", None)
+                or getattr(child, "system_prompt", None)
+                or ""
+            )
+            _w(
+                "  system_prompt_bytes: "
+                f"{len(system_prompt.encode('utf-8')) if isinstance(system_prompt, str) else 'n/a'}"
+            )
+            _w(
+                "  system_prompt_chars: "
+                f"{len(system_prompt) if isinstance(system_prompt, str) else 'n/a'}"
+            )
+        except Exception as exc:
+            _w(f"  system_prompt: <error: {exc}>")
+        try:
+            tools_schema = getattr(child, "tools", None)
+            if tools_schema is not None:
+                schema_json = json.dumps(tools_schema, default=str)
+                _w(f"  tool_schema_count: {len(tools_schema)}")
+                _w(f"  tool_schema_bytes: {len(schema_json.encode('utf-8'))}")
+        except Exception as exc:
+            _w(f"  tool_schema: <error: {exc}>")
+        _w("")
+        _w("## Activity summary")
+        try:
+            summary = child.get_activity_summary()
+            for key, value in summary.items():
+                _w(f"  {key}: {value!r}")
+        except Exception as exc:
+            _w(f"  <get_activity_summary failed: {exc}>")
+        _w("")
+        _w("## Worker thread stack at timeout")
+        if worker_thread is not None and worker_thread.is_alive():
+            frames = _sys._current_frames()
+            worker_frame = frames.get(worker_thread.ident)
+            if worker_frame is not None:
+                for frame_line in _traceback.format_stack(worker_frame):
+                    for sub in frame_line.rstrip().split("\n"):
+                        _w(f"  {sub}")
+            else:
+                _w("  <worker frame not available>")
+        elif worker_thread is None:
+            _w("  <no worker thread handle>")
+        else:
+            _w("  <worker thread already exited>")
+        _w("")
+        _w("## All thread stacks at timeout")
+        try:
+            frames = _sys._current_frames()
+            by_ident = {thread.ident: thread for thread in _threading.enumerate() if thread.ident}
+            worker_ident = worker_thread.ident if worker_thread else None
+            dumped = 0
+            for ident, frame in frames.items():
+                if ident == worker_ident:
+                    continue
+                if dumped >= 40:
+                    _w(f"  <{len(frames) - dumped - 1} more threads omitted>")
+                    break
+                thread = by_ident.get(ident)
+                name = thread.name if thread else f"ident={ident}"
+                daemon = " daemon" if thread and thread.daemon else ""
+                _w(f"  --- {name}{daemon} ---")
+                for frame_line in _traceback.format_stack(frame):
+                    for sub in frame_line.rstrip().split("\n"):
+                        _w(f"    {sub}")
+                dumped += 1
+        except Exception as exc:
+            _w(f"  <all-thread dump failed: {exc}>")
+        _w("")
+        _w("## Notes")
+        _w("  This file is written ONLY when a subagent times out with 0 API calls.")
+        _w("  0-API-call timeouts mean the child never reached its first LLM request.")
+        _w("  Common causes: oversized prompt rejected by provider, transport hang,")
+        _w("  credential resolution stuck. See issue #14726 for context.")
+        dump_path.write_text("\n".join(lines), encoding="utf-8")
+        return str(dump_path)
+    except Exception as exc:
+        logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
+        return None
 
 
 def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
@@ -3029,6 +3334,15 @@ def _run_single_child(
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
+    is_read_only_audit = (
+        getattr(child, "_delegate_capability_profile", None)
+        == READ_ONLY_AUDIT_PROFILE
+    )
+    public_goal = getattr(
+        child,
+        "_delegate_public_goal",
+        _public_delegate_goal(goal, getattr(child, "_delegate_capability_profile", None)),
+    )
 
     # Restore parent tool names using the value saved before child construction
     # mutated the global. This is the correct parent toolset, not the child's.
@@ -3048,7 +3362,10 @@ def _run_single_child(
                 if leased_entry is not None and hasattr(child, "_swap_credential"):
                     child._swap_credential(leased_entry)
             except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
+                if is_read_only_audit:
+                    logger.debug("Failed to bind credential for read_only_audit child")
+                else:
+                    logger.debug("Failed to bind child to leased credential: %s", exc)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
@@ -3073,7 +3390,11 @@ def _run_single_child(
             if not touch:
                 continue
             # Pull detail from the child's own activity tracker
-            desc = f"delegate_task: subagent {task_index} working"
+            desc = (
+                "delegate_task: read_only_audit child working"
+                if is_read_only_audit
+                else f"delegate_task: subagent {task_index} working"
+            )
             try:
                 child_summary = child.get_activity_summary()
                 child_tool = child_summary.get("current_tool")
@@ -3116,16 +3437,23 @@ def _run_single_child(
                     else _HEARTBEAT_STALE_CYCLES_IDLE
                 )
                 if _stale_count[0] >= stale_limit:
-                    logger.warning(
-                        "Subagent %d appears stale (no progress for %d "
-                        "heartbeat cycles, tool=%s) — stopping heartbeat",
-                        task_index,
-                        _stale_count[0],
-                        child_tool or "<none>",
-                    )
+                    if is_read_only_audit:
+                        logger.warning(
+                            "Read-only audit child appears stale; stopping heartbeat"
+                        )
+                    else:
+                        logger.warning(
+                            "Subagent %d appears stale (no progress for %d "
+                            "heartbeat cycles, tool=%s) — stopping heartbeat",
+                            task_index,
+                            _stale_count[0],
+                            child_tool or "<none>",
+                        )
                     break  # stop touching parent, let gateway timeout fire
 
-                if child_tool:
+                if is_read_only_audit:
+                    desc = "delegate_task: read_only_audit child working"
+                elif child_tool:
                     desc = (
                         f"delegate_task: subagent running {child_tool} "
                         f"(iteration {child_iter}/{child_max})"
@@ -3174,7 +3502,7 @@ def _run_single_child(
                 "subagent_id": _subagent_id,
                 "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
                 "depth": _tui_depth,
-                "goal": goal,
+                "goal": public_goal,
                 "model": (
                     getattr(child, "model", None)
                     if isinstance(getattr(child, "model", None), str)
@@ -3207,7 +3535,10 @@ def _run_single_child(
                 subagent_worktree.finalize_subagent_worktree(_worktree_info)
             )
         except Exception as e:
-            logger.debug("worktree finalize failed: %s", e)
+            if is_read_only_audit:
+                logger.debug("Audit worktree finalization failed")
+            else:
+                logger.debug("worktree finalize failed: %s", e)
             entry_dict["worktree"] = dict(_worktree_info)
 
     try:
@@ -3239,7 +3570,10 @@ def _run_single_child(
             # task_id resolves to the parent's container key.
             register_container_alias(child_task_id, parent_task_id)
         except Exception as e:
-            logger.debug("Child cwd seed failed: %s", e)
+            if is_read_only_audit:
+                logger.debug("Audit child cwd seed failed")
+            else:
+                logger.debug("Child cwd seed failed: %s", e)
 
         if getattr(child, "_delegate_capability_profile", None) == READ_ONLY_AUDIT_PROFILE:
             try:
@@ -3286,10 +3620,7 @@ def _run_single_child(
         if child_progress_cb:
             try:
                 start_preview = (
-                    "read_only_audit_started"
-                    if getattr(child, "_delegate_capability_profile", None)
-                    == READ_ONLY_AUDIT_PROFILE
-                    else goal
+                    "read_only_audit_started" if is_read_only_audit else goal
                 )
                 child_progress_cb("subagent.start", preview=start_preview)
             except Exception as e:
@@ -3362,6 +3693,7 @@ def _run_single_child(
             initializer=_set_subagent_approval_cb,
             initargs=(_get_subagent_approval_callback(),),
         )
+        _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
         def _relay_child_text(delta: str) -> None:
             # Forward the child's streamed reply text up the progress relay so
             # gateway watch windows mirror it live (subagent.text → message.delta).
@@ -3374,6 +3706,7 @@ def _run_single_child(
                 logger.debug("Child text relay failed: %s", e)
 
         def _run_with_thread_capture():
+            _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
@@ -3394,8 +3727,11 @@ def _run_single_child(
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
             # retain steer text that won the race with this failure/timeout.
-            if _subagent_id:
+            _late_pending_steer = (
                 _close_subagent_steering(_subagent_id, child)
+                if _subagent_id
+                else None
+            )
             if audit_snapshot is not None:
                 audit_snapshot.revoke()
             # Signal the child to stop so its thread can exit cleanly.
@@ -3422,6 +3758,22 @@ def _run_single_child(
             except Exception:
                 pass
 
+            if is_timeout and child_api_calls == 0 and not is_read_only_audit:
+                diagnostic_path = _dump_subagent_timeout_diagnostic(
+                    child=child,
+                    task_index=task_index,
+                    timeout_seconds=float(child_timeout or 0.0),
+                    duration_seconds=float(duration),
+                    worker_thread=_worker_thread_holder.get("t"),
+                    goal=goal,
+                )
+                if diagnostic_path:
+                    logger.warning(
+                        "Subagent %d 0-API-call timeout — diagnostic written to %s",
+                        task_index,
+                        diagnostic_path,
+                    )
+
             if child_progress_cb:
                 try:
                     child_progress_cb(
@@ -3429,7 +3781,11 @@ def _run_single_child(
                         preview=(
                             f"Timed out after {duration}s"
                             if is_timeout
-                            else _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                            else (
+                                _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                                if is_read_only_audit
+                                else str(_timeout_exc)
+                            )
                         ),
                         status="timeout" if is_timeout else "error",
                         duration_seconds=duration,
@@ -3454,16 +3810,15 @@ def _run_single_child(
                         f"network request."
                     )
             else:
-                _err = _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                _err = (
+                    _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                    if is_read_only_audit
+                    else str(_timeout_exc)
+                )
 
             _error_entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
-                "error_category": (
-                    _SUBAGENT_TIMEOUT_ERROR_CATEGORY
-                    if is_timeout
-                    else _SUBAGENT_EXECUTION_ERROR_CATEGORY
-                ),
                 "summary": None,
                 "error": _err,
                 "exit_reason": "timeout" if is_timeout else "error",
@@ -3478,6 +3833,18 @@ def _run_single_child(
                 ),
                 "_child_role": getattr(child, "_delegate_role", None),
             }
+            if is_read_only_audit:
+                _error_entry["error_category"] = (
+                    _SUBAGENT_TIMEOUT_ERROR_CATEGORY
+                    if is_timeout
+                    else _SUBAGENT_EXECUTION_ERROR_CATEGORY
+                )
+            if _late_pending_steer and not is_read_only_audit:
+                _error_entry["missed_steer"] = _late_pending_steer
+                _error_entry["error"] += (
+                    " [steer did not land before the subagent stopped: "
+                    f"{_late_pending_steer}]"
+                )
             _attach_audit_revision_receipt(_error_entry)
             _attach_worktree(_error_entry)
             return _error_entry
@@ -3567,11 +3934,19 @@ def _run_single_child(
             try:
                 child_progress_cb._flush()
             except Exception as e:
-                logger.debug("Progress callback flush failed: %s", e)
+                if is_read_only_audit:
+                    logger.debug("Audit progress callback flush failed")
+                else:
+                    logger.debug("Progress callback flush failed: %s", e)
 
         duration = round(time.monotonic() - child_start, 2)
 
         summary = result.get("final_response") or ""
+        public_summary = (
+            _sanitize_read_only_audit_text(summary, goal=goal, child=child)
+            if is_read_only_audit
+            else summary
+        )
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
@@ -3651,7 +4026,7 @@ def _run_single_child(
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
-            "summary": summary,
+            "summary": public_summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
@@ -3695,7 +4070,15 @@ def _run_single_child(
             else "unknown"
         )
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            entry["error"] = (
+                _sanitize_read_only_audit_text(
+                    result.get("error", "Subagent did not produce a response."),
+                    goal=goal,
+                    child=child,
+                )
+                if is_read_only_audit
+                else result.get("error", "Subagent did not produce a response.")
+            )
         _attach_audit_revision_receipt(entry)
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
@@ -3714,7 +4097,7 @@ def _run_single_child(
         # steer_subagent() returning True means "queued", and this is where a
         # queued-but-never-delivered steer gets named.
         _missed_steer = result.get("pending_steer")
-        if isinstance(_missed_steer, str) and _missed_steer.strip():
+        if isinstance(_missed_steer, str) and _missed_steer.strip() and not is_read_only_audit:
             entry["missed_steer"] = _missed_steer
             _miss_note = (
                 "[steer did not land — the subagent finished before it could "
@@ -3729,7 +4112,7 @@ def _run_single_child(
         # just this child's), which also covers transitive writes from
         # nested orchestrator→worker chains.
         try:
-            if parent_task_id and parent_reads_snapshot:
+            if parent_task_id and parent_reads_snapshot and not is_read_only_audit:
                 sibling_writes = file_state.writes_since(
                     parent_task_id, wall_start, parent_reads_snapshot
                 )
@@ -3754,7 +4137,10 @@ def _run_single_child(
                         else:
                             entry["stale_paths"] = mod_paths
         except Exception:
-            logger.debug("file_state sibling-write check failed", exc_info=True)
+            if is_read_only_audit:
+                logger.debug("Audit file-state check failed")
+            else:
+                logger.debug("file_state sibling-write check failed", exc_info=True)
 
         # Per-branch observability payload: tokens, cost, files touched, and
         # a tail of tool-call results.  Fed into the TUI's overlay detail
@@ -3775,22 +4161,38 @@ def _run_single_child(
             )  # all writes since wall_start
         except Exception:
             _files_written_map = {}
-        _files_written = sorted(
-            {
-                p
-                for tid, paths in _files_written_map.items()
-                if tid == child_task_id
-                for p in paths
-            }
-        )[:40]
+        _files_written = (
+            []
+            if is_read_only_audit
+            else sorted(
+                {
+                    p
+                    for tid, paths in _files_written_map.items()
+                    if tid == child_task_id
+                    for p in paths
+                }
+            )[:40]
+        )
 
-        _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
+        _output_tail = (
+            []
+            if is_read_only_audit
+            else _extract_output_tail(result, max_entries=8, max_chars=600)
+        )
 
         complete_kwargs: Dict[str, Any] = {
-            "preview": summary[:160] if summary else entry.get("error", ""),
+            "preview": (
+                public_summary[:160]
+                if public_summary
+                else entry.get("error", "")
+            ),
             "status": status,
             "duration_seconds": duration,
-            "summary": summary[:500] if summary else entry.get("error", ""),
+            "summary": (
+                public_summary[:500]
+                if public_summary
+                else entry.get("error", "")
+            ),
             "input_tokens": (
                 int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
             ),
@@ -3819,39 +4221,70 @@ def _run_single_child(
             try:
                 child_progress_cb("subagent.complete", **complete_kwargs)
             except Exception as e:
-                logger.debug("Progress callback completion failed: %s", e)
+                if is_read_only_audit:
+                    logger.debug("Audit progress callback completion failed")
+                else:
+                    logger.debug("Progress callback completion failed: %s", e)
 
         _attach_worktree(entry)
         return entry
 
-    except Exception:
+    except Exception as exc:
         if audit_snapshot is not None:
             audit_snapshot.revoke()
-        if _subagent_id:
+        _late_pending_steer = (
             _close_subagent_steering(_subagent_id, child)
+            if _subagent_id
+            else None
+        )
         duration = round(time.monotonic() - child_start, 2)
-        logger.warning("Subagent %d failed before completion", task_index)
+        if is_read_only_audit:
+            logger.warning("Subagent %d failed before completion", task_index)
+        else:
+            logging.exception(f"[subagent-{task_index}] failed")
         if child_progress_cb:
             try:
                 child_progress_cb(
                     "subagent.complete",
-                    preview=_SUBAGENT_EXECUTION_FAILURE_MESSAGE,
+                    preview=(
+                        _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                        if is_read_only_audit
+                        else str(exc)
+                    ),
                     status="failed",
                     duration_seconds=duration,
-                    summary=_SUBAGENT_EXECUTION_FAILURE_MESSAGE,
+                    summary=(
+                        _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                        if is_read_only_audit
+                        else str(exc)
+                    ),
                 )
             except Exception as e:
-                logger.debug("Progress callback failure relay failed: %s", e)
+                if is_read_only_audit:
+                    logger.debug("Audit progress callback failure relay failed")
+                else:
+                    logger.debug("Progress callback failure relay failed: %s", e)
         _error_entry = {
             "task_index": task_index,
             "status": "error",
-            "error_category": _SUBAGENT_EXECUTION_ERROR_CATEGORY,
             "summary": None,
-            "error": _SUBAGENT_EXECUTION_FAILURE_MESSAGE,
+            "error": (
+                _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                if is_read_only_audit
+                else str(exc)
+            ),
             "api_calls": 0,
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
+        if is_read_only_audit:
+            _error_entry["error_category"] = _SUBAGENT_EXECUTION_ERROR_CATEGORY
+        if _late_pending_steer and not is_read_only_audit:
+            _error_entry["missed_steer"] = _late_pending_steer
+            _error_entry["error"] += (
+                " [steer did not land before the subagent stopped: "
+                f"{_late_pending_steer}]"
+            )
         _attach_audit_revision_receipt(_error_entry)
         # _attach_worktree defaults to a no-op when isolation never engaged.
         _attach_worktree(_error_entry)
@@ -3878,7 +4311,10 @@ def _run_single_child(
             try:
                 child_pool.release_lease(leased_cred_id)
             except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
+                if is_read_only_audit:
+                    logger.debug("Failed to release audit credential lease")
+                else:
+                    logger.debug("Failed to release credential lease: %s", exc)
 
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
@@ -3900,7 +4336,10 @@ def _run_single_child(
                 else:
                     parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
+                if is_read_only_audit:
+                    logger.debug("Could not remove audit child from active children")
+                else:
+                    logger.debug("Could not remove child from active_children: %s", e)
 
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) so subagent subprocesses
@@ -4069,7 +4508,12 @@ def _run_child_lifecycle(
     """Run one child and apply the same host lifecycle used by delegate_task."""
     result = _run_single_child(task_index, goal, child, parent_agent)
     result.setdefault("task_index", task_index)
-    task = {"goal": goal}
+    task = {
+        "goal": _public_delegate_goal(
+            goal,
+            getattr(child, "_delegate_capability_profile", None),
+        )
+    }
     _finalize_child_results(
         [result],
         [{"goal": ""} for _ in range(task_index)] + [task],
@@ -4286,9 +4730,25 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
+    audit_requested = top_profile == READ_ONLY_AUDIT_PROFILE or (
+        isinstance(tasks, list)
+        and any(
+            isinstance(task, dict)
+            and task.get("capability_profile") == READ_ONLY_AUDIT_PROFILE
+            for task in tasks
+        )
+    )
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
+        if audit_requested:
+            return tool_error(
+                _READ_ONLY_AUDIT_UNAVAILABLE_MESSAGE,
+                code="read_only_audit_unavailable",
+                status="unavailable",
+                launch=False,
+                launch_count=0,
+            )
         return tool_error(str(exc))
 
     # Normalize to task list
@@ -4415,7 +4875,7 @@ def delegate_task(
             )
     except CapabilityRuntimeIncompatibleError as exc:
         return tool_error(
-            str(exc),
+            _READ_ONLY_AUDIT_UNAVAILABLE_MESSAGE,
             code=exc.code,
             status="unavailable",
             launch=False,
@@ -4472,8 +4932,23 @@ def delegate_task(
     results = []
 
     n_tasks = len(task_list)
+    public_task_list: List[Dict[str, Any]] = []
+    for task in task_list:
+        public_task = dict(task)
+        if task.get("capability_profile") == READ_ONLY_AUDIT_PROFILE:
+            public_task["goal"] = _READ_ONLY_AUDIT_PUBLIC_LABEL
+            public_task["context"] = _READ_ONLY_AUDIT_PUBLIC_LABEL
+        public_task_list.append(public_task)
+    public_context = (
+        _READ_ONLY_AUDIT_PUBLIC_LABEL
+        if any(
+            task.get("capability_profile") == READ_ONLY_AUDIT_PROFILE
+            for task in task_list
+        )
+        else context
+    )
     # Track goal labels for progress display (truncated for readability)
-    task_labels = [t["goal"][:40] for t in task_list]
+    task_labels = [t["goal"][:40] for t in public_task_list]
 
     # Live transcripts: one pre-headered append-only log per task under
     # cache/delegation/live/<delegation_id>/task-<n>.log so the caller can
@@ -4487,7 +4962,7 @@ def delegate_task(
     )
 
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context
+        public_task_list, public_context
     )
 
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
@@ -4770,7 +5245,7 @@ def delegate_task(
         # headroom (split across the batch) before they enter the parent's
         # conversation. Full text is spilled to disk so nothing is lost.
         # Covers both the single-task and batch paths. See PR #9126.
-        _finalize_child_results(results, task_list, children, parent_agent)
+        _finalize_child_results(results, public_task_list, children, parent_agent)
 
         total_duration = round(time.monotonic() - overall_start, 2)
 
@@ -4965,10 +5440,10 @@ def delegate_task(
                     parts.append(None)
             return tuple(parts), in_tool
 
-        _goals = [t["goal"] for t in task_list]
+        _goals = [t["goal"] for t in public_task_list]
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
-            context=context,
+            context=public_context,
             # Metadata for the completion block only; subagents inherit the
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
@@ -5058,6 +5533,8 @@ def _resolve_child_credential_pool(
     effective_provider: Optional[str],
     parent_agent,
     effective_base_url: Optional[str] = None,
+    *,
+    sanitize_errors: bool = False,
 ):
     """Resolve a credential pool for the child agent.
 
@@ -5114,11 +5591,14 @@ def _resolve_child_credential_pool(
             if pool is not None and pool.has_credentials():
                 return pool
         except Exception as exc:
-            logger.debug(
-                "Could not resolve custom credential pool for child endpoint '%s': %s",
-                effective_base_url,
-                exc,
-            )
+            if sanitize_errors:
+                logger.debug("Could not resolve custom credential pool for audit child")
+            else:
+                logger.debug(
+                    "Could not resolve custom credential pool for child endpoint '%s': %s",
+                    effective_base_url,
+                    exc,
+                )
         return None
 
     if parent_pool is not None and effective_provider == parent_provider:
@@ -5131,11 +5611,14 @@ def _resolve_child_credential_pool(
         if pool is not None and pool.has_credentials():
             return pool
     except Exception as exc:
-        logger.debug(
-            "Could not load credential pool for child provider '%s': %s",
-            effective_provider,
-            exc,
-        )
+        if sanitize_errors:
+            logger.debug("Could not load credential pool for audit child")
+        else:
+            logger.debug(
+                "Could not load credential pool for child provider '%s': %s",
+                effective_provider,
+                exc,
+            )
     return None
 
 

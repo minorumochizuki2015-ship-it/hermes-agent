@@ -1197,7 +1197,7 @@ class TestDelegateTask(unittest.TestCase):
         progress_events = []
 
         class ErrorChild:
-            _delegate_capability_profile = None
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
             _delegate_timeout_seconds = 1.0
             _delegate_saved_tool_names = []
             _delegate_role = "leaf"
@@ -1229,12 +1229,26 @@ class TestDelegateTask(unittest.TestCase):
             def run_conversation(self, **_kwargs):
                 raise RuntimeError(" ".join(canaries))
 
+        class PrivateSnapshot:
+            root = "/private/fp3a-error-snapshot"
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
         try:
             with self.assertLogs("tools.delegate_tool", level="WARNING") as records:
+                child = ErrorChild()
+                child._delegate_prebuilt_audit_snapshot = PrivateSnapshot()
                 result = _run_single_child(
                     0,
                     "sanitized child error",
-                    ErrorChild(),
+                    child,
                     parent,
                 )
         finally:
@@ -1249,6 +1263,300 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["error_category"], "subagent_execution_failed")
         for canary in canaries:
             self.assertNotIn(canary, serialized)
+
+    def test_read_only_audit_public_goal_projection_is_fixed_across_callback_and_hook(self):
+        """Audit identity/progress/start surfaces never receive the raw goal."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = None
+        parent.tool_progress_callback = MagicMock()
+        canary_goal = "GOAL_CANARY_/private/audit/goal"
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool._resolve_child_execution_runtime", return_value={}),
+            patch("run_agent.AIAgent") as agent_constructor,
+            patch("hermes_cli.lifecycle.invoke_hook") as lifecycle_hook,
+        ):
+            child = MagicMock()
+            child.session_id = "audit-child"
+            child.model = "test-model"
+            child._session_init_model_config = None
+            agent_constructor.return_value = child
+            _build_child_agent(
+                task_index=0,
+                goal=canary_goal,
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                capability_profile=READ_ONLY_AUDIT_PROFILE,
+                target_revision="a" * 40,
+                timeout_seconds=30.0,
+            )
+
+            callback = agent_constructor.call_args.kwargs["tool_progress_callback"]
+            callback("subagent.start", preview=canary_goal)
+            callback(
+                "tool.started",
+                tool_name="read_file",
+                preview=canary_goal,
+                args={"path": canary_goal},
+            )
+            callback("subagent.complete", preview=canary_goal, summary=canary_goal)
+
+        serialized = repr(parent.tool_progress_callback.call_args_list)
+        serialized += repr(lifecycle_hook.call_args_list)
+        self.assertNotIn(canary_goal, serialized)
+        lifecycle_hook.assert_called_once()
+        self.assertEqual(
+            lifecycle_hook.call_args.kwargs["child_goal"],
+            "read_only_audit",
+        )
+
+    def test_read_only_audit_transcript_and_memory_use_public_goal_projection(self):
+        """Audit transcript and memory inputs use a fixed public task label."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-public-goal-parent"
+        parent._memory_manager = MagicMock()
+        canary_goal = "GOAL_CANARY_/private/audit/goal"
+        canary_context = "BASE_URL_CANARY https://audit.invalid/private CONTEXT_CANARY"
+        captured = {}
+
+        class Snapshot:
+            root = "/private/fp3a/snapshot-root"
+
+            def bind(self, _task_id):
+                return None
+
+            def cleanup(self):
+                return None
+
+        child = MagicMock()
+        child._delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+        child._delegate_role = "leaf"
+        child._subagent_id = "fp3a-public-goal-child"
+        child.session_id = "audit-child"
+
+        def capture_transcripts(tasks_arg, context_arg):
+            captured["tasks"] = [dict(task) for task in tasks_arg]
+            captured["context"] = context_arg
+            return "delegation-id", [None], []
+
+        register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
+        try:
+            with (
+                patch("tools.delegate_tool._load_config", return_value={}),
+                patch(
+                    "tools.delegate_tool._resolve_delegation_credentials",
+                    return_value={
+                        "model": "test-model",
+                        "provider": "openai-codex",
+                        "base_url": "https://audit.invalid/private",
+                        "api_key": "sk-AUDIT-CANARY",
+                        "api_mode": "chat_completions",
+                        "request_overrides": None,
+                        "max_output_tokens": None,
+                    },
+                ),
+                patch("tools.delegate_tool._resolve_child_execution_runtime", return_value={}),
+                patch(
+                    "tools.delegate_tool._resolve_read_only_audit_repo_root",
+                    return_value=os.getcwd(),
+                ),
+                patch(
+                    "tools.delegate_tool._resolve_unique_commit",
+                    return_value="b" * 40,
+                ),
+                patch(
+                    "tools.delegate_tool._create_read_only_audit_snapshot",
+                    return_value=Snapshot(),
+                ),
+                patch(
+                    "tools.delegate_tool._build_child_preserving_parent_tools",
+                    return_value=child,
+                ),
+                patch(
+                    "tools.delegation_live_log.create_live_transcripts",
+                    side_effect=capture_transcripts,
+                ),
+                patch("tools.delegation_live_log.update_manifest_statuses"),
+                patch("tools.delegate_tool._run_single_child", return_value={
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "audit complete",
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.0,
+                }),
+                patch("hermes_cli.plugins.invoke_hook"),
+            ):
+                delegate_task(
+                    goal=canary_goal,
+                    context=canary_context,
+                    capability_profile=READ_ONLY_AUDIT_PROFILE,
+                    target_revision="a" * 40,
+                    parent_agent=parent,
+                )
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+
+        self.assertEqual(captured["tasks"][0]["goal"], "read_only_audit")
+        self.assertEqual(captured["context"], "read_only_audit")
+        memory_call = parent._memory_manager.on_delegation.call_args
+        self.assertEqual(memory_call.kwargs["task"], "read_only_audit")
+        self.assertNotIn(canary_goal, repr(captured))
+        self.assertNotIn(canary_context, repr(captured))
+
+    def test_read_only_audit_credential_error_is_closed_and_sanitized(self):
+        """Audit credential/config errors expose only a fixed unavailable result."""
+        parent = _make_mock_parent()
+        canaries = (
+            "https://audit.invalid/private/base-url",
+            "credential-source-CANARY",
+            "sk-audit-CANARY",
+        )
+        with patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            side_effect=ValueError(" ".join(canaries)),
+        ):
+            result = json.loads(
+                delegate_task(
+                    goal="read-only audit",
+                    capability_profile=READ_ONLY_AUDIT_PROFILE,
+                    target_revision="a" * 40,
+                    parent_agent=parent,
+                )
+            )
+
+        serialized = json.dumps(result, ensure_ascii=False)
+        for canary in canaries:
+            self.assertNotIn(canary, serialized)
+        self.assertFalse(result.get("launch", True))
+
+    def test_read_only_audit_credential_pool_logs_are_sanitized(self):
+        """Audit credential-pool diagnostics never log endpoint/error canaries."""
+        from tools.delegate_tool import _resolve_child_credential_pool
+
+        parent = _make_mock_parent()
+        canary_url = "https://audit.invalid/private/base-url?token=CANARY"
+        canary_error = "credential-source-CANARY"
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                side_effect=RuntimeError(canary_error),
+            ),
+            self.assertLogs("tools.delegate_tool", level="DEBUG") as records,
+        ):
+            _resolve_child_credential_pool(
+                "custom",
+                parent,
+                canary_url,
+                sanitize_errors=True,
+            )
+
+        serialized = "\n".join(records.output)
+        self.assertNotIn(canary_url, serialized)
+        self.assertNotIn(canary_error, serialized)
+
+    def test_fixed_revision_rejects_writable_replaced_git_before_spawn(self):
+        """A user-writable Git candidate cannot execute fixed-audit queries."""
+        from tools.delegate_tool import ReadOnlyAuditRevisionError, _git_output
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-git-toctou-red-") as root:
+            marker = os.path.join(root, "REPLACEMENT_EXECUTED")
+            executable = os.path.join(root, "git")
+            with open(executable, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "#!/bin/sh\n"
+                    f"printf REPLACEMENT_EXECUTED > {marker!r}\n"
+                )
+            os.chmod(executable, 0o700)
+            with patch("tools.delegate_tool._TRUSTED_GIT_EXECUTABLE", executable):
+                with self.assertRaises(ReadOnlyAuditRevisionError):
+                    _git_output(os.getcwd(), ["--version"], limit=4096)
+            self.assertFalse(os.path.exists(marker))
+
+    def test_ordinary_timeout_keeps_preexisting_diagnostic_hook(self):
+        """Ordinary delegation retains the pre-audit timeout diagnostic path."""
+        parent = _make_mock_parent()
+
+        class OrdinaryTimeoutChild:
+            _delegate_capability_profile = None
+            _delegate_timeout_seconds = 0.01
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = "ordinary-timeout-child"
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = None
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def get_activity_summary(self):
+                return {"api_call_count": 0, "current_tool": None}
+
+            def close(self):
+                return None
+
+            def run_conversation(self, **_kwargs):
+                time.sleep(0.05)
+                return {"final_response": "late", "completed": True, "api_calls": 0}
+
+        with patch(
+            "tools.delegate_tool._dump_subagent_timeout_diagnostic",
+            create=True,
+            return_value="/private/ordinary-timeout-diagnostic.log",
+        ) as diagnostic:
+            result = _run_single_child(0, "ordinary timeout", OrdinaryTimeoutChild(), parent)
+
+        diagnostic.assert_called_once()
+        self.assertEqual(result["status"], "timeout")
+
+    def test_ordinary_exception_keeps_raw_preexisting_projection(self):
+        """Ordinary delegation keeps its pre-audit raw exception projection."""
+        parent = _make_mock_parent()
+        raw_error = "ordinary-error /private/path https://ordinary.invalid token-CANARY"
+
+        class OrdinaryErrorChild:
+            _delegate_capability_profile = None
+            _delegate_timeout_seconds = 1.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = "ordinary-error-child"
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = None
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def get_activity_summary(self):
+                return {"api_call_count": 0, "current_tool": None}
+
+            def close(self):
+                return None
+
+            def run_conversation(self, **_kwargs):
+                raise RuntimeError(raw_error)
+
+        result = _run_single_child(0, "ordinary error", OrdinaryErrorChild(), parent)
+        self.assertEqual(result["error"], raw_error)
+        self.assertNotIn("error_category", result)
 
     def test_fixed_revision_git_revision_and_tree_timeout_fail_closed(self):
         """Revision/tree Git stages have a bounded subprocess deadline."""
