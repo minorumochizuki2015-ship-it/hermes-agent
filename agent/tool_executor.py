@@ -509,6 +509,21 @@ def _run_agent_tool_execution_middleware(
         run_tool_execution_middleware,
     )
 
+    # Fixed-revision audits must never let a model- or middleware-supplied
+    # absolute path escape the owner-private committed snapshot. Normalize
+    # before any relay trace or policy hook, then repeat at the final dispatch
+    # boundary because middleware is allowed to rewrite arguments.
+    try:
+        from tools.delegate_tool import _fixed_revision_file_arguments
+
+        function_args, fixed_scope_block = _fixed_revision_file_arguments(
+            agent, function_name, function_args
+        )
+    except Exception:
+        fixed_scope_block = None
+    if fixed_scope_block is not None:
+        scope_block = fixed_scope_block
+
     trace = middleware_trace if middleware_trace is not None else []
     state = {
         "args": function_args,
@@ -519,6 +534,17 @@ def _run_agent_tool_execution_middleware(
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
+        nonlocal scope_block
+        try:
+            from tools.delegate_tool import _fixed_revision_file_arguments
+
+            final_args, fixed_scope_block = _fixed_revision_file_arguments(
+                agent, function_name, final_args
+            )
+        except Exception:
+            fixed_scope_block = None
+        if fixed_scope_block is not None:
+            scope_block = fixed_scope_block
         with dispatch_lock:
             if state["dispatched"]:
                 raise RuntimeError(
@@ -634,6 +660,17 @@ def _run_agent_tool_execution_middleware(
             if isinstance(request_result.payload, dict)
             else relay_args
         )
+        try:
+            from tools.delegate_tool import _fixed_revision_file_arguments
+
+            request_args, fixed_scope_block = _fixed_revision_file_arguments(
+                agent, function_name, request_args
+            )
+        except Exception:
+            fixed_scope_block = None
+        if fixed_scope_block is not None:
+            nonlocal scope_block
+            scope_block = fixed_scope_block
         trace.clear()
         trace.extend(request_result.trace)
         return run_tool_execution_middleware(

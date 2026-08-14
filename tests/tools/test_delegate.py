@@ -11,7 +11,9 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import subprocess
 import threading
+import tempfile
 import time
 import types
 import unittest
@@ -30,6 +32,7 @@ from tools.delegate_tool import (
     _build_child_progress_callback,
     _build_child_system_prompt,
     _strip_blocked_tools,
+    _run_single_child,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
 )
@@ -306,6 +309,260 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestDelegateTask(unittest.TestCase):
+    def test_read_only_audit_file_tools_read_fixed_target_not_live_checkout(self):
+        """The audit child must read/search the requested commit, not live HEAD."""
+        from tools.file_tools import read_file_tool, search_tool
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        def git(repo, *args):
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        class FileReadingChild:
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+            _delegate_target_revision = None
+            _delegate_timeout_seconds = 30.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _subagent_id = "fp3a-red-fixed-revision-child"
+            _parent_subagent_id = None
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = None
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 0,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def close(self):
+                return None
+
+            def run_conversation(self, *, task_id, **_kwargs):
+                read_result = json.loads(
+                    read_file_tool("tracked.txt", task_id=task_id)
+                )
+                search_result = json.loads(
+                    search_tool(
+                        pattern="TARGET_ONLY",
+                        target="content",
+                        path=".",
+                        task_id=task_id,
+                    )
+                )
+                return {
+                    "final_response": json.dumps(
+                        {"read": read_result, "search": search_result}
+                    ),
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 0,
+                    "messages": [],
+                }
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-red-fixed-revision-parent"
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-red-") as tmp:
+            repo = os.path.abspath(tmp)
+            subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+            git(repo, "config", "user.email", "test@example.invalid")
+            git(repo, "config", "user.name", "Hermes Test")
+            tracked = os.path.join(repo, "tracked.txt")
+            with open(tracked, "w", encoding="utf-8") as handle:
+                handle.write("TARGET_ONLY\n")
+            git(repo, "add", "tracked.txt")
+            git(repo, "commit", "-qm", "target")
+            target_revision = git(repo, "rev-parse", "HEAD")
+            with open(tracked, "w", encoding="utf-8") as handle:
+                handle.write("LIVE_ONLY\n")
+            git(repo, "commit", "-qam", "live")
+            self.assertNotEqual(target_revision, git(repo, "rev-parse", "HEAD"))
+
+            child = FileReadingChild()
+            child._delegate_target_revision = target_revision
+            child._delegate_requested_target_revision = target_revision
+            register_task_env_overrides(
+                parent._current_task_id,
+                {"cwd": repo},
+            )
+            try:
+                result = _run_single_child(0, "read the fixed revision", child, parent)
+            finally:
+                clear_task_env_overrides(child._subagent_id)
+                clear_task_env_overrides(parent._current_task_id)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("TARGET_ONLY", result["summary"])
+        self.assertNotIn("LIVE_ONLY", result["summary"])
+        self.assertEqual(result["requested_target_revision"], target_revision)
+        self.assertEqual(result["resolved_target_revision"], target_revision)
+        self.assertNotIn(repo, json.dumps(result))
+
+    def test_read_only_audit_snapshot_cleanup_is_idempotent_for_all_child_exits(self):
+        """Every child exit path releases its private snapshot exactly once."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        repo = os.getcwd()
+        target_revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=repo,
+        ).stdout.strip()
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-cleanup-parent"
+        register_task_env_overrides(parent._current_task_id, {"cwd": repo})
+
+        class TrackingSnapshot:
+            def __init__(self):
+                self.root = repo
+                self.bind_calls = []
+                self.cleanup_calls = 0
+
+            def bind(self, task_id):
+                self.bind_calls.append(task_id)
+
+            def cleanup(self):
+                if self.cleanup_calls == 0:
+                    self.cleanup_calls = 1
+
+        class ExitChild:
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
+            _delegate_requested_target_revision = target_revision
+            _delegate_target_revision = target_revision
+            _delegate_target_repo_root = repo
+            _delegate_timeout_seconds = 30.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = None
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def __init__(self, mode, task_id):
+                self.mode = mode
+                self._subagent_id = task_id
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def close(self):
+                return None
+
+            def run_conversation(self, **_kwargs):
+                if self.mode == "exception":
+                    raise RuntimeError("synthetic child failure")
+                if self.mode == "timeout":
+                    time.sleep(0.05)
+                    return {"final_response": "late", "completed": True, "api_calls": 1}
+                if self.mode == "cancel":
+                    return {
+                        "final_response": "",
+                        "completed": False,
+                        "interrupted": True,
+                        "api_calls": 1,
+                        "messages": [],
+                    }
+                return {
+                    "final_response": "ok",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+        try:
+            for mode, expected_status in (
+                ("success", "completed"),
+                ("exception", "error"),
+                ("cancel", "interrupted"),
+                ("timeout", "timeout"),
+            ):
+                with self.subTest(mode=mode):
+                    snapshot = TrackingSnapshot()
+                    child = ExitChild(mode, f"fp3a-cleanup-{mode}")
+                    if mode == "timeout":
+                        child._delegate_timeout_seconds = 0.01
+                    with patch(
+                        "tools.delegate_tool._create_read_only_audit_snapshot",
+                        return_value=snapshot,
+                    ):
+                        result = _run_single_child(0, "bounded audit", child, parent)
+                    self.assertEqual(result["status"], expected_status)
+                    self.assertEqual(snapshot.bind_calls, [child._subagent_id])
+                    self.assertEqual(snapshot.cleanup_calls, 1)
+                    snapshot.cleanup()
+                    self.assertEqual(snapshot.cleanup_calls, 1)
+                    clear_task_env_overrides(child._subagent_id)
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+
+    def test_read_only_audit_rejects_missing_commit_before_transcript_or_child(self):
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-invalid-revision-parent"
+        register_task_env_overrides(
+            parent._current_task_id,
+            {"cwd": os.getcwd()},
+        )
+        try:
+            with (
+                patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10}),
+                patch("tools.delegation_live_log.create_live_transcripts") as transcripts,
+                patch("run_agent.AIAgent") as agent_constructor,
+            ):
+                result = json.loads(
+                    delegate_task(
+                        goal="audit the fixed source",
+                        capability_profile=READ_ONLY_AUDIT_PROFILE,
+                        target_revision="0" * 40,
+                        parent_agent=parent,
+                    )
+                )
+        finally:
+            clear_task_env_overrides(parent._current_task_id)
+        self.assertEqual(result["code"], "fixed_revision_unavailable")
+        self.assertFalse(result["launch"])
+        self.assertEqual(result["launch_count"], 0)
+        transcripts.assert_not_called()
+        agent_constructor.assert_not_called()
+
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)

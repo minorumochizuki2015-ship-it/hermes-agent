@@ -22,6 +22,10 @@ import contextvars
 import json
 import logging
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path, PurePosixPath
 
 logger = logging.getLogger(__name__)
 import os
@@ -65,6 +69,12 @@ READ_ONLY_AUDIT_PROFILE = "read_only_audit"
 READ_ONLY_AUDIT_ALLOWED_TOOLS = frozenset(
     {"read_file", "search_files", "skills_list", "skill_view", "vision_analyze"}
 )
+# Skill and vision tools resolve profile/runtime state outside the committed
+# Git object snapshot. Keep the historical profile constant for callers, but
+# admit only the two tools whose roots are actually bound for fixed revisions.
+READ_ONLY_AUDIT_FIXED_REVISION_ALLOWED_TOOLS = frozenset(
+    {"read_file", "search_files"}
+)
 READ_ONLY_AUDIT_DEFAULT_TIMEOUT_SECONDS = 600.0
 READ_ONLY_AUDIT_MAX_TIMEOUT_SECONDS = 1800.0
 _DELEGATE_MAX_TIMEOUT_SECONDS = 3600.0
@@ -75,6 +85,268 @@ class CapabilityRuntimeIncompatibleError(RuntimeError):
     """The selected child runtime cannot enforce a requested profile."""
 
     code = "capability_runtime_incompatible"
+
+
+class ReadOnlyAuditRevisionError(RuntimeError):
+    """A fixed-revision audit cannot be bound to a safe committed snapshot."""
+
+    code = "fixed_revision_unavailable"
+
+
+_FIXED_REVISION_UNAVAILABLE_MESSAGE = (
+    "read_only_audit fixed revision is unavailable; no child was launched."
+)
+_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE = (
+    "read_only_audit immutable snapshot is unavailable; no child was launched."
+)
+_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILES = 20000
+_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024
+_READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
+_READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES = 32 * 1024 * 1024
+
+
+class _ReadOnlyAuditSnapshot:
+    """Owner-private committed bytes temporarily bound to one child task."""
+
+    def __init__(self, root: str, requested_revision: str, resolved_revision: str):
+        self.root = root
+        self.requested_revision = requested_revision
+        self.resolved_revision = resolved_revision
+        self._task_id: Optional[str] = None
+        self._cleaned = False
+        self._lock = threading.RLock()
+
+    def bind(self, task_id: str) -> None:
+        if not isinstance(task_id, str) or not task_id:
+            raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
+        from tools.terminal_tool import register_task_env_overrides
+
+        with self._lock:
+            if self._cleaned:
+                raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
+            if self._task_id is not None:
+                if self._task_id == task_id:
+                    return
+                raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
+            # env_type makes the existing terminal/file-operation task key
+            # private to this child. This is not a git worktree: only the
+            # extracted committed bytes are exposed to read-only file tools.
+            register_task_env_overrides(
+                task_id,
+                {"cwd": self.root, "env_type": "local"},
+            )
+            self._task_id = task_id
+
+    def cleanup(self) -> None:
+        """Remove the task binding and snapshot exactly once."""
+        with self._lock:
+            if self._cleaned:
+                return
+            self._cleaned = True
+            task_id = self._task_id
+            self._task_id = None
+
+        if task_id:
+            try:
+                from tools.file_tools import clear_file_ops_cache
+
+                clear_file_ops_cache(task_id)
+            except Exception:
+                logger.debug("fixed audit file-op cleanup failed", exc_info=True)
+            try:
+                from tools.terminal_tool import _evict_environment_for_task
+
+                _evict_environment_for_task(task_id)
+            except Exception:
+                logger.debug("fixed audit environment cleanup failed", exc_info=True)
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+
+                clear_task_env_overrides(task_id)
+            except Exception:
+                logger.debug("fixed audit cwd cleanup failed", exc_info=True)
+        try:
+            shutil.rmtree(self.root)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.debug("fixed audit snapshot cleanup failed", exc_info=True)
+
+
+def _git_output(repo_root: str, args: List[str], *, limit: int) -> bytes:
+    """Run a bounded read-only Git query without exposing command/path errors."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", repo_root, *args],
+            check=False,
+            capture_output=True,
+        )
+    except (OSError, ValueError) as exc:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
+    if completed.returncode != 0 or len(completed.stdout) > limit:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    return completed.stdout
+
+
+def _git_repo_root(candidate: Optional[str]) -> str:
+    if not isinstance(candidate, str) or not candidate.strip():
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    try:
+        candidate = os.path.realpath(candidate)
+    except (OSError, ValueError) as exc:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
+    if not os.path.isdir(candidate):
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    raw = _git_output(candidate, ["rev-parse", "--show-toplevel"], limit=4096)
+    try:
+        root = os.path.realpath(raw.decode("utf-8").strip())
+    except (UnicodeDecodeError, OSError, ValueError) as exc:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
+    if not root or not os.path.isdir(root):
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    return root
+
+
+def _resolve_read_only_audit_repo_root(parent_agent: Any) -> str:
+    """Resolve the parent's current workspace, then prove its Git root."""
+    candidate = None
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        task_id = getattr(parent_agent, "_current_task_id", None)
+        if isinstance(task_id, str) and task_id:
+            candidate = get_session_cwd(task_id)
+    except Exception:
+        candidate = None
+    if not candidate:
+        candidate = _resolve_workspace_hint(parent_agent)
+    return _git_repo_root(candidate)
+
+
+def _resolve_unique_commit(repo_root: str, requested_revision: str) -> str:
+    """Resolve a fixed hex revision to exactly one full commit object."""
+    raw = _git_output(
+        repo_root,
+        ["rev-parse", f"--disambiguate={requested_revision}"],
+        limit=_READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES,
+    )
+    object_ids = {
+        line.decode("ascii").strip()
+        for line in raw.splitlines()
+        if line and re.fullmatch(rb"[0-9a-fA-F]{40,64}", line.strip())
+    }
+    commits = []
+    for object_id in sorted(object_ids):
+        object_type = _git_output(
+            repo_root,
+            ["cat-file", "-t", object_id],
+            limit=64,
+        ).decode("ascii", errors="ignore").strip()
+        if object_type == "commit":
+            commits.append(object_id.lower())
+    if len(commits) != 1:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    return commits[0]
+
+
+def _target_tree_entries(repo_root: str, resolved_revision: str) -> List[tuple[str, str, str]]:
+    """Return safe blob entries and reject submodules/symlinks."""
+    raw = _git_output(
+        repo_root,
+        ["ls-tree", "-r", "-z", "--full-tree", resolved_revision],
+        limit=_READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES,
+    )
+    entries: List[tuple[str, str, str]] = []
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        try:
+            header, raw_path = record.split(b"\t", 1)
+            mode, object_type, object_id = header.decode("ascii").split()
+            path = raw_path.decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
+        parts = PurePosixPath(path).parts
+        if (
+            not path
+            or path.startswith("/")
+            or any(part in {"", ".", ".."} for part in parts)
+            or "\x00" in path
+        ):
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+        if mode == "160000" or object_type == "commit":
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+        if mode == "120000" or object_type != "blob":
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+        entries.append((mode, object_id, path))
+        if len(entries) > _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILES:
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    return entries
+
+
+def _read_git_blob(repo_root: str, object_id: str) -> bytes:
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", repo_root, "cat-file", "blob", object_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        data = process.stdout.read(_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES + 1)
+        if len(data) > _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES:
+            process.kill()
+            process.communicate()
+            raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+        _, _ = process.communicate()
+    except (OSError, ValueError) as exc:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
+    if process.returncode != 0:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    return data
+
+
+def _create_read_only_audit_snapshot(
+    repo_root: str,
+    requested_revision: str,
+    resolved_revision: str,
+) -> _ReadOnlyAuditSnapshot:
+    """Export exact Git object bytes into a private, non-Git snapshot."""
+    root = _git_repo_root(repo_root)
+    # Revalidate the full object at the point of export. No ref or working-tree
+    # state is consulted after this check.
+    if _resolve_unique_commit(root, resolved_revision) != resolved_revision.lower():
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    entries = _target_tree_entries(root, resolved_revision)
+    try:
+        snapshot_root = tempfile.mkdtemp(prefix=".hermes-fixed-audit-")
+        os.chmod(snapshot_root, 0o700)
+        total_bytes = 0
+        for mode, object_id, path in entries:
+            data = _read_git_blob(root, object_id)
+            total_bytes += len(data)
+            if total_bytes > _READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES:
+                raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
+            destination = Path(snapshot_root, *PurePosixPath(path).parts)
+            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with destination.open("xb") as handle:
+                handle.write(data)
+            os.chmod(destination, 0o600)
+        return _ReadOnlyAuditSnapshot(
+            snapshot_root,
+            requested_revision,
+            resolved_revision.lower(),
+        )
+    except ReadOnlyAuditRevisionError:
+        try:
+            shutil.rmtree(snapshot_root)
+        except (UnboundLocalError, FileNotFoundError, OSError):
+            pass
+        raise
+    except (OSError, ValueError) as exc:
+        try:
+            shutil.rmtree(snapshot_root)
+        except (UnboundLocalError, FileNotFoundError, OSError):
+            pass
+        raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -950,6 +1222,39 @@ def _enforce_child_tool_allowlist(child: Any, allowed_tools: frozenset[str]) -> 
     child._tool_search_scope_cache = None
 
 
+def _fixed_revision_file_arguments(
+    agent: Any,
+    function_name: str,
+    function_args: Dict[str, Any],
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """Keep fixed-audit file roots inside its private committed snapshot."""
+    if (
+        getattr(agent, "_delegate_capability_profile", None)
+        != READ_ONLY_AUDIT_PROFILE
+        or function_name not in {"read_file", "search_files"}
+    ):
+        return dict(function_args or {}), None
+
+    snapshot_root = getattr(agent, "_delegate_snapshot_root", None)
+    if not isinstance(snapshot_root, str) or not snapshot_root:
+        return {}, _FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE
+    raw_path = (function_args or {}).get("path", ".")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raw_path = "."
+    try:
+        root = Path(snapshot_root).resolve()
+        expanded = Path(os.path.expanduser(raw_path))
+        candidate = expanded if expanded.is_absolute() else root / expanded
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return {}, "read_only_audit rejected a path outside the fixed snapshot."
+
+    safe_args = dict(function_args or {})
+    safe_args["path"] = relative.as_posix() or "."
+    return safe_args, None
+
+
 def _resolve_child_execution_runtime(
     *,
     parent_agent: Any,
@@ -1279,10 +1584,11 @@ def _build_child_system_prompt(
     if capability_profile == READ_ONLY_AUDIT_PROFILE:
         parts.append(
             "\nCAPABILITY PROFILE: read_only_audit\n"
-            "The runtime exposes only read/search/view tools for this task. "
-            "You cannot use terminal/process execution, write_file, patch, "
-            "skill_manage, browser mutation, delegation, or other mutation "
-            "surfaces. Return findings without changing source or runtime state."
+            "The runtime exposes only read_file and search_files rooted in the "
+            "requested immutable commit snapshot. You cannot use terminal or "
+            "process execution, write_file, patch, skills, vision, delegation, "
+            "or other mutation surfaces. Return findings without changing "
+            "source or runtime state."
         )
     if workspace_path and str(workspace_path).strip():
         parts.append(
@@ -1691,6 +1997,8 @@ def _build_child_agent(
     capability_profile: Optional[str] = None,
     target_revision: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
+    requested_target_revision: Optional[str] = None,
+    target_repo_root: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1799,7 +2107,11 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
-    workspace_hint = _resolve_workspace_hint(parent_agent)
+    workspace_hint = (
+        None
+        if capability_profile == READ_ONLY_AUDIT_PROFILE
+        else _resolve_workspace_hint(parent_agent)
+    )
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -2046,9 +2358,16 @@ def _build_child_agent(
             **child_optional_kwargs,
         )
     if capability_profile == READ_ONLY_AUDIT_PROFILE:
-        _enforce_child_tool_allowlist(child, READ_ONLY_AUDIT_ALLOWED_TOOLS)
+        _enforce_child_tool_allowlist(
+            child,
+            READ_ONLY_AUDIT_FIXED_REVISION_ALLOWED_TOOLS,
+        )
     child._delegate_capability_profile = capability_profile
     child._delegate_target_revision = target_revision
+    child._delegate_requested_target_revision = (
+        requested_target_revision or target_revision
+    )
+    child._delegate_target_repo_root = target_repo_root
     child._delegate_timeout_seconds = timeout_seconds
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
@@ -2499,6 +2818,17 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+    audit_snapshot: Optional[_ReadOnlyAuditSnapshot] = None
+
+    def _attach_audit_revision_receipt(entry_dict: Dict[str, Any]) -> None:
+        if getattr(child, "_delegate_capability_profile", None) != READ_ONLY_AUDIT_PROFILE:
+            return
+        requested = getattr(child, "_delegate_requested_target_revision", None)
+        resolved = getattr(child, "_delegate_target_revision", None)
+        if isinstance(requested, str) and requested:
+            entry_dict["requested_target_revision"] = requested
+        if isinstance(resolved, str) and resolved:
+            entry_dict["resolved_target_revision"] = resolved
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
@@ -2684,13 +3014,6 @@ def _run_single_child(
             entry_dict["worktree"] = dict(_worktree_info)
 
     try:
-        _heartbeat_thread.start()
-        if child_progress_cb:
-            try:
-                child_progress_cb("subagent.start", preview=goal)
-            except Exception as e:
-                logger.debug("Progress callback start failed: %s", e)
-
         # File-state coordination: reuse the stable subagent_id as the child's
         # task_id so file_state writes, active-subagents registry, and TUI
         # events all share one key.  Falls back to a fresh uuid only if the
@@ -2721,12 +3044,59 @@ def _run_single_child(
         except Exception as e:
             logger.debug("Child cwd seed failed: %s", e)
 
+        if getattr(child, "_delegate_capability_profile", None) == READ_ONLY_AUDIT_PROFILE:
+            try:
+                requested_revision = getattr(
+                    child,
+                    "_delegate_requested_target_revision",
+                    getattr(child, "_delegate_target_revision", None),
+                )
+                resolved_revision = getattr(child, "_delegate_target_revision", None)
+                repo_root = getattr(child, "_delegate_target_repo_root", None)
+                if not isinstance(repo_root, str) or not repo_root:
+                    from tools.terminal_tool import get_session_cwd
+
+                    repo_root = get_session_cwd(child_task_id)
+                repo_root = _git_repo_root(repo_root)
+                resolved_revision = _resolve_unique_commit(repo_root, resolved_revision)
+                audit_snapshot = _create_read_only_audit_snapshot(
+                    repo_root,
+                    requested_revision,
+                    resolved_revision,
+                )
+                audit_snapshot.bind(child_task_id)
+                child._delegate_target_repo_root = repo_root
+                child._delegate_target_revision = resolved_revision
+                child._delegate_snapshot_root = audit_snapshot.root
+            except ReadOnlyAuditRevisionError:
+                unavailable_entry = {
+                    "task_index": task_index,
+                    "status": "unavailable",
+                    "summary": None,
+                    "error": _FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE,
+                    "launch": False,
+                    "launch_count": 0,
+                }
+                _attach_audit_revision_receipt(unavailable_entry)
+                return unavailable_entry
+
+        _heartbeat_thread.start()
+        if child_progress_cb:
+            try:
+                child_progress_cb("subagent.start", preview=goal)
+            except Exception as e:
+                logger.debug("Progress callback start failed: %s", e)
+
         # Opt-in worktree isolation (delegation.worktree_isolation, inspired
         # by Muse Code's --subagent-worktree-isolation): give this child its
         # own git worktree branched from the parent repo's HEAD, and start its
         # terminal there. Git-only and local-backend-only; any failure
         # degrades silently to the shared-workspace behavior above.
-        if _get_worktree_isolation():
+        if (
+            _get_worktree_isolation()
+            and getattr(child, "_delegate_capability_profile", None)
+            != READ_ONLY_AUDIT_PROFILE
+        ):
             try:
                 from tools import subagent_worktree
 
@@ -2931,6 +3301,7 @@ def _run_single_child(
                     " [steer did not land before the subagent stopped: "
                     f"{_late_pending_steer}]"
                 )
+            _attach_audit_revision_receipt(_error_entry)
             _attach_worktree(_error_entry)
             return _error_entry
         finally:
@@ -3082,6 +3453,10 @@ def _run_single_child(
                     elif tool_trace:
                         # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
+        if getattr(child, "_delegate_capability_profile", None) == READ_ONLY_AUDIT_PROFILE:
+            # Do not project model-supplied absolute paths or snapshot-root
+            # locations through the public delegation result.
+            tool_trace = []
 
         # Determine exit reason
         if interrupted:
@@ -3144,6 +3519,7 @@ def _run_single_child(
         )
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+        _attach_audit_revision_receipt(entry)
 
         # T1-24: schema-validation outcome — emitted ONLY when a schema was
         # requested, so legacy (schema-less) payloads keep their exact shape.
@@ -3209,10 +3585,13 @@ def _run_single_child(
         # optional — missing data degrades gracefully on the client.
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
-        try:
-            _files_read = list(file_state.known_reads(child_task_id))[:40]
-        except Exception:
+        if getattr(child, "_delegate_capability_profile", None) == READ_ONLY_AUDIT_PROFILE:
             _files_read = []
+        else:
+            try:
+                _files_read = list(file_state.known_reads(child_task_id))[:40]
+            except Exception:
+                _files_read = []
         try:
             _files_written_map = file_state.writes_since(
                 "", wall_start, []
@@ -3298,6 +3677,7 @@ def _run_single_child(
                 " [steer did not land before the subagent stopped: "
                 f"{_late_pending_steer}]"
             )
+        _attach_audit_revision_receipt(_error_entry)
         # _attach_worktree defaults to a no-op when isolation never engaged.
         _attach_worktree(_error_entry)
         return _error_entry
@@ -3370,6 +3750,9 @@ def _run_single_child(
                 runtime.unregister_subagent({"child_session_id": child_session_id})
         except Exception:
             logger.debug("Failed to close child Relay session after delegation")
+
+        if audit_snapshot is not None:
+            audit_snapshot.cleanup()
 
 
 _PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
@@ -3859,6 +4242,36 @@ def delegate_task(
             launch_count=0,
         )
 
+    # Resolve every fixed-revision audit target to one full commit object
+    # before any transcript or child is created. The live working tree is only
+    # used to locate the owned repository; bytes are exported later from Git
+    # objects and never from that mutable path.
+    try:
+        for task in task_list:
+            if task.get("capability_profile") != READ_ONLY_AUDIT_PROFILE:
+                continue
+            requested_revision = task.get("target_revision")
+            repo_root = _resolve_read_only_audit_repo_root(parent_agent)
+            resolved_revision = _resolve_unique_commit(
+                repo_root,
+                requested_revision,
+            )
+            # Reject unsafe target trees before child construction. The
+            # snapshot exporter repeats this check at its object-binding seam
+            # to cover direct/internal callers that bypass delegate_task.
+            _target_tree_entries(repo_root, resolved_revision)
+            task["_requested_target_revision"] = requested_revision
+            task["target_revision"] = resolved_revision
+            task["_target_repo_root"] = repo_root
+    except ReadOnlyAuditRevisionError as exc:
+        return tool_error(
+            _FIXED_REVISION_UNAVAILABLE_MESSAGE,
+            code=exc.code,
+            status="unavailable",
+            launch=False,
+            launch_count=0,
+        )
+
     overall_start = time.monotonic()
     results = []
 
@@ -3943,6 +4356,10 @@ def delegate_task(
             capability_profile=t.get("capability_profile"),
             target_revision=t.get("target_revision"),
             timeout_seconds=t.get("timeout_seconds"),
+            requested_target_revision=t.get(
+                "_requested_target_revision", t.get("target_revision")
+            ),
+            target_repo_root=t.get("_target_repo_root"),
         )
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
