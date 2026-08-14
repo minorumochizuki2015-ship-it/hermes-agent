@@ -1412,7 +1412,29 @@ _ORCH_ROUTE_OVERRIDE_KEYS = (
 )
 
 
-def _orch_open_orch_turn(session: dict, sid: str, context: dict) -> dict:
+class _OrchTurnBinding(NamedTuple):
+    """Immutable owner identity captured by every operational callback."""
+
+    gateway_session_id: str
+    session_key: str
+    profile: str
+    logical_session_id: str | None
+    operation_id: str
+    turn_generation: int
+
+
+def _orch_snapshot_route_overrides(session: dict) -> None:
+    """Capture ordinary route state once, before applying an SDO route."""
+    if "_orch_previous_overrides" in session:
+        return
+    session["_orch_previous_overrides"] = {
+        key: copy.deepcopy(session[key])
+        for key in _ORCH_ROUTE_OVERRIDE_KEYS
+        if key in session
+    }
+
+
+def _orch_open_orch_turn(session: dict, sid: str, context: dict) -> _OrchTurnBinding:
     """Create the immutable owner token for one admitted operational turn."""
     if session.get("_orch_turn_binding") is not None:
         _orch_clear_orch_turn(session)
@@ -1421,36 +1443,40 @@ def _orch_open_orch_turn(session: dict, sid: str, context: dict) -> dict:
         binding.get("logical_session_id") if isinstance(binding, dict) else None
     )
     generation = int(session.get("_orch_turn_generation", 0)) + 1
-    token = {
-        "session_id": session.get("session_key"),
-        "profile": _orch_profile_name(session),
-        "logical_session_id": logical_session_id,
-        "operation_id": context.get("operation_id"),
-        "turn_generation": generation,
-    }
+    token = _OrchTurnBinding(
+        gateway_session_id=str(sid),
+        session_key=str(session.get("session_key") or ""),
+        profile=_orch_profile_name(session),
+        logical_session_id=(
+            logical_session_id if isinstance(logical_session_id, str) else None
+        ),
+        operation_id=str(context.get("operation_id") or ""),
+        turn_generation=generation,
+    )
     session["_orch_turn_generation"] = generation
     session["_orch_turn_binding"] = token
     session["_orch_operational"] = True
-    session["_orch_operation_id"] = context.get("operation_id")
-    session["_orch_status_operation_id"] = context.get("operation_id")
-    session["_orch_previous_overrides"] = {
-        key: copy.deepcopy(session[key])
-        for key in _ORCH_ROUTE_OVERRIDE_KEYS
-        if key in session
-    }
+    session["_orch_operation_id"] = token.operation_id
+    session["_orch_status_operation_id"] = token.operation_id
+    _orch_snapshot_route_overrides(session)
     session["_orch_gateway_session_id"] = sid
     return token
 
 
 def _orch_turn_token_matches(session: dict, token: Any) -> bool:
     """Return true only while the exact operational turn still owns session."""
-    if not isinstance(token, dict) or session.get("_orch_turn_binding") != token:
+    current = session.get("_orch_turn_binding")
+    if not isinstance(token, _OrchTurnBinding) or current != token:
+        return False
+    if not isinstance(current, _OrchTurnBinding):
         return False
     return (
-        token.get("session_id") == session.get("session_key")
-        and token.get("profile") == _orch_profile_name(session)
-        and token.get("operation_id") == session.get("_orch_operation_id")
-        and token.get("turn_generation") == session.get("_orch_turn_generation")
+        token.gateway_session_id == session.get("_orch_gateway_session_id")
+        and token.session_key == session.get("session_key")
+        and token.profile == _orch_profile_name(session)
+        and token.logical_session_id == current.logical_session_id
+        and token.operation_id == session.get("_orch_operation_id")
+        and token.turn_generation == session.get("_orch_turn_generation")
     )
 
 
@@ -1464,12 +1490,13 @@ def _orch_clear_orch_turn(session: dict) -> None:
     operation_id = session.get("_orch_operation_id")
     if isinstance(operation_id, str) and operation_id:
         session["_orch_status_operation_id"] = operation_id
-    previous = session.pop("_orch_previous_overrides", {})
-    for key in _ORCH_ROUTE_OVERRIDE_KEYS:
-        if key in previous:
-            session[key] = previous[key]
-        else:
-            session.pop(key, None)
+    previous = session.pop("_orch_previous_overrides", None)
+    if isinstance(previous, dict):
+        for key in _ORCH_ROUTE_OVERRIDE_KEYS:
+            if key in previous:
+                session[key] = previous[key]
+            else:
+                session.pop(key, None)
     for key in (
         "_orch_operational",
         "_orch_operation_id",
@@ -1492,6 +1519,7 @@ def _consume_orch_sdo_submit(
     context: dict,
     *,
     decision_callable=None,
+    gateway_session_id: str | None = None,
 ) -> dict:
     """Reserve, consume, claim, and project one injected SDO decision."""
     del params
@@ -1500,6 +1528,17 @@ def _consume_orch_sdo_submit(
         consume_sdo_decision,
         safe_local_continuation,
     )
+
+    if session.get("_orch_turn_binding") is not None:
+        _orch_clear_orch_turn(session)
+
+    def apply_decision(decision: dict) -> None:
+        if decision.get("claim_status") == "admitted":
+            if gateway_session_id is None:
+                _orch_snapshot_route_overrides(session)
+            else:
+                _orch_open_orch_turn(session, gateway_session_id, context)
+        apply_sdo_decision_to_session(session, decision)
 
     operation_id = context.get("operation_id")
     session_key = session.get("session_key")
@@ -1511,14 +1550,14 @@ def _consume_orch_sdo_submit(
     session["_orch_operation_id"] = operation_id
     if not isinstance(operation_id, str) or not isinstance(session_key, str):
         decision = safe_local_continuation("sdo_session_unavailable")
-        apply_sdo_decision_to_session(session, decision)
+        apply_decision(decision)
         return decision
 
     try:
         with _session_db(session) as db:
             if db is None:
                 decision = safe_local_continuation("sdo_state_unavailable")
-                apply_sdo_decision_to_session(session, decision)
+                apply_decision(decision)
                 return decision
             reserved = db.preflight_orch_task_observation(
                 session_key,
@@ -1529,7 +1568,7 @@ def _consume_orch_sdo_submit(
             )
             if not reserved:
                 decision = safe_local_continuation("sdo_reservation_unavailable")
-                apply_sdo_decision_to_session(session, decision)
+                apply_decision(decision)
                 return decision
             provider = (
                 _orch_sdo_decision_callable
@@ -1549,7 +1588,7 @@ def _consume_orch_sdo_submit(
                         )
                 except Exception:
                     pass
-                apply_sdo_decision_to_session(session, decision)
+                apply_decision(decision)
                 return decision
             try:
                 raw_decision = provider(copy.deepcopy(context))
@@ -1568,7 +1607,7 @@ def _consume_orch_sdo_submit(
                         )
                 except Exception:
                     pass
-                apply_sdo_decision_to_session(session, decision)
+                apply_decision(decision)
                 return decision
             claim = decision["claim"]
             try:
@@ -1583,7 +1622,7 @@ def _consume_orch_sdo_submit(
                 claimed = False
             if not claimed:
                 decision = safe_local_continuation("sdo_claim_unavailable")
-                apply_sdo_decision_to_session(session, decision)
+                apply_decision(decision)
                 return decision
             try:
                 begun = db.begin_orch_task_observation(
@@ -1595,13 +1634,13 @@ def _consume_orch_sdo_submit(
                 begun = False
             if not begun:
                 decision = safe_local_continuation("sdo_observation_unavailable")
-                apply_sdo_decision_to_session(session, decision)
+                apply_decision(decision)
                 return decision
-            apply_sdo_decision_to_session(session, decision)
+            apply_decision(decision)
             return decision
     except Exception:
         decision = safe_local_continuation("sdo_consumer_unavailable")
-        apply_sdo_decision_to_session(session, decision)
+        apply_decision(decision)
         return decision
 
 
@@ -1689,10 +1728,12 @@ def _orch_terminalize_before_agent_call(sid: str, session: dict) -> None:
     _orch_clear_orch_turn(session)
 
 
-def _orch_mark_first_delta(session: dict) -> None:
-    operation_id = session.get("_orch_operation_id")
-    if not isinstance(operation_id, str) or not operation_id:
+def _orch_mark_first_delta(
+    session: dict, token: _OrchTurnBinding | None
+) -> None:
+    if not _orch_turn_token_matches(session, token):
         return
+    operation_id = token.operation_id
     try:
         with _session_db(session) as db:
             if db is not None and db.mark_orch_task_first_delta(operation_id):
@@ -1701,12 +1742,14 @@ def _orch_mark_first_delta(session: dict) -> None:
         pass
 
 
-def _orch_finish_task_observation(session: dict, result_status: str) -> None:
+def _orch_finish_task_observation(
+    session: dict, token: _OrchTurnBinding | None, result_status: str
+) -> None:
     if result_status not in {"complete", "error", "interrupted"}:
         return
-    operation_id = session.get("_orch_operation_id")
-    if not isinstance(operation_id, str) or not operation_id:
+    if not _orch_turn_token_matches(session, token):
         return
+    operation_id = token.operation_id
     try:
         with _session_db(session) as db:
             if db is not None and db.finish_orch_task_observation(
@@ -1785,62 +1828,62 @@ def _orch_sdo_status_projection(session: dict) -> dict[str, Any]:
         with _session_db(session) as db:
             if db is None:
                 return result
-        operation_id = session.get("_orch_status_operation_id") or session.get(
-            "_orch_operation_id"
-        )
-        if not isinstance(operation_id, str) or not operation_id:
-            return result
-        profile_name = _orch_profile_name(session)
-        rows = db.read_orch_task_observations(
-            session_key,
-            profile_name=profile_name,
-            limit=100,
-        )
-        row = next(
-            (
-                candidate
-                for candidate in rows
-                if isinstance(candidate, dict)
-                and candidate.get("operation_id") == operation_id
-                and candidate.get("session_id") == session_key
-                and candidate.get("profile_name") == profile_name
-            ),
-            None,
-        )
-        if row is None:
-            return result
-        observation = row.get("observation")
-        if not isinstance(observation, dict):
-            return result
-        first_delta = observation.get("first_delta")
-        result["first_delta_observed"] = (
-            isinstance(first_delta, dict)
-            and first_delta.get("status") == "observed"
-            and first_delta.get("present") is True
-        )
-        model = observation.get("model")
-        if (
-            isinstance(model, dict)
-            and model.get("status") == "observed"
-            and model.get("value") == "gpt-5.6-luna"
-        ):
-            result["live_model"] = "gpt-5.6-luna"
-        effort = observation.get("effort")
-        if (
-            isinstance(effort, dict)
-            and effort.get("status") == "observed"
-            and effort.get("value") == "max"
-        ):
-            result["live_effort"] = "max"
-        terminal = observation.get("result")
-        if isinstance(terminal, dict):
-            status = terminal.get("status")
-            if status in {"complete", "error", "interrupted", "blocked", "failed"}:
-                result["terminal_result_status"] = status
-                result["terminal_result_consumed"] = True
-            category = terminal.get("terminal_category")
-            if category in _SDO_INITIALIZATION_TERMINAL_CATEGORIES:
-                result["terminal_category"] = category
+            operation_id = session.get("_orch_status_operation_id") or session.get(
+                "_orch_operation_id"
+            )
+            if not isinstance(operation_id, str) or not operation_id:
+                return result
+            profile_name = _orch_profile_name(session)
+            rows = db.read_orch_task_observations(
+                session_key,
+                profile_name=profile_name,
+                limit=100,
+            )
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if isinstance(candidate, dict)
+                    and candidate.get("operation_id") == operation_id
+                    and candidate.get("session_id") == session_key
+                    and candidate.get("profile_name") == profile_name
+                ),
+                None,
+            )
+            if row is None:
+                return result
+            observation = row.get("observation")
+            if not isinstance(observation, dict):
+                return result
+            first_delta = observation.get("first_delta")
+            result["first_delta_observed"] = (
+                isinstance(first_delta, dict)
+                and first_delta.get("status") == "observed"
+                and first_delta.get("present") is True
+            )
+            model = observation.get("model")
+            if (
+                isinstance(model, dict)
+                and model.get("status") == "observed"
+                and model.get("value") == "gpt-5.6-luna"
+            ):
+                result["live_model"] = "gpt-5.6-luna"
+            effort = observation.get("effort")
+            if (
+                isinstance(effort, dict)
+                and effort.get("status") == "observed"
+                and effort.get("value") == "max"
+            ):
+                result["live_effort"] = "max"
+            terminal = observation.get("result")
+            if isinstance(terminal, dict):
+                status = terminal.get("status")
+                if status in {"complete", "error", "interrupted", "blocked", "failed"}:
+                    result["terminal_result_status"] = status
+                    result["terminal_result_consumed"] = True
+                category = terminal.get("terminal_category")
+                if category in _SDO_INITIALIZATION_TERMINAL_CATEGORIES:
+                    result["terminal_category"] = category
     except Exception:
         return result
     return result
@@ -10555,7 +10598,7 @@ def _run_prompt_submit(
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
                 if session.get("_orch_operational") and delta:
-                    _orch_mark_first_delta(session)
+                    _orch_mark_first_delta(session, orch_turn_token)
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
@@ -10761,7 +10804,7 @@ def _run_prompt_submit(
                     else "error" if result.get("error") else "complete"
                 )
                 if session.get("_orch_operational"):
-                    _orch_finish_task_observation(session, status)
+                    _orch_finish_task_observation(session, orch_turn_token, status)
                     if status == "error":
                         raw = "agent operation failed"
                 # When the backend produced no visible response AND reported a

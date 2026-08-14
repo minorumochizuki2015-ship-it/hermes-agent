@@ -471,6 +471,180 @@ def test_turn_binding_rejects_stale_generation_and_scrubs_route_state() -> None:
     assert session.get("_orch_operational") is not True
 
 
+def test_turn_binding_is_immutable_and_fences_captured_operation_swap(monkeypatch) -> None:
+    class _CallbackDB(_RecordingDB):
+        def __init__(self):
+            super().__init__()
+            self.marked = []
+            self.finished = []
+
+        def mark_orch_task_first_delta(self, operation_id, *args, **kwargs):
+            self.marked.append(operation_id)
+            return True
+
+        def finish_orch_task_observation(self, operation_id, *args, **kwargs):
+            self.finished.append(operation_id)
+            return True
+
+    db = _CallbackDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    session = {
+        "session_key": "persisted-session-owner",
+        "profile_home": "/tmp/profile-owner",
+    }
+    context = {
+        "operation_id": "operation-owner",
+        "decision_binding": {"logical_session_id": "logical-owner"},
+    }
+    token = server._orch_open_orch_turn(session, "gateway-owner", context)
+
+    assert not isinstance(token, dict)
+    assert token.gateway_session_id == "gateway-owner"
+    assert token.session_key == "persisted-session-owner"
+    assert token.profile == "profile-owner"
+    assert token.logical_session_id == "logical-owner"
+    assert token.operation_id == "operation-owner"
+    with pytest.raises((AttributeError, TypeError)):
+        token.operation_id = "operation-swapped"
+
+    server._orch_mark_first_delta(session, token)
+    server._orch_finish_task_observation(session, token, "complete")
+    assert db.marked == ["operation-owner"]
+    assert db.finished == ["operation-owner"]
+
+    session["_orch_operation_id"] = "operation-swapped"
+    server._orch_mark_first_delta(session, token)
+    server._orch_finish_task_observation(session, token, "complete")
+    assert db.marked == ["operation-owner"]
+    assert db.finished == ["operation-owner"]
+
+    server._orch_open_orch_turn(
+        session,
+        "gateway-owner",
+        {
+            "operation_id": "operation-next",
+            "decision_binding": {"logical_session_id": "logical-other"},
+        },
+    )
+    server._orch_mark_first_delta(session, token)
+    server._orch_finish_task_observation(session, token, "complete")
+    assert db.marked == ["operation-owner"]
+    assert db.finished == ["operation-owner"]
+
+
+def test_admitted_route_snapshot_precedes_apply_and_restores_exact_override(monkeypatch) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    original = {
+        "model_override": {"provider": "ordinary-provider", "model": "ordinary-model"},
+        "create_reasoning_override": {"enabled": True, "effort": "ordinary-effort"},
+        "create_service_tier_override": "ordinary-tier",
+    }
+    session = {
+        "session_key": "session-route-restore",
+        "profile_home": None,
+        **original,
+    }
+    context = {"operation_id": "operation-route-restore"}
+    result = server._consume_orch_sdo_submit(
+        {},
+        session,
+        context,
+        decision_callable=lambda _context: _decision("operation-route-restore"),
+    )
+    assert result["claim_status"] == "admitted"
+    assert session["model_override"]["model"] == "gpt-5.6-luna"
+
+    server._orch_open_orch_turn(session, "gateway-route", context)
+    server._orch_clear_orch_turn(session)
+    assert session["model_override"] == original["model_override"]
+    assert session["create_reasoning_override"] == original["create_reasoning_override"]
+    assert session["create_service_tier_override"] == original["create_service_tier_override"]
+
+
+def test_withheld_route_clear_preserves_ordinary_overrides(monkeypatch) -> None:
+    db = _RecordingDB(reserve=False)
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    original = {
+        "model_override": {"provider": "ordinary-provider", "model": "ordinary-model"},
+        "create_reasoning_override": {"enabled": True, "effort": "ordinary-effort"},
+        "create_service_tier_override": "ordinary-tier",
+    }
+    session = {
+        "session_key": "session-route-withheld",
+        "profile_home": None,
+        **original,
+    }
+    result = server._consume_orch_sdo_submit(
+        {},
+        session,
+        {"operation_id": "operation-route-withheld"},
+        decision_callable=lambda _context: _decision("operation-route-withheld"),
+    )
+    assert result["claim_status"] == "withheld"
+    server._orch_clear_orch_turn(session)
+    assert session["model_override"] == original["model_override"]
+    assert session["create_reasoning_override"] == original["create_reasoning_override"]
+    assert session["create_service_tier_override"] == original["create_service_tier_override"]
+
+
+def test_status_keeps_profile_db_handle_inside_context(monkeypatch) -> None:
+    class _LifetimeDB(_RecordingDB):
+        def __init__(self):
+            super().__init__()
+            self.active = False
+            self.read_inside_context = False
+
+        def read_orch_task_observations(self, *args, **kwargs):
+            if not self.active:
+                raise AssertionError("profile DB used after context exit")
+            self.read_inside_context = True
+            return [
+                {
+                    "operation_id": "operation-lifetime",
+                    "session_id": "session-lifetime",
+                    "profile_name": "",
+                    "observation": {"result": {"status": "complete"}},
+                }
+            ]
+
+    db = _LifetimeDB()
+
+    @contextmanager
+    def db_context(_session):
+        db.active = True
+        try:
+            yield db
+        finally:
+            db.active = False
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    projection = server._orch_sdo_status_projection(
+        {
+            "session_key": "session-lifetime",
+            "profile_home": None,
+            "_orch_status_operation_id": "operation-lifetime",
+        }
+    )
+    assert db.read_inside_context is True
+    assert projection["terminal_result_status"] == "complete"
+
+
 def test_operational_inflight_failure_is_fixed_and_value_free() -> None:
     session = {
         "inflight_turn": {"assistant": "", "user": "synthetic"},

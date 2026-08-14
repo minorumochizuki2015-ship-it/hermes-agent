@@ -658,7 +658,12 @@ def _(rid, params: dict) -> dict:
             f"session storage could not be written: {exc}",
         )
     if orch_context is not None:
-        sdo_decision = _consume_orch_sdo_submit(params, session, orch_context)
+        sdo_decision = _consume_orch_sdo_submit(
+            params,
+            session,
+            orch_context,
+            gateway_session_id=sid,
+        )
         if sdo_decision.get("claim_status") != "admitted":
             sdo_status = _orch_sdo_status_projection(session)
             with session["history_lock"]:
@@ -673,7 +678,8 @@ def _(rid, params: dict) -> dict:
                     "sdo": sdo_status,
                 },
             )
-        _orch_open_orch_turn(session, sid, orch_context)
+        if session.get("_orch_turn_binding") is None:
+            _orch_open_orch_turn(session, sid, orch_context)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
