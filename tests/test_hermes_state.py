@@ -73,6 +73,37 @@ def _orch_context_after(**overrides):
     return values
 
 
+def _orch_sdo_binding(operation_id="orch-op-1", **overrides):
+    values = {
+        "project_id": "project-test",
+        "repo_id": "repo-test",
+        "worktree_id": "worktree-test",
+        "goal_ref": "goal-test",
+        "request_ref": "request-test",
+        "transition": "natural_delegated_nontrivial",
+        "logical_session_id": "s1",
+        "operation_id": operation_id,
+    }
+    values.update(overrides)
+    return values
+
+
+def _orch_sdo_outcome(**overrides):
+    values = {
+        "selected_action_id": "action-test",
+        "base_selected_action_id": "action-base-test",
+        "decision": "CONTINUE_LOCAL",
+        "dispatch_mode": "continue_local",
+        "action_changed": False,
+        "replan_required": False,
+        "model": "openai/gpt-5",
+        "reasoning_effort": "high",
+        "service_tier_preference": "fast",
+    }
+    values.update(overrides)
+    return values
+
+
 class _NoFtsCursor(sqlite3.Cursor):
     """Simulate a SQLite build without the fts5 module."""
 
@@ -183,6 +214,155 @@ def test_immutable_read_only_session_uses_checkpointed_store(tmp_path):
         assert read_only.get_session("s1")["id"] == "s1"
     finally:
         read_only.close()
+
+
+def test_preflight_reserves_operation_before_external_authority(tmp_path):
+    path = tmp_path / "reservation.db"
+    seed = SessionDB(db_path=path)
+    seed.create_session("s1", source="cli")
+    seed.close()
+    db1 = SessionDB(db_path=path)
+    db2 = SessionDB(db_path=path)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda db: db.preflight_orch_task_observation("s1", "orch-op-race"),
+                (db1, db2),
+            ))
+        assert sorted(results) == [False, True]
+    finally:
+        db1.close()
+        db2.close()
+
+
+def test_expired_preflight_reservation_is_terminal_fence(tmp_path, monkeypatch):
+    path = tmp_path / "expired-reservation.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli")
+    try:
+        monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+        assert db.preflight_orch_task_observation("s1", "orch-op-expired") is True
+
+        monkeypatch.setattr(
+            hermes_state.time,
+            "time",
+            lambda: 1000.0 + hermes_state.HERMES_ORCH_RESERVATION_TTL_SECONDS + 1.0,
+        )
+        assert db.preflight_orch_task_observation("s1", "orch-op-expired") is False
+        row = db.read_orch_task_observations("s1")[0]
+        assert row["state"] == "failed"
+        assert row["observation"]["result"]["telemetry_status"] == (
+            "reservation_expired"
+        )
+        assert db.preflight_orch_task_observation("s1", "orch-op-expired") is False
+    finally:
+        db.close()
+
+
+def test_sdo_claim_requires_finite_future_expiry_and_global_sanitized_fence(tmp_path):
+    path = tmp_path / "claim.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli")
+    assert db.begin_orch_task_observation("s1", _orch_context("orch-op-claim-1")) is True
+    assert db.begin_orch_task_observation("s1", _orch_context("orch-op-claim-2")) is True
+
+    for invalid_expiry in (999.0, 1000.0, float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="sdo_binding_invalid"):
+            db.claim_orch_sdo_receipt(
+                "orch-op-claim-1",
+                receipt_digest="a" * 64,
+                binding=_orch_sdo_binding("orch-op-claim-1"),
+                expires_at=invalid_expiry,
+                now=1000.0,
+            )
+
+    for invalid_digest in ("A" * 64, "g" * 64, "a" * 63):
+        with pytest.raises(ValueError, match="sdo_binding_invalid"):
+            db.claim_orch_sdo_receipt(
+                "orch-op-claim-1",
+                receipt_digest=invalid_digest,
+                binding=_orch_sdo_binding("orch-op-claim-1"),
+                expires_at=1010.0,
+                now=1000.0,
+            )
+
+    binding = _orch_sdo_binding(
+        "orch-op-claim-1",
+        project_id="synthetic://example.invalid/tenant?canary=1",
+        repo_id="synthetic/private/checkout",
+        worktree_id="sk-SYNTHETIC-CANARY",
+        goal_ref="opaque:sha256:short",
+    )
+    outcome = _orch_sdo_outcome(
+        selected_action_id="synthetic://example.invalid/action",
+        base_selected_action_id="synthetic/private/base",
+        model="custom:synthetic://provider/canary",
+    )
+    assert db.claim_orch_sdo_receipt(
+        "orch-op-claim-1",
+        receipt_digest="b" * 64,
+        binding=binding,
+        expires_at=1001.0,
+        outcome=outcome,
+        now=1000.0,
+    ) is True
+
+    raw = db._conn.execute(
+        "SELECT observation_json FROM orch_task_observations "
+        "WHERE operation_id = ?",
+        ("orch-op-claim-1",),
+    ).fetchone()[0]
+    assert "synthetic://example.invalid" not in raw
+    assert "synthetic/private/checkout" not in raw
+    assert "sk-SYNTHETIC-CANARY" not in raw
+    assert "opaque:sha256:short" not in raw
+    assert "opaque:sha256:" in raw
+    assert "custom:sha256:" in raw
+
+    projected = db.read_orch_task_observations("s1")[0]["observation"]
+    assert "sdo_claim" not in projected
+    assert db.claim_orch_sdo_receipt(
+        "orch-op-claim-2",
+        receipt_digest="b" * 64,
+        binding=_orch_sdo_binding("orch-op-claim-2"),
+        expires_at=1003.0,
+        now=1002.0,
+    ) is False
+    db.close()
+
+
+@pytest.mark.parametrize("field", ["issued_at", "expires_at"])
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])
+def test_operational_context_rejects_nonfinite_timestamps(field, timestamp):
+    context = _orch_context(f"orch-op-time-{field}")
+    context[field] = timestamp
+    assert hermes_state.validate_orch_operational_context(context)[0] == (
+        "context_invalid"
+    )
+
+
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf")])
+def test_operational_context_rejects_nonfinite_caller_now(timestamp):
+    assert hermes_state.validate_orch_operational_context(
+        _orch_context("orch-op-time-now"), now=timestamp
+    )[0] == "context_invalid"
+
+
+def test_immutable_read_only_rejects_live_uncheckpointed_wal(tmp_path):
+    path = tmp_path / "live-wal.db"
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        conn.commit()
+        conn.execute("INSERT INTO marker VALUES ('synthetic-canary')")
+        conn.commit()
+        wal_path = Path(f"{path}-wal")
+        assert wal_path.exists() and wal_path.stat().st_size > 0
+        with pytest.raises(ValueError, match="immutable_snapshot_unavailable"):
+            SessionDB(db_path=path, read_only=True, immutable=True)
+    finally:
+        conn.close()
 
 
 # =========================================================================

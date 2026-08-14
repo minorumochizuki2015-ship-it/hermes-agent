@@ -21,6 +21,7 @@ import errno
 import hashlib
 import json
 import logging
+import math
 import os
 import queue
 import random
@@ -184,6 +185,7 @@ HERMES_ORCH_OPERATIONAL_GOAL = "hermes_exclusive_harness_complete_migration"
 HERMES_ORCH_OPERATIONAL_TARGET = "hermes"
 HERMES_ORCH_OPERATIONAL_REVISION = 1
 HERMES_ORCH_CONTEXT_MAX_TTL_SECONDS = 300.0
+HERMES_ORCH_RESERVATION_TTL_SECONDS = 30.0
 
 HERMES_ORCH_TELEMETRY_FIELDS = frozenset(
     {
@@ -233,6 +235,53 @@ _ORCH_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _ORCH_SECRET_PREFIX_RE = re.compile(
     r"^(?:sk-|gh[opurs]_|xox[baprs]-|AIza|eyJ[A-Za-z0-9_-]*\.)"
 )
+_ORCH_SECRET_SHAPED_RE = re.compile(
+    r"(?i)(?:^|[._-])(secret|token|password|api[_-]?key)(?:$|[=:._-])"
+)
+_ORCH_BINDING_SAFE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@:\-]{0,127}$")
+_ORCH_CANONICAL_DIGEST_RE = re.compile(
+    r"^(?:opaque|custom):sha256:[0-9a-f]{64}$"
+)
+
+
+def _finite_orch_timestamp(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        checked = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return checked if math.isfinite(checked) else None
+
+
+def _canonical_orch_binding_value(value: Any) -> Optional[str]:
+    """Return a bounded binding value without persisting private material."""
+    if not isinstance(value, str) or not value or len(value) > 1024:
+        return None
+    if _ORCH_CANONICAL_DIGEST_RE.fullmatch(value):
+        return value
+    segments = value.split("/")
+    digest_like = value.startswith(("opaque:sha256:", "custom:sha256:"))
+    path_like = bool(
+        value.startswith(("/", "~", "./", "../", ".\\", "..\\", "file:"))
+        or re.match(r"^[A-Za-z]:[\\/]", value)
+        or value.startswith("Users/")
+        or "\\" in value
+        or "/" in value
+        or "://" in value
+    )
+    secret_like = any(_ORCH_SECRET_PREFIX_RE.match(segment) for segment in segments)
+    secret_like = secret_like or _ORCH_SECRET_SHAPED_RE.search(value) is not None
+    if (
+        any(ord(character) < 32 for character in value)
+        or path_like
+        or secret_like
+        or digest_like
+        or _ORCH_BINDING_SAFE_RE.fullmatch(value) is None
+    ):
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        return f"opaque:sha256:{digest}"
+    return value
 _ORCH_TASK_CLASSES = frozenset(
     {"mechanical", "implementation", "audit", "operations", "product", "research", "migration"}
 )
@@ -338,6 +387,20 @@ def _initial_orch_observation(
     }
 
 
+def _initial_orch_reservation(*, expires_at: float) -> Dict[str, Any]:
+    return {
+        "reservation": {
+            "status": "reserved",
+            "expires_at": float(expires_at),
+            "provenance": "local_replay_fence",
+        },
+        "result": {
+            "status": "reservation_pending",
+            "provenance": "local_replay_fence",
+        },
+    }
+
+
 def _canonical_orch_effort(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     return normalized if normalized in _ORCH_EFFORTS else "unknown"
@@ -435,16 +498,13 @@ def validate_orch_operational_context(
     if not isinstance(operation_id, str) or not _ORCH_ID_RE.fullmatch(operation_id):
         return "context_invalid", None
 
-    issued_at = value.get("issued_at")
-    expires_at = value.get("expires_at")
-    if (
-        isinstance(issued_at, bool)
-        or isinstance(expires_at, bool)
-        or not isinstance(issued_at, (int, float))
-        or not isinstance(expires_at, (int, float))
-    ):
+    issued_at = _finite_orch_timestamp(value.get("issued_at"))
+    expires_at = _finite_orch_timestamp(value.get("expires_at"))
+    if issued_at is None or expires_at is None:
         return "context_invalid", None
-    checked_now = time.time() if now is None else now
+    checked_now = time.time() if now is None else _finite_orch_timestamp(now)
+    if checked_now is None:
+        return "context_invalid", None
     if (
         issued_at > checked_now + 5.0
         or expires_at <= checked_now
@@ -838,6 +898,21 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 "database, mark it with "
                 "@pytest.mark.live_system_guard_bypass."
             )
+
+
+def _ensure_immutable_snapshot_frozen(db_path: Path) -> None:
+    """Reject immutable reads while an uncheckpointed WAL can still change."""
+    wal_path = Path(f"{db_path}-wal")
+    try:
+        if wal_path.is_symlink() or (
+            wal_path.exists() and wal_path.stat().st_size > 0
+        ):
+            raise ValueError("immutable_snapshot_unavailable")
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("immutable_snapshot_unavailable") from exc
+
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -3135,6 +3210,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
         self.immutable = bool(immutable and read_only)
+        if self.immutable:
+            _ensure_immutable_snapshot_frozen(self.db_path)
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -4382,13 +4459,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         profile_name: str = "",
     ) -> bool:
-        """Prove the owning store is writable before authority consumption.
+        """Reserve an operation before authority consumption.
 
-        The callback runs through ``_execute_write`` so SQLite must acquire the
-        same write transaction used by the eventual observation insert, but it
-        deliberately changes no rows.  ``False`` means the operation id already
-        exists and must be rejected as a replay before an external authority
-        consumer burns its exact-once decision.
+        The reservation is inserted inside the same ``BEGIN IMMEDIATE`` write
+        transaction used by the eventual observation.  A concurrent caller
+        therefore cannot both receive continuation permission for one
+        operation id, and an abandoned reservation expires into a terminal
+        local fence rather than becoming reusable authority budget.
         """
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("session_unavailable")
@@ -4396,6 +4473,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             raise ValueError("context_invalid")
         if not isinstance(profile_name, str) or len(profile_name) > 128:
             raise ValueError("profile_mismatch")
+        when = time.time()
+        reservation_expires_at = when + HERMES_ORCH_RESERVATION_TTL_SECONDS
+        reservation_json = json.dumps(
+            _initial_orch_reservation(expires_at=reservation_expires_at),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
         def _do(conn):
             session_row = conn.execute(
@@ -4408,10 +4492,79 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if str(session_row["profile_name"] or "") != profile_name:
                 raise ValueError("profile_mismatch")
             replay = conn.execute(
-                "SELECT 1 FROM orch_task_observations WHERE operation_id = ?",
+                "SELECT state, finished_at, observation_json "
+                "FROM orch_task_observations WHERE operation_id = ?",
                 (operation_id,),
             ).fetchone()
-            return replay is None
+            if replay is not None:
+                if replay["state"] == "reserved" and replay["finished_at"] is None:
+                    try:
+                        stored = json.loads(replay["observation_json"])
+                    except (TypeError, ValueError):
+                        stored = None
+                    reservation = stored.get("reservation") if isinstance(stored, dict) else None
+                    stored_expiry = (
+                        _finite_orch_timestamp(reservation.get("expires_at"))
+                        if isinstance(reservation, dict)
+                        else None
+                    )
+                    if stored_expiry is not None and stored_expiry > when:
+                        return False
+                    expired_observation = {
+                        "reservation": {
+                            "status": "expired",
+                            "provenance": "local_replay_fence",
+                        },
+                        "result": {
+                            "status": "failed",
+                            "telemetry_status": "reservation_expired",
+                            "provenance": "local_replay_fence",
+                        },
+                    }
+                    conn.execute(
+                        "UPDATE orch_task_observations "
+                        "SET state = 'failed', finished_at = ?, observation_json = ? "
+                        "WHERE operation_id = ? AND state = 'reserved' "
+                        "AND finished_at IS NULL",
+                        (
+                            when,
+                            json.dumps(
+                                expired_observation,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            operation_id,
+                        ),
+                    )
+                return False
+            cursor = conn.execute(
+                """INSERT INTO orch_task_observations (
+                       operation_id, session_id, profile_name, context_version,
+                       authority_bundle_id, authority_bundle_version,
+                       authority_bundle_digest, threshold_policy_version,
+                       threshold_policy_digest, goal, operation, target,
+                       revision, observation_json, state, started_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)
+                   ON CONFLICT(operation_id) DO NOTHING""",
+                (
+                    operation_id,
+                    session_id,
+                    profile_name,
+                    HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION,
+                    HERMES_MAESTRO_AUTHORITY_BUNDLE_ID,
+                    HERMES_MAESTRO_AUTHORITY_BUNDLE_VERSION,
+                    HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST,
+                    "reservation_pending.v1",
+                    "0" * 64,
+                    HERMES_ORCH_OPERATIONAL_GOAL,
+                    "prompt.submit",
+                    HERMES_ORCH_OPERATIONAL_TARGET,
+                    HERMES_ORCH_OPERATIONAL_REVISION,
+                    reservation_json,
+                    when,
+                ),
+            )
+            return cursor.rowcount == 1
 
         return self._execute_write(_do)
 
@@ -4457,6 +4610,95 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             stored_profile = str(session_row["profile_name"] or "")
             if stored_profile != profile_name:
                 raise ValueError("profile_mismatch")
+            existing = conn.execute(
+                "SELECT state, finished_at, started_at, observation_json "
+                "FROM orch_task_observations WHERE operation_id = ?",
+                (checked["operation_id"],),
+            ).fetchone()
+            if existing is not None:
+                if existing["state"] != "reserved" or existing["finished_at"] is not None:
+                    return False
+                try:
+                    reserved_observation = json.loads(existing["observation_json"])
+                except (TypeError, ValueError):
+                    return False
+                reservation = (
+                    reserved_observation.get("reservation")
+                    if isinstance(reserved_observation, dict)
+                    else None
+                )
+                reservation_expires_at = (
+                    _finite_orch_timestamp(reservation.get("expires_at"))
+                    if isinstance(reservation, dict)
+                    else None
+                )
+                if reservation_expires_at is None or reservation_expires_at <= when:
+                    expired_observation = {
+                        "reservation": {
+                            "status": "expired",
+                            "provenance": "local_replay_fence",
+                        },
+                        "result": {
+                            "status": "failed",
+                            "telemetry_status": "reservation_expired",
+                            "provenance": "local_replay_fence",
+                        },
+                    }
+                    conn.execute(
+                        "UPDATE orch_task_observations "
+                        "SET state = 'failed', finished_at = ?, observation_json = ? "
+                        "WHERE operation_id = ? AND state = 'reserved' "
+                        "AND finished_at IS NULL",
+                        (
+                            when,
+                            json.dumps(
+                                expired_observation,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            checked["operation_id"],
+                        ),
+                    )
+                    return False
+                if isinstance(reserved_observation, dict) and isinstance(
+                    reserved_observation.get("sdo_claim"), dict
+                ):
+                    observation["sdo_claim"] = reserved_observation["sdo_claim"]
+                    stored_observation_json = json.dumps(
+                        observation, sort_keys=True, separators=(",", ":")
+                    )
+                else:
+                    stored_observation_json = observation_json
+                cursor = conn.execute(
+                    """UPDATE orch_task_observations SET
+                           session_id = ?, profile_name = ?, context_version = ?,
+                           authority_bundle_id = ?, authority_bundle_version = ?,
+                           authority_bundle_digest = ?, threshold_policy_version = ?,
+                           threshold_policy_digest = ?, goal = ?, operation = ?,
+                           target = ?, revision = ?, observation_json = ?,
+                           state = 'running', started_at = ?, first_delta_at = NULL,
+                           finished_at = NULL
+                       WHERE operation_id = ? AND state = 'reserved'
+                         AND finished_at IS NULL""",
+                    (
+                        session_id,
+                        profile_name,
+                        checked["contract_version"],
+                        checked["authority_bundle"]["identity"],
+                        checked["authority_bundle"]["version"],
+                        checked["authority_bundle"]["digest"],
+                        checked["threshold_policy"]["version"],
+                        checked["threshold_policy"]["digest"],
+                        checked["goal"],
+                        checked["operation"],
+                        checked["target"],
+                        checked["revision"],
+                        stored_observation_json,
+                        existing["started_at"],
+                        checked["operation_id"],
+                    ),
+                )
+                return cursor.rowcount == 1
             cursor = conn.execute(
                 """INSERT INTO orch_task_observations (
                        operation_id, session_id, profile_name, context_version,
@@ -4502,10 +4744,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         This reuses the operation observation's JSON projection as the bounded
         private replay fence.  It deliberately adds no table or schema: a
-        receipt digest is one-use across gateway restarts and sessions, while
-        expired SDO claims are garbage-collected in place.  The binding is
-        stored alongside the digest so a claim cannot be detached from its
-        project, repo/worktree, goal, request, or transition.
+        receipt digest is one-use across gateway restarts and sessions.  The
+        binding is stored in bounded canonical form alongside the digest so a
+        claim cannot be detached from its project, repo/worktree, goal,
+        request, or transition without persisting private source material.
         """
         required = {
             "project_id",
@@ -4519,15 +4761,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         }
         if (
             not isinstance(operation_id, str)
-            or not operation_id
+            or _ORCH_ID_RE.fullmatch(operation_id) is None
             or not isinstance(receipt_digest, str)
-            or len(receipt_digest) != 64
+            or _ORCH_SHA256_RE.fullmatch(receipt_digest) is None
             or not isinstance(binding, dict)
             or set(binding) != required
             or any(not isinstance(value, str) or not value for value in binding.values())
             or binding["operation_id"] != operation_id
-            or isinstance(expires_at, bool)
-            or not isinstance(expires_at, (int, float))
+        ):
+            raise ValueError("sdo_binding_invalid")
+        safe_binding = {}
+        for key in sorted(required):
+            safe_value = _canonical_orch_binding_value(binding[key])
+            if safe_value is None:
+                raise ValueError("sdo_binding_invalid")
+            safe_binding[key] = safe_value
+        checked_now = time.time() if now is None else _finite_orch_timestamp(now)
+        checked_expiry = _finite_orch_timestamp(expires_at)
+        if (
+            checked_now is None
+            or checked_expiry is None
+            or checked_expiry <= checked_now
         ):
             raise ValueError("sdo_binding_invalid")
         safe_outcome = None
@@ -4545,12 +4799,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             }
             if type(outcome) is not dict or set(outcome) != outcome_fields:
                 raise ValueError("sdo_outcome_invalid")
+            safe_outcome = dict(outcome)
             for key in ("selected_action_id", "base_selected_action_id", "model"):
                 value = outcome[key]
-                if value is not None and (
-                    not isinstance(value, str) or not value or len(value) > 160
-                ):
+                if value is None:
+                    continue
+                if key == "model":
+                    safe_value = _canonical_orch_model_id(value)
+                else:
+                    safe_value = _canonical_orch_binding_value(value)
+                if safe_value is None or len(safe_value) > 160:
                     raise ValueError("sdo_outcome_invalid")
+                safe_outcome[key] = safe_value
             if (
                 outcome["decision"] not in {"CONTINUE_LOCAL", "REPLAN_NOW"}
                 or outcome["dispatch_mode"] not in {"continue_local", "replan_local"}
@@ -4560,20 +4820,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 or outcome["service_tier_preference"] not in {None, "fast", "standard"}
             ):
                 raise ValueError("sdo_outcome_invalid")
-            safe_outcome = dict(outcome)
-        checked_now = time.time() if now is None else float(now)
         claim = {
             "receipt_digest": receipt_digest,
-            **{key: binding[key] for key in sorted(required)},
-            "expires_at": float(expires_at),
+            **safe_binding,
+            "expires_at": checked_expiry,
         }
         if safe_outcome is not None:
             claim["outcome"] = safe_outcome
 
         def _do(conn):
-            # Expiry is the only permitted garbage-collection condition.  Do
-            # not clear a bounded set by count: old live claims remain replay
-            # fences after process restart.
+            # Never garbage-collect a receipt fence: expiry makes a claim
+            # unusable, but its digest must remain blocked forever so the same
+            # signed receipt cannot be reclaimed by another operation.
             rows = conn.execute(
                 "SELECT operation_id, observation_json "
                 "FROM orch_task_observations "
@@ -4586,22 +4844,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (TypeError, ValueError):
                     continue
                 if not isinstance(prior, dict):
-                    continue
-                prior_expiry = prior.get("expires_at")
-                if (
-                    isinstance(prior_expiry, (int, float))
-                    and not isinstance(prior_expiry, bool)
-                    and prior_expiry <= checked_now
-                ):
-                    observation.pop("sdo_claim", None)
-                    conn.execute(
-                        "UPDATE orch_task_observations SET observation_json = ? "
-                        "WHERE operation_id = ?",
-                        (
-                            json.dumps(observation, sort_keys=True, separators=(",", ":")),
-                            row["operation_id"],
-                        ),
-                    )
                     continue
                 if prior.get("receipt_digest") == receipt_digest:
                     return False
@@ -4882,6 +5124,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for row in rows:
             item = dict(row)
             item["observation"] = json.loads(item.pop("observation_json"))
+            if isinstance(item["observation"], dict):
+                item["observation"].pop("sdo_claim", None)
             result.append(item)
         return result
 
