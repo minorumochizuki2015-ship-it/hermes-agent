@@ -100,6 +100,11 @@ _FIXED_REVISION_UNAVAILABLE_MESSAGE = (
 _FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE = (
     "read_only_audit immutable snapshot is unavailable; no child was launched."
 )
+_SUBAGENT_TIMEOUT_ERROR_CATEGORY = "subagent_timeout"
+_SUBAGENT_EXECUTION_ERROR_CATEGORY = "subagent_execution_failed"
+_SUBAGENT_EXECUTION_FAILURE_MESSAGE = (
+    "Subagent execution failed before completion."
+)
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILES = 20000
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024
 _READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
@@ -113,10 +118,37 @@ _READ_ONLY_AUDIT_GIT_STDERR_BYTES = 64 * 1024
 _READ_ONLY_AUDIT_GIT_READ_CHUNK_BYTES = 64 * 1024
 
 
+def _resolve_trusted_git_executable() -> Optional[str]:
+    """Resolve one absolute, non-symlink Git executable before audit use."""
+    candidates = (
+        "/usr/bin/git",
+        "/bin/git",
+        "/usr/local/bin/git",
+        "/opt/homebrew/bin/git",
+        "/opt/local/bin/git",
+    )
+    for candidate in candidates:
+        try:
+            path = Path(candidate)
+            if (
+                path.is_absolute()
+                and path.is_file()
+                and not path.is_symlink()
+                and os.access(path, os.X_OK)
+            ):
+                return str(path)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+_TRUSTED_GIT_EXECUTABLE = _resolve_trusted_git_executable()
+
+
 def _read_only_audit_git_env() -> Dict[str, str]:
     """Return a bounded Git environment that cannot lazy-fetch or prompt."""
     env = {
-        "PATH": os.environ.get("PATH", os.defpath),
+        "PATH": os.defpath,
         "GIT_NO_LAZY_FETCH": "1",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -323,6 +355,7 @@ def _bounded_git_process_output(
     *,
     stdout_limit: int,
     timeout_seconds: float,
+    aggregate_deadline: Optional[float] = None,
 ) -> bytes:
     """Drain Git stdout/stderr incrementally under time and memory caps."""
     stdout_stream = getattr(process, "stdout", None)
@@ -337,7 +370,9 @@ def _bounded_git_process_output(
     selector = selectors.DefaultSelector()
     stdout_buffer = bytearray()
     stderr_size = 0
-    deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    if aggregate_deadline is not None:
+        deadline = min(deadline, aggregate_deadline)
     try:
         os.set_blocking(stdout_fd, False)
         os.set_blocking(stderr_fd, False)
@@ -415,11 +450,36 @@ def _bounded_git_process_output(
                 pass
 
 
-def _bounded_git_query(repo_root: str, args: List[str], *, limit: int) -> bytes:
+def _remaining_audit_deadline(deadline: Optional[float]) -> float:
+    """Return one bounded command budget without resetting the audit deadline."""
+    command_limit = _READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS
+    if deadline is None:
+        return command_limit
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+    return min(command_limit, remaining)
+
+
+def _ensure_audit_deadline(deadline: Optional[float]) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+
+
+def _bounded_git_query(
+    repo_root: str,
+    args: List[str],
+    *,
+    limit: int,
+    deadline: Optional[float] = None,
+) -> bytes:
     """Run one sanitized, no-fetch, bounded Git query."""
+    timeout_seconds = _remaining_audit_deadline(deadline)
+    if not _TRUSTED_GIT_EXECUTABLE:
+        raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
     try:
         process = subprocess.Popen(
-            ["git", "-C", repo_root, *args],
+            [_TRUSTED_GIT_EXECUTABLE, "-C", repo_root, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=_read_only_audit_git_env(),
@@ -429,16 +489,23 @@ def _bounded_git_query(repo_root: str, args: List[str], *, limit: int) -> bytes:
     return _bounded_git_process_output(
         process,
         stdout_limit=limit,
-        timeout_seconds=_READ_ONLY_AUDIT_GIT_COMMAND_TIMEOUT_SECONDS,
+        timeout_seconds=timeout_seconds,
+        aggregate_deadline=deadline,
     )
 
 
-def _git_output(repo_root: str, args: List[str], *, limit: int) -> bytes:
+def _git_output(
+    repo_root: str,
+    args: List[str],
+    *,
+    limit: int,
+    deadline: Optional[float] = None,
+) -> bytes:
     """Run a bounded read-only Git query without exposing command/path errors."""
-    return _bounded_git_query(repo_root, args, limit=limit)
+    return _bounded_git_query(repo_root, args, limit=limit, deadline=deadline)
 
 
-def _git_repo_root(candidate: Optional[str]) -> str:
+def _git_repo_root(candidate: Optional[str], *, deadline: Optional[float] = None) -> str:
     if not isinstance(candidate, str) or not candidate.strip():
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
     try:
@@ -447,7 +514,12 @@ def _git_repo_root(candidate: Optional[str]) -> str:
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE) from exc
     if not os.path.isdir(candidate):
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
-    raw = _git_output(candidate, ["rev-parse", "--show-toplevel"], limit=4096)
+    raw = _git_output(
+        candidate,
+        ["rev-parse", "--show-toplevel"],
+        limit=4096,
+        deadline=deadline,
+    )
     try:
         root = os.path.realpath(raw.decode("utf-8").strip())
     except (UnicodeDecodeError, OSError, ValueError) as exc:
@@ -457,7 +529,11 @@ def _git_repo_root(candidate: Optional[str]) -> str:
     return root
 
 
-def _resolve_read_only_audit_repo_root(parent_agent: Any) -> str:
+def _resolve_read_only_audit_repo_root(
+    parent_agent: Any,
+    *,
+    deadline: Optional[float] = None,
+) -> str:
     """Resolve the parent's current workspace, then prove its Git root."""
     candidate = None
     try:
@@ -470,15 +546,21 @@ def _resolve_read_only_audit_repo_root(parent_agent: Any) -> str:
         candidate = None
     if not candidate:
         candidate = _resolve_workspace_hint(parent_agent)
-    return _git_repo_root(candidate)
+    return _git_repo_root(candidate, deadline=deadline)
 
 
-def _resolve_unique_commit(repo_root: str, requested_revision: str) -> str:
+def _resolve_unique_commit(
+    repo_root: str,
+    requested_revision: str,
+    *,
+    deadline: Optional[float] = None,
+) -> str:
     """Resolve a fixed hex revision to exactly one full commit object."""
     raw = _git_output(
         repo_root,
         ["rev-parse", f"--disambiguate={requested_revision}"],
         limit=_READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES,
+        deadline=deadline,
     )
     object_ids = {
         line.decode("ascii").strip()
@@ -487,10 +569,12 @@ def _resolve_unique_commit(repo_root: str, requested_revision: str) -> str:
     }
     commits = []
     for object_id in sorted(object_ids):
+        _ensure_audit_deadline(deadline)
         object_type = _git_output(
             repo_root,
             ["cat-file", "-t", object_id],
             limit=64,
+            deadline=deadline,
         ).decode("ascii", errors="ignore").strip()
         if object_type == "commit":
             commits.append(object_id.lower())
@@ -499,15 +583,22 @@ def _resolve_unique_commit(repo_root: str, requested_revision: str) -> str:
     return commits[0]
 
 
-def _target_tree_entries(repo_root: str, resolved_revision: str) -> List[tuple[str, str, str]]:
+def _target_tree_entries(
+    repo_root: str,
+    resolved_revision: str,
+    *,
+    deadline: Optional[float] = None,
+) -> List[tuple[str, str, str]]:
     """Return safe blob entries and reject submodules/symlinks."""
     raw = _git_output(
         repo_root,
         ["ls-tree", "-r", "-z", "--full-tree", resolved_revision],
         limit=_READ_ONLY_AUDIT_MAX_TREE_LISTING_BYTES,
+        deadline=deadline,
     )
     entries: List[tuple[str, str, str]] = []
     for record in raw.split(b"\0"):
+        _ensure_audit_deadline(deadline)
         if not record:
             continue
         try:
@@ -534,11 +625,17 @@ def _target_tree_entries(repo_root: str, resolved_revision: str) -> List[tuple[s
     return entries
 
 
-def _read_git_blob(repo_root: str, object_id: str) -> bytes:
+def _read_git_blob(
+    repo_root: str,
+    object_id: str,
+    *,
+    deadline: Optional[float] = None,
+) -> bytes:
     return _bounded_git_query(
         repo_root,
         ["cat-file", "blob", object_id],
         limit=_READ_ONLY_AUDIT_MAX_SNAPSHOT_FILE_BYTES,
+        deadline=deadline,
     )
 
 
@@ -546,20 +643,27 @@ def _create_read_only_audit_snapshot(
     repo_root: str,
     requested_revision: str,
     resolved_revision: str,
+    *,
+    deadline: Optional[float] = None,
 ) -> _ReadOnlyAuditSnapshot:
     """Export exact Git object bytes into a private, non-Git snapshot."""
-    root = _git_repo_root(repo_root)
+    root = _git_repo_root(repo_root, deadline=deadline)
     # Revalidate the full object at the point of export. No ref or working-tree
     # state is consulted after this check.
-    if _resolve_unique_commit(root, resolved_revision) != resolved_revision.lower():
+    if (
+        _resolve_unique_commit(root, resolved_revision, deadline=deadline)
+        != resolved_revision.lower()
+    ):
         raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
-    entries = _target_tree_entries(root, resolved_revision)
+    entries = _target_tree_entries(root, resolved_revision, deadline=deadline)
     try:
         snapshot_root = tempfile.mkdtemp(prefix=".hermes-fixed-audit-")
         os.chmod(snapshot_root, 0o700)
         total_bytes = 0
         for mode, object_id, path in entries:
-            data = _read_git_blob(root, object_id)
+            _ensure_audit_deadline(deadline)
+            data = _read_git_blob(root, object_id, deadline=deadline)
+            _ensure_audit_deadline(deadline)
             total_bytes += len(data)
             if total_bytes > _READ_ONLY_AUDIT_MAX_SNAPSHOT_BYTES:
                 raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
@@ -2715,182 +2819,6 @@ def _build_child_agent(
     return child
 
 
-def _dump_subagent_timeout_diagnostic(
-    *,
-    child: Any,
-    task_index: int,
-    timeout_seconds: float,
-    duration_seconds: float,
-    worker_thread: Optional[threading.Thread],
-    goal: str,
-) -> Optional[str]:
-    """Write a structured diagnostic dump for a subagent that timed out
-    before making any API call.
-
-    See issue #14726: users hit "subagent timed out after 300s with no response"
-    with zero API calls and no way to inspect what happened. This helper
-    writes a dedicated log under ``~/.hermes/logs/subagent-<sid>-<ts>.log``
-    capturing the child's config, system-prompt / tool-schema sizes, activity
-    tracker snapshot, and the worker thread's Python stack at timeout.
-
-    Returns the absolute path to the diagnostic file, or None on failure.
-    """
-    try:
-        from hermes_constants import get_hermes_home
-        import datetime as _dt
-        import sys as _sys
-        import traceback as _traceback
-        import threading as _threading
-
-        hermes_home = get_hermes_home()
-        logs_dir = hermes_home / "logs"
-        try:
-            logs_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            return None
-
-        subagent_id = getattr(child, "_subagent_id", None) or f"idx{task_index}"
-        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        dump_path = logs_dir / f"subagent-timeout-{subagent_id}-{ts}.log"
-
-        lines: List[str] = []
-        def _w(line: str = "") -> None:
-            lines.append(line)
-
-        _w("# Subagent timeout diagnostic — issue #14726")
-        _w(f"# Generated: {_dt.datetime.now().isoformat()}")
-        _w("")
-        _w("## Timeout")
-        _w(f"  task_index:        {task_index}")
-        _w(f"  subagent_id:       {subagent_id}")
-        _w(f"  configured_timeout: {timeout_seconds}s")
-        _w(f"  actual_duration:   {duration_seconds:.2f}s")
-        _w("")
-
-        _w("## Goal")
-        _goal_preview = (goal or "").strip()
-        if len(_goal_preview) > 1000:
-            _goal_preview = _goal_preview[:1000] + " ...[truncated]"
-        _w(_goal_preview or "(empty)")
-        _w("")
-
-        _w("## Child config")
-        for attr in (
-            "model", "provider", "api_mode", "base_url", "max_iterations",
-            "quiet_mode", "skip_memory", "skip_context_files", "platform",
-            "_delegate_role", "_delegate_depth",
-        ):
-            try:
-                val = getattr(child, attr, None)
-                # Redact api_key-shaped values defensively
-                if isinstance(val, str) and attr == "base_url":
-                    pass
-                _w(f"  {attr}: {val!r}")
-            except Exception:
-                _w(f"  {attr}: <unreadable>")
-        _w("")
-
-        _w("## Toolsets")
-        enabled = getattr(child, "enabled_toolsets", None)
-        _w(f"  enabled_toolsets:  {enabled!r}")
-        tool_names = getattr(child, "valid_tool_names", None)
-        if tool_names:
-            _w(f"  loaded tool count: {len(tool_names)}")
-            try:
-                _w(f"  loaded tools:      {sorted(tool_names)}")
-            except Exception:
-                pass
-        _w("")
-
-        _w("## Prompt / schema sizes")
-        try:
-            sys_prompt = getattr(child, "ephemeral_system_prompt", None) \
-                or getattr(child, "system_prompt", None) \
-                or ""
-            _w(f"  system_prompt_bytes: {len(sys_prompt.encode('utf-8')) if isinstance(sys_prompt, str) else 'n/a'}")
-            _w(f"  system_prompt_chars: {len(sys_prompt) if isinstance(sys_prompt, str) else 'n/a'}")
-        except Exception as exc:
-            _w(f"  system_prompt: <error: {exc}>")
-        try:
-            tools_schema = getattr(child, "tools", None)
-            if tools_schema is not None:
-                _schema_json = json.dumps(tools_schema, default=str)
-                _w(f"  tool_schema_count: {len(tools_schema)}")
-                _w(f"  tool_schema_bytes: {len(_schema_json.encode('utf-8'))}")
-        except Exception as exc:
-            _w(f"  tool_schema: <error: {exc}>")
-        _w("")
-
-        _w("## Activity summary")
-        try:
-            summary = child.get_activity_summary()
-            for k, v in summary.items():
-                _w(f"  {k}: {v!r}")
-        except Exception as exc:
-            _w(f"  <get_activity_summary failed: {exc}>")
-        _w("")
-
-        _w("## Worker thread stack at timeout")
-        if worker_thread is not None and worker_thread.is_alive():
-            frames = _sys._current_frames()
-            worker_frame = frames.get(worker_thread.ident)
-            if worker_frame is not None:
-                stack = _traceback.format_stack(worker_frame)
-                for frame_line in stack:
-                    for sub in frame_line.rstrip().split("\n"):
-                        _w(f"  {sub}")
-            else:
-                _w("  <worker frame not available>")
-        elif worker_thread is None:
-            _w("  <no worker thread handle>")
-        else:
-            _w("  <worker thread already exited>")
-        _w("")
-
-        # All other live threads. The conversation worker's own stack often
-        # shows it parked waiting on a nested helper thread (interrupt worker,
-        # daemon-pool sibling) — without the full picture, a pre-HTTP wedge
-        # (#60203/#62151) is indistinguishable from a slow provider. Best
-        # effort and bounded: names + stacks for up to 40 threads.
-        _w("## All thread stacks at timeout")
-        try:
-            frames = _sys._current_frames()
-            by_ident = {
-                th.ident: th for th in _threading.enumerate() if th.ident
-            }
-            worker_ident = worker_thread.ident if worker_thread else None
-            dumped = 0
-            for ident, frame in frames.items():
-                if ident == worker_ident:
-                    continue  # already dumped above
-                if dumped >= 40:
-                    _w(f"  <{len(frames) - dumped - 1} more threads omitted>")
-                    break
-                th = by_ident.get(ident)
-                name = th.name if th else f"ident={ident}"
-                daemon = " daemon" if (th and th.daemon) else ""
-                _w(f"  --- {name}{daemon} ---")
-                for frame_line in _traceback.format_stack(frame):
-                    for sub in frame_line.rstrip().split("\n"):
-                        _w(f"    {sub}")
-                dumped += 1
-        except Exception as exc:
-            _w(f"  <all-thread dump failed: {exc}>")
-        _w("")
-
-        _w("## Notes")
-        _w("  This file is written ONLY when a subagent times out with 0 API calls.")
-        _w("  0-API-call timeouts mean the child never reached its first LLM request.")
-        _w("  Common causes: oversized prompt rejected by provider, transport hang,")
-        _w("  credential resolution stuck. See issue #14726 for context.")
-
-        dump_path.write_text("\n".join(lines), encoding="utf-8")
-        return str(dump_path)
-    except Exception as exc:
-        logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
-        return None
-
-
 def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     """Write a subagent's full summary to the delegation cache and return path.
 
@@ -3357,7 +3285,13 @@ def _run_single_child(
         _heartbeat_thread.start()
         if child_progress_cb:
             try:
-                child_progress_cb("subagent.start", preview=goal)
+                start_preview = (
+                    "read_only_audit_started"
+                    if getattr(child, "_delegate_capability_profile", None)
+                    == READ_ONLY_AUDIT_PROFILE
+                    else goal
+                )
+                child_progress_cb("subagent.start", preview=start_preview)
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
@@ -3428,10 +3362,6 @@ def _run_single_child(
             initializer=_set_subagent_approval_cb,
             initargs=(_get_subagent_approval_callback(),),
         )
-        # Capture the worker thread so the timeout diagnostic can dump its
-        # Python stack (see #14726 — 0-API-call hangs are opaque without it).
-        _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
-
         def _relay_child_text(delta: str) -> None:
             # Forward the child's streamed reply text up the progress relay so
             # gateway watch windows mirror it live (subagent.text → message.delta).
@@ -3444,7 +3374,6 @@ def _run_single_child(
                 logger.debug("Child text relay failed: %s", e)
 
         def _run_with_thread_capture():
-            _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
@@ -3465,9 +3394,8 @@ def _run_single_child(
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
             # retain steer text that won the race with this failure/timeout.
-            _late_pending_steer = (
-                _close_subagent_steering(_subagent_id, child) if _subagent_id else None
-            )
+            if _subagent_id:
+                _close_subagent_steering(_subagent_id, child)
             if audit_snapshot is not None:
                 audit_snapshot.revoke()
             # Signal the child to stop so its thread can exit cleanly.
@@ -3487,33 +3415,12 @@ def _run_single_child(
                 duration,
             )
 
-            # When a subagent times out BEFORE making any API call, dump a
-            # diagnostic to help users (and us) see what the child was doing.
-            # See #14726 — without this, 0-API-call hangs are black boxes.
-            diagnostic_path: Optional[str] = None
             child_api_calls = 0
             try:
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
             except Exception:
                 pass
-            if is_timeout and child_api_calls == 0:
-                diagnostic_path = _dump_subagent_timeout_diagnostic(
-                    child=child,
-                    task_index=task_index,
-                    # is_timeout implies a cap was configured (result(timeout=None)
-                    # never raises FuturesTimeoutError); guard for the type checker.
-                    timeout_seconds=float(child_timeout or 0.0),
-                    duration_seconds=float(duration),
-                    worker_thread=_worker_thread_holder.get("t"),
-                    goal=goal,
-                )
-                if diagnostic_path:
-                    logger.warning(
-                        "Subagent %d 0-API-call timeout — diagnostic written to %s",
-                        task_index,
-                        diagnostic_path,
-                    )
 
             if child_progress_cb:
                 try:
@@ -3522,7 +3429,7 @@ def _run_single_child(
                         preview=(
                             f"Timed out after {duration}s"
                             if is_timeout
-                            else str(_timeout_exc)
+                            else _SUBAGENT_EXECUTION_FAILURE_MESSAGE
                         ),
                         status="timeout" if is_timeout else "error",
                         duration_seconds=duration,
@@ -3547,11 +3454,16 @@ def _run_single_child(
                         f"network request."
                     )
             else:
-                _err = str(_timeout_exc)
+                _err = _SUBAGENT_EXECUTION_FAILURE_MESSAGE
 
             _error_entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
+                "error_category": (
+                    _SUBAGENT_TIMEOUT_ERROR_CATEGORY
+                    if is_timeout
+                    else _SUBAGENT_EXECUTION_ERROR_CATEGORY
+                ),
                 "summary": None,
                 "error": _err,
                 "exit_reason": "timeout" if is_timeout else "error",
@@ -3566,12 +3478,6 @@ def _run_single_child(
                 ),
                 "_child_role": getattr(child, "_delegate_role", None),
             }
-            if _late_pending_steer:
-                _error_entry["missed_steer"] = _late_pending_steer
-                _error_entry["error"] += (
-                    " [steer did not land before the subagent stopped: "
-                    f"{_late_pending_steer}]"
-                )
             _attach_audit_revision_receipt(_error_entry)
             _attach_worktree(_error_entry)
             return _error_entry
@@ -3918,40 +3824,34 @@ def _run_single_child(
         _attach_worktree(entry)
         return entry
 
-    except Exception as exc:
+    except Exception:
         if audit_snapshot is not None:
             audit_snapshot.revoke()
-        _late_pending_steer = (
-            _close_subagent_steering(_subagent_id, child) if _subagent_id else None
-        )
+        if _subagent_id:
+            _close_subagent_steering(_subagent_id, child)
         duration = round(time.monotonic() - child_start, 2)
-        logging.exception(f"[subagent-{task_index}] failed")
+        logger.warning("Subagent %d failed before completion", task_index)
         if child_progress_cb:
             try:
                 child_progress_cb(
                     "subagent.complete",
-                    preview=str(exc),
+                    preview=_SUBAGENT_EXECUTION_FAILURE_MESSAGE,
                     status="failed",
                     duration_seconds=duration,
-                    summary=str(exc),
+                    summary=_SUBAGENT_EXECUTION_FAILURE_MESSAGE,
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
         _error_entry = {
             "task_index": task_index,
             "status": "error",
+            "error_category": _SUBAGENT_EXECUTION_ERROR_CATEGORY,
             "summary": None,
-            "error": str(exc),
+            "error": _SUBAGENT_EXECUTION_FAILURE_MESSAGE,
             "api_calls": 0,
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
-        if _late_pending_steer:
-            _error_entry["missed_steer"] = _late_pending_steer
-            _error_entry["error"] += (
-                " [steer did not land before the subagent stopped: "
-                f"{_late_pending_steer}]"
-            )
         _attach_audit_revision_receipt(_error_entry)
         # _attach_worktree defaults to a no-op when isolation never engaged.
         _attach_worktree(_error_entry)
@@ -4533,15 +4433,25 @@ def delegate_task(
             if task.get("capability_profile") != READ_ONLY_AUDIT_PROFILE:
                 continue
             requested_revision = task.get("target_revision")
-            repo_root = _resolve_read_only_audit_repo_root(parent_agent)
+            try:
+                audit_timeout = float(task.get("timeout_seconds"))
+            except (TypeError, ValueError):
+                raise ReadOnlyAuditRevisionError(_FIXED_REVISION_UNAVAILABLE_MESSAGE)
+            preflight_deadline = time.monotonic() + audit_timeout
+            repo_root = _resolve_read_only_audit_repo_root(
+                parent_agent,
+                deadline=preflight_deadline,
+            )
             resolved_revision = _resolve_unique_commit(
                 repo_root,
                 requested_revision,
+                deadline=preflight_deadline,
             )
             snapshot = _create_read_only_audit_snapshot(
                 repo_root,
                 requested_revision,
                 resolved_revision,
+                deadline=preflight_deadline,
             )
             prebuilt_audit_snapshots[task_index] = snapshot
             task["_requested_target_revision"] = requested_revision
@@ -4741,17 +4651,34 @@ def delegate_task(
                                 try:
                                     entry = f.result()
                                 except Exception as exc:
+                                    _failed_child = _child_by_index.get(idx)
+                                    _audit_failure = (
+                                        getattr(
+                                            _failed_child,
+                                            "_delegate_capability_profile",
+                                            None,
+                                        )
+                                        == READ_ONLY_AUDIT_PROFILE
+                                    )
                                     entry = {
                                         "task_index": idx,
                                         "status": "error",
                                         "summary": None,
-                                        "error": str(exc),
+                                        "error": (
+                                            _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                                            if _audit_failure
+                                            else str(exc)
+                                        ),
                                         "api_calls": 0,
                                         "duration_seconds": 0,
                                         "_child_role": getattr(
                                             _child_by_index.get(idx), "_delegate_role", None
                                         ),
                                     }
+                                    if _audit_failure:
+                                        entry["error_category"] = (
+                                            _SUBAGENT_EXECUTION_ERROR_CATEGORY
+                                        )
                             else:
                                 entry = {
                                     "task_index": idx,
@@ -4778,17 +4705,34 @@ def delegate_task(
                             entry = future.result()
                         except Exception as exc:
                             idx = futures[future]
+                            _failed_child = _child_by_index.get(idx)
+                            _audit_failure = (
+                                getattr(
+                                    _failed_child,
+                                    "_delegate_capability_profile",
+                                    None,
+                                )
+                                == READ_ONLY_AUDIT_PROFILE
+                            )
                             entry = {
                                 "task_index": idx,
                                 "status": "error",
                                 "summary": None,
-                                "error": str(exc),
+                                "error": (
+                                    _SUBAGENT_EXECUTION_FAILURE_MESSAGE
+                                    if _audit_failure
+                                    else str(exc)
+                                ),
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                                 "_child_role": getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
                             }
+                            if _audit_failure:
+                                entry["error_category"] = (
+                                    _SUBAGENT_EXECUTION_ERROR_CATEGORY
+                                )
                         results.append(entry)
                         completed_count += 1
 

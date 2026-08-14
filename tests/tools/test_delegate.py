@@ -988,6 +988,7 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(len(popen_envs), 2)
         for env in popen_envs:
             self.assertEqual(env["GIT_NO_LAZY_FETCH"], "1")
+            self.assertEqual(env["PATH"], os.defpath)
             self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
             self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
             self.assertEqual(env["GIT_OPTIONAL_LOCKS"], "0")
@@ -995,6 +996,8 @@ class TestDelegateTask(unittest.TestCase):
 
     def test_zero_api_timeout_result_has_no_private_diagnostic_path(self):
         """Timeout results stay logical even when a diagnostic is written."""
+        from pathlib import Path
+
         from tools.terminal_tool import (
             clear_task_env_overrides,
             register_task_env_overrides,
@@ -1004,17 +1007,24 @@ class TestDelegateTask(unittest.TestCase):
         parent._current_task_id = "fp3a-timeout-privacy-parent"
         register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
         progress_events = []
+        canary_goal = "GOAL_CANARY_/private/fp3a/goal"
+        canary_base_url = "https://fp3a.invalid/private/base-url?token=CANARY"
 
         class TimeoutChild:
-            _delegate_capability_profile = None
+            _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
             _delegate_timeout_seconds = 0.01
             _delegate_saved_tool_names = []
             _delegate_role = "leaf"
             _delegate_depth = 1
             _parent_subagent_id = None
             _subagent_id = "fp3a-timeout-privacy-child"
+            _delegate_requested_target_revision = "a" * 40
+            _delegate_target_revision = "b" * 40
+            _delegate_target_repo_root = os.getcwd()
             session_id = ""
             model = "test-model"
+            provider = "provider-CANARY"
+            base_url = canary_base_url
             tool_progress_callback = (
                 lambda *args, **kwargs: progress_events.append((args, kwargs))
             )
@@ -1039,26 +1049,206 @@ class TestDelegateTask(unittest.TestCase):
                 time.sleep(0.05)
                 return {"final_response": "late", "completed": True, "api_calls": 0}
 
-        try:
-            with patch(
-                "tools.delegate_tool._dump_subagent_timeout_diagnostic",
-                return_value="/private/snapshot-or-cwd/subagent-timeout.log",
+        class PrivateSnapshot:
+            def __init__(self, root):
+                self.root = root
+
+            def bind(self, _task_id):
+                return None
+
+            def revoke(self):
+                return None
+
+            def cleanup(self):
+                return None
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-private-timeout-") as private_home:
+            private_root = str(Path(private_home).resolve())
+            with (
+                patch(
+                    "hermes_constants.get_hermes_home",
+                    return_value=Path(private_home),
+                ),
+                self.assertLogs("tools.delegate_tool", level="WARNING") as records,
             ):
+                child = TimeoutChild()
+                child._delegate_prebuilt_audit_snapshot = PrivateSnapshot(private_root)
+                try:
+                    result = _run_single_child(
+                        0,
+                        canary_goal,
+                        child,
+                        parent,
+                    )
+                finally:
+                    clear_task_env_overrides(parent._current_task_id)
+            diagnostic_files = [
+                path
+                for path in Path(private_home).rglob("*")
+                if path.is_file()
+            ]
+            diagnostic_text = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in diagnostic_files
+            )
+            serialized = (
+                json.dumps(result, ensure_ascii=False)
+                + repr(progress_events)
+                + "\n"
+                + "\n".join(records.output)
+                + "\n"
+                + diagnostic_text
+            )
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertNotIn("diagnostic_path", result)
+        self.assertEqual(diagnostic_files, [])
+        self.assertNotIn(canary_goal, serialized)
+        self.assertNotIn(canary_base_url, serialized)
+        self.assertNotIn(private_root, serialized)
+        self.assertNotIn(os.getcwd(), serialized)
+        self.assertNotIn("subagent-timeout.log", serialized)
+
+    def test_fixed_revision_materialization_has_one_aggregate_deadline(self):
+        """Fast individual blob reads cannot reset the snapshot deadline."""
+        from tools.delegate_tool import (
+            ReadOnlyAuditRevisionError,
+            _create_read_only_audit_snapshot,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-aggregate-red-") as root:
+            entries = [("100644", f"blob-{index}", f"tracked-{index}.txt") for index in range(8)]
+            blob_calls = []
+
+            def fast_blob(_repo_root, object_id, *, deadline=None):
+                blob_calls.append(object_id)
+                time.sleep(0.01)
+                return b"TARGET_ONLY\n"
+
+            deadline = time.monotonic() + 0.025
+            with (
+                patch("tools.delegate_tool._git_repo_root", return_value=root),
+                patch(
+                    "tools.delegate_tool._resolve_unique_commit",
+                    return_value="b" * 40,
+                ),
+                patch(
+                    "tools.delegate_tool._target_tree_entries",
+                    return_value=entries,
+                ),
+                patch(
+                    "tools.delegate_tool._read_git_blob",
+                    side_effect=fast_blob,
+                ),
+            ):
+                with self.assertRaises(ReadOnlyAuditRevisionError):
+                    _create_read_only_audit_snapshot(
+                        root,
+                        "a" * 40,
+                        "b" * 40,
+                        deadline=deadline,
+                    )
+
+            self.assertLess(len(blob_calls), len(entries))
+
+    def test_fixed_revision_git_uses_bound_executable_not_path_shim(self):
+        """A PATH-prepended executable cannot run fixed-revision Git queries."""
+        from tools.delegate_tool import ReadOnlyAuditRevisionError, _git_output
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-git-shim-red-") as root:
+            marker = os.path.join(root, "PATH_SHIM_EXECUTED")
+            shim_dir = os.path.join(root, "shim")
+            os.mkdir(shim_dir)
+            shim = os.path.join(shim_dir, "git")
+            with open(shim, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "#!/bin/sh\n"
+                    f"printf PATH_SHIM_EXECUTED > {marker!r}\n"
+                    "exec /usr/bin/git \"$@\"\n"
+                )
+            os.chmod(shim, 0o700)
+            inherited_path = os.environ.get("PATH", os.defpath)
+            with patch.dict(
+                os.environ,
+                {"PATH": shim_dir + os.pathsep + inherited_path},
+            ):
+                try:
+                    _git_output(os.getcwd(), ["rev-parse", "--show-toplevel"], limit=4096)
+                except ReadOnlyAuditRevisionError:
+                    pass
+
+            self.assertFalse(os.path.exists(marker))
+
+    def test_non_timeout_child_error_is_closed_and_sanitized(self):
+        """Exception text never crosses the child result or progress surface."""
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            register_task_env_overrides,
+        )
+
+        parent = _make_mock_parent()
+        parent._current_task_id = "fp3a-error-privacy-parent"
+        register_task_env_overrides(parent._current_task_id, {"cwd": os.getcwd()})
+        canaries = (
+            "/private/fp3a/error/path",
+            "https://fp3a.invalid/error?token=CANARY",
+            "sk-CANARY-token",
+        )
+        progress_events = []
+
+        class ErrorChild:
+            _delegate_capability_profile = None
+            _delegate_timeout_seconds = 1.0
+            _delegate_saved_tool_names = []
+            _delegate_role = "leaf"
+            _delegate_depth = 1
+            _parent_subagent_id = None
+            _subagent_id = "fp3a-error-privacy-child"
+            session_id = ""
+            model = "test-model"
+            tool_progress_callback = (
+                lambda *args, **kwargs: progress_events.append((args, kwargs))
+            )
+            _credential_pool = None
+            session_prompt_tokens = 0
+            session_completion_tokens = 0
+            session_estimated_cost_usd = 0.0
+            session_cost_status = "unknown"
+
+            def get_activity_summary(self):
+                return {
+                    "current_tool": None,
+                    "api_call_count": 0,
+                    "max_iterations": 1,
+                    "last_activity_ts": time.time(),
+                }
+
+            def close(self):
+                return None
+
+            def run_conversation(self, **_kwargs):
+                raise RuntimeError(" ".join(canaries))
+
+        try:
+            with self.assertLogs("tools.delegate_tool", level="WARNING") as records:
                 result = _run_single_child(
                     0,
-                    "fixed audit timeout",
-                    TimeoutChild(),
+                    "sanitized child error",
+                    ErrorChild(),
                     parent,
                 )
         finally:
             clear_task_env_overrides(parent._current_task_id)
 
-        serialized = json.dumps(result, ensure_ascii=False) + repr(progress_events)
-        self.assertEqual(result["status"], "timeout")
-        self.assertNotIn("diagnostic_path", result)
-        self.assertNotIn("/private/snapshot-or-cwd", serialized)
-        self.assertNotIn(os.getcwd(), serialized)
-        self.assertNotIn("subagent-timeout.log", serialized)
+        serialized = (
+            json.dumps(result, ensure_ascii=False)
+            + repr(progress_events)
+            + "\n"
+            + "\n".join(records.output)
+        )
+        self.assertEqual(result["error_category"], "subagent_execution_failed")
+        for canary in canaries:
+            self.assertNotIn(canary, serialized)
 
     def test_fixed_revision_git_revision_and_tree_timeout_fail_closed(self):
         """Revision/tree Git stages have a bounded subprocess deadline."""
