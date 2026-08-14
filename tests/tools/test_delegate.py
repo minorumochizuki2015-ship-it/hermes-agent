@@ -439,6 +439,7 @@ class TestDelegateTask(unittest.TestCase):
                 self.root = repo
                 self.bind_calls = []
                 self.cleanup_calls = 0
+                self.revoke_calls = 0
 
             def bind(self, task_id):
                 self.bind_calls.append(task_id)
@@ -446,6 +447,9 @@ class TestDelegateTask(unittest.TestCase):
             def cleanup(self):
                 if self.cleanup_calls == 0:
                     self.cleanup_calls = 1
+
+            def revoke(self):
+                self.revoke_calls += 1
 
         class ExitChild:
             _delegate_capability_profile = READ_ONLY_AUDIT_PROFILE
@@ -528,6 +532,233 @@ class TestDelegateTask(unittest.TestCase):
                     clear_task_env_overrides(child._subagent_id)
         finally:
             clear_task_env_overrides(parent._current_task_id)
+
+    def test_fixed_revision_dispatch_is_denied_after_snapshot_timeout_cleanup(self):
+        """A late file call cannot fall back to the live task cwd."""
+        from agent.tool_executor import _run_agent_tool_execution_middleware
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-lease-red-") as root:
+            task_id = "fp3a-lease-late-read"
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot.bind(task_id)
+            agent = types.SimpleNamespace(
+                _delegate_capability_profile=READ_ONLY_AUDIT_PROFILE,
+                _delegate_snapshot_root=root,
+                _delegate_audit_snapshot=snapshot,
+                _subagent_id=task_id,
+                session_id="",
+                _current_turn_id="",
+                _current_api_request_id="",
+                _tool_guardrails=types.SimpleNamespace(
+                    before_call=lambda *_args: types.SimpleNamespace(
+                        allows_execution=True
+                    )
+                ),
+            )
+            handler = MagicMock(return_value="LIVE_ONLY")
+
+            def relay_execute(_name, args, callback, **_kwargs):
+                return callback(args), args
+
+            def request_middleware(_name, args, **_kwargs):
+                return types.SimpleNamespace(payload=dict(args), trace=[])
+
+            def execution_middleware(_name, args, callback, **_kwargs):
+                return callback(args)
+
+            snapshot.cleanup()
+            with (
+                patch("agent.relay_tools.execute", side_effect=relay_execute),
+                patch(
+                    "hermes_cli.middleware.apply_tool_request_middleware",
+                    side_effect=request_middleware,
+                ),
+                patch(
+                    "hermes_cli.middleware.run_tool_execution_middleware",
+                    side_effect=execution_middleware,
+                ),
+                patch("hermes_cli.plugins.resolve_pre_tool_block", return_value=None),
+                patch("agent.tool_executor._begin_tool_execution"),
+                patch("agent.tool_executor._emit_terminal_post_tool_call"),
+            ):
+                outcome = _run_agent_tool_execution_middleware(
+                    agent,
+                    function_name="read_file",
+                    function_args={"path": "tracked.txt"},
+                    effective_task_id=task_id,
+                    tool_call_id="late-read",
+                    execute=handler,
+                )
+
+            self.assertFalse(handler.called)
+            self.assertIn("immutable snapshot", str(outcome.result))
+
+    def test_fixed_revision_dispatch_rechecks_lease_after_middleware_pause(self):
+        """Revocation during argument middleware blocks the final dispatch."""
+        from agent.tool_executor import _run_agent_tool_execution_middleware
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-lease-red-") as root:
+            task_id = "fp3a-lease-paused-read"
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot.bind(task_id)
+            agent = types.SimpleNamespace(
+                _delegate_capability_profile=READ_ONLY_AUDIT_PROFILE,
+                _delegate_snapshot_root=root,
+                _delegate_audit_snapshot=snapshot,
+                _subagent_id=task_id,
+                session_id="",
+                _current_turn_id="",
+                _current_api_request_id="",
+                _tool_guardrails=types.SimpleNamespace(
+                    before_call=lambda *_args: types.SimpleNamespace(
+                        allows_execution=True
+                    )
+                ),
+            )
+            handler = MagicMock(return_value="LIVE_ONLY")
+            middleware_entered = threading.Event()
+            release_middleware = threading.Event()
+            result_holder = {}
+
+            def relay_execute(_name, args, callback, **_kwargs):
+                return callback(args), args
+
+            def request_middleware(_name, args, **_kwargs):
+                return types.SimpleNamespace(payload=dict(args), trace=[])
+
+            def execution_middleware(_name, args, callback, **_kwargs):
+                middleware_entered.set()
+                release_middleware.wait(2)
+                return callback({"path": "tracked.txt"})
+
+            with (
+                patch("agent.relay_tools.execute", side_effect=relay_execute),
+                patch(
+                    "hermes_cli.middleware.apply_tool_request_middleware",
+                    side_effect=request_middleware,
+                ),
+                patch(
+                    "hermes_cli.middleware.run_tool_execution_middleware",
+                    side_effect=execution_middleware,
+                ),
+                patch("hermes_cli.plugins.resolve_pre_tool_block", return_value=None),
+                patch("agent.tool_executor._begin_tool_execution"),
+                patch("agent.tool_executor._emit_terminal_post_tool_call"),
+            ):
+                worker = threading.Thread(
+                    target=lambda: result_holder.setdefault(
+                        "outcome",
+                        _run_agent_tool_execution_middleware(
+                            agent,
+                            function_name="read_file",
+                            function_args={"path": "tracked.txt"},
+                            effective_task_id=task_id,
+                            tool_call_id="paused-read",
+                            execute=handler,
+                        ),
+                    )
+                )
+                worker.start()
+                self.assertTrue(middleware_entered.wait(2))
+                snapshot.cleanup()
+                release_middleware.set()
+                worker.join(2)
+
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(handler.called)
+            self.assertIn("immutable snapshot", str(result_holder["outcome"].result))
+
+    def test_fixed_revision_cleanup_waits_for_admitted_file_dispatch(self):
+        """Cleanup fences an admitted read, then removes the snapshot once."""
+        from agent.tool_executor import _run_agent_tool_execution_middleware
+        from tools.delegate_tool import _ReadOnlyAuditSnapshot
+
+        with tempfile.TemporaryDirectory(prefix="hermes-fp3a-lease-red-") as root:
+            task_id = "fp3a-lease-inflight-read"
+            with open(os.path.join(root, "tracked.txt"), "w", encoding="utf-8") as handle:
+                handle.write("TARGET_ONLY\n")
+            snapshot = _ReadOnlyAuditSnapshot(root, "a" * 40, "b" * 40)
+            snapshot.bind(task_id)
+            agent = types.SimpleNamespace(
+                _delegate_capability_profile=READ_ONLY_AUDIT_PROFILE,
+                _delegate_snapshot_root=root,
+                _delegate_audit_snapshot=snapshot,
+                _subagent_id=task_id,
+                session_id="",
+                _current_turn_id="",
+                _current_api_request_id="",
+                _tool_guardrails=types.SimpleNamespace(
+                    before_call=lambda *_args: types.SimpleNamespace(
+                        allows_execution=True
+                    )
+                ),
+            )
+            handler_entered = threading.Event()
+            release_handler = threading.Event()
+            cleanup_done = threading.Event()
+            result_holder = {}
+
+            def relay_execute(_name, args, callback, **_kwargs):
+                return callback(args), args
+
+            def request_middleware(_name, args, **_kwargs):
+                return types.SimpleNamespace(payload=dict(args), trace=[])
+
+            def execution_middleware(_name, args, callback, **_kwargs):
+                return callback(args)
+
+            def handler(_args):
+                handler_entered.set()
+                release_handler.wait(2)
+                return "TARGET_ONLY"
+
+            with (
+                patch("agent.relay_tools.execute", side_effect=relay_execute),
+                patch(
+                    "hermes_cli.middleware.apply_tool_request_middleware",
+                    side_effect=request_middleware,
+                ),
+                patch(
+                    "hermes_cli.middleware.run_tool_execution_middleware",
+                    side_effect=execution_middleware,
+                ),
+                patch("hermes_cli.plugins.resolve_pre_tool_block", return_value=None),
+                patch("agent.tool_executor._begin_tool_execution"),
+                patch("agent.tool_executor._emit_terminal_post_tool_call"),
+            ):
+                worker = threading.Thread(
+                    target=lambda: result_holder.setdefault(
+                        "outcome",
+                        _run_agent_tool_execution_middleware(
+                            agent,
+                            function_name="read_file",
+                            function_args={"path": "tracked.txt"},
+                            effective_task_id=task_id,
+                            tool_call_id="inflight-read",
+                            execute=handler,
+                        ),
+                    )
+                )
+                worker.start()
+                self.assertTrue(handler_entered.wait(2))
+                cleanup_worker = threading.Thread(
+                    target=lambda: (snapshot.cleanup(), cleanup_done.set())
+                )
+                cleanup_worker.start()
+                self.assertFalse(cleanup_done.wait(0.1))
+                release_handler.set()
+                worker.join(2)
+                cleanup_worker.join(2)
+
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(cleanup_worker.is_alive())
+            self.assertTrue(cleanup_done.is_set())
+            self.assertEqual(result_holder["outcome"].result, "TARGET_ONLY")
+            self.assertFalse(os.path.exists(root))
+            snapshot.cleanup()
+            self.assertFalse(os.path.exists(root))
 
     def test_read_only_audit_rejects_missing_commit_before_transcript_or_child(self):
         from tools.terminal_tool import (

@@ -517,7 +517,10 @@ def _run_agent_tool_execution_middleware(
         from tools.delegate_tool import _fixed_revision_file_arguments
 
         function_args, fixed_scope_block = _fixed_revision_file_arguments(
-            agent, function_name, function_args
+            agent,
+            function_name,
+            function_args,
+            task_id=effective_task_id,
         )
     except Exception:
         fixed_scope_block = None
@@ -539,7 +542,10 @@ def _run_agent_tool_execution_middleware(
             from tools.delegate_tool import _fixed_revision_file_arguments
 
             final_args, fixed_scope_block = _fixed_revision_file_arguments(
-                agent, function_name, final_args
+                agent,
+                function_name,
+                final_args,
+                task_id=effective_task_id,
             )
         except Exception:
             fixed_scope_block = None
@@ -642,7 +648,53 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
-        return execute(final_args)
+
+        fixed_snapshot = getattr(agent, "_delegate_audit_snapshot", None)
+        fixed_file_dispatch = (
+            getattr(agent, "_delegate_capability_profile", None)
+            == "read_only_audit"
+            and function_name in {"read_file", "search_files"}
+        )
+        fixed_lease = None
+        if fixed_file_dispatch:
+            acquire_dispatch = getattr(fixed_snapshot, "acquire_dispatch", None)
+            if callable(acquire_dispatch):
+                fixed_lease = acquire_dispatch(effective_task_id)
+            if fixed_lease is None:
+                state["blocked"] = True
+                result = json.dumps(
+                    {
+                        "error": (
+                            "read_only_audit immutable snapshot is unavailable; "
+                            "file dispatch was denied."
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=function_name,
+                    function_args={},
+                    result=result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=tool_call_id,
+                    status="blocked",
+                    error_type="tool_scope_block",
+                    error_message=(
+                        "read_only_audit immutable snapshot is unavailable; "
+                        "file dispatch was denied."
+                    ),
+                    middleware_trace=list(state["middleware_trace"]),
+                )
+                return result
+        try:
+            return execute(final_args)
+        finally:
+            if fixed_lease is not None:
+                try:
+                    fixed_snapshot.release_dispatch(fixed_lease)
+                except Exception:
+                    logging.debug("fixed audit dispatch lease release failed")
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
@@ -664,7 +716,10 @@ def _run_agent_tool_execution_middleware(
             from tools.delegate_tool import _fixed_revision_file_arguments
 
             request_args, fixed_scope_block = _fixed_revision_file_arguments(
-                agent, function_name, request_args
+                agent,
+                function_name,
+                request_args,
+                task_id=effective_task_id,
             )
         except Exception:
             fixed_scope_block = None

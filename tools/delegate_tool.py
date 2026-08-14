@@ -115,14 +115,18 @@ class _ReadOnlyAuditSnapshot:
         self._task_id: Optional[str] = None
         self._cleaned = False
         self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._generation = 0
+        self._active_dispatches = 0
+        self._revoked = False
 
     def bind(self, task_id: str) -> None:
         if not isinstance(task_id, str) or not task_id:
             raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
         from tools.terminal_tool import register_task_env_overrides
 
-        with self._lock:
-            if self._cleaned:
+        with self._condition:
+            if self._cleaned or self._revoked:
                 raise ReadOnlyAuditRevisionError(_FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE)
             if self._task_id is not None:
                 if self._task_id == task_id:
@@ -136,15 +140,81 @@ class _ReadOnlyAuditSnapshot:
                 {"cwd": self.root, "env_type": "local"},
             )
             self._task_id = task_id
+            self._generation += 1
+
+    def revoke(self) -> None:
+        """Tombstone this child capability before terminal publication."""
+        with self._condition:
+            if self._cleaned:
+                return
+            self._revoked = True
+            self._generation += 1
+            self._condition.notify_all()
+
+    def _active_root_locked(self, task_id: str) -> Optional[Path]:
+        if (
+            self._cleaned
+            or self._revoked
+            or not isinstance(task_id, str)
+            or not task_id
+            or self._task_id != task_id
+        ):
+            return None
+        try:
+            root = Path(self.root).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        return root if root.is_dir() else None
+
+    def prepare_path(self, task_id: str, raw_path: str) -> Optional[str]:
+        """Return an absolute path only while this snapshot lease is active."""
+        with self._condition:
+            root = self._active_root_locked(task_id)
+            if root is None:
+                return None
+            try:
+                expanded = Path(os.path.expanduser(raw_path))
+                candidate = expanded if expanded.is_absolute() else root / expanded
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(root)
+            except (OSError, RuntimeError, ValueError):
+                return None
+            return str(resolved)
+
+    def acquire_dispatch(self, task_id: str) -> Optional[tuple[str, int]]:
+        """Admit one bounded read/search dispatch and return its generation."""
+        with self._condition:
+            if self._active_root_locked(task_id) is None:
+                return None
+            self._active_dispatches += 1
+            return task_id, self._generation
+
+    def release_dispatch(self, lease: Any) -> None:
+        """Release one previously admitted bounded dispatch."""
+        with self._condition:
+            if (
+                isinstance(lease, tuple)
+                and len(lease) == 2
+                and isinstance(lease[0], str)
+                and isinstance(lease[1], int)
+                and self._active_dispatches > 0
+            ):
+                self._active_dispatches -= 1
+                self._condition.notify_all()
 
     def cleanup(self) -> None:
         """Remove the task binding and snapshot exactly once."""
-        with self._lock:
+        with self._condition:
             if self._cleaned:
                 return
+            self._revoked = True
+            self._generation += 1
+            self._condition.notify_all()
             self._cleaned = True
             task_id = self._task_id
             self._task_id = None
+            while self._active_dispatches:
+                self._condition.wait()
 
         if task_id:
             try:
@@ -1226,6 +1296,8 @@ def _fixed_revision_file_arguments(
     agent: Any,
     function_name: str,
     function_args: Dict[str, Any],
+    *,
+    task_id: Optional[str] = None,
 ) -> tuple[Dict[str, Any], Optional[str]]:
     """Keep fixed-audit file roots inside its private committed snapshot."""
     if (
@@ -1235,23 +1307,21 @@ def _fixed_revision_file_arguments(
     ):
         return dict(function_args or {}), None
 
-    snapshot_root = getattr(agent, "_delegate_snapshot_root", None)
-    if not isinstance(snapshot_root, str) or not snapshot_root:
+    snapshot = getattr(agent, "_delegate_audit_snapshot", None)
+    if snapshot is None or not callable(getattr(snapshot, "prepare_path", None)):
+        return {}, _FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE
+    effective_task_id = task_id or getattr(agent, "_subagent_id", None)
+    if not isinstance(effective_task_id, str) or not effective_task_id:
         return {}, _FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE
     raw_path = (function_args or {}).get("path", ".")
     if not isinstance(raw_path, str) or not raw_path.strip():
         raw_path = "."
-    try:
-        root = Path(snapshot_root).resolve()
-        expanded = Path(os.path.expanduser(raw_path))
-        candidate = expanded if expanded.is_absolute() else root / expanded
-        resolved = candidate.resolve()
-        relative = resolved.relative_to(root)
-    except (OSError, RuntimeError, ValueError):
-        return {}, "read_only_audit rejected a path outside the fixed snapshot."
+    resolved_path = snapshot.prepare_path(effective_task_id, raw_path)
+    if resolved_path is None:
+        return {}, _FIXED_SNAPSHOT_UNAVAILABLE_MESSAGE
 
     safe_args = dict(function_args or {})
-    safe_args["path"] = relative.as_posix() or "."
+    safe_args["path"] = resolved_path
     return safe_args, None
 
 
@@ -3068,6 +3138,7 @@ def _run_single_child(
                 child._delegate_target_repo_root = repo_root
                 child._delegate_target_revision = resolved_revision
                 child._delegate_snapshot_root = audit_snapshot.root
+                child._delegate_audit_snapshot = audit_snapshot
             except ReadOnlyAuditRevisionError:
                 unavailable_entry = {
                     "task_index": task_index,
@@ -3194,6 +3265,8 @@ def _run_single_child(
             _late_pending_steer = (
                 _close_subagent_steering(_subagent_id, child) if _subagent_id else None
             )
+            if audit_snapshot is not None:
+                audit_snapshot.revoke()
             # Signal the child to stop so its thread can exit cleanly.
             try:
                 interrupted = child is not None and request_hard_interrupt(child)
@@ -3636,6 +3709,8 @@ def _run_single_child(
             except (TypeError, ValueError):
                 pass
 
+        if audit_snapshot is not None:
+            audit_snapshot.revoke()
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.complete", **complete_kwargs)
@@ -3646,6 +3721,8 @@ def _run_single_child(
         return entry
 
     except Exception as exc:
+        if audit_snapshot is not None:
+            audit_snapshot.revoke()
         _late_pending_steer = (
             _close_subagent_steering(_subagent_id, child) if _subagent_id else None
         )
@@ -3683,6 +3760,8 @@ def _run_single_child(
         return _error_entry
 
     finally:
+        if audit_snapshot is not None:
+            audit_snapshot.revoke()
         # Stop the heartbeat thread so it doesn't keep touching parent activity
         # after the child has finished (or failed).  Guard the join: .start()
         # now lives inside the try block, so if it raised (OS thread
@@ -3752,6 +3831,8 @@ def _run_single_child(
             logger.debug("Failed to close child Relay session after delegation")
 
         if audit_snapshot is not None:
+            child._delegate_snapshot_root = None
+            child._delegate_audit_snapshot = None
             audit_snapshot.cleanup()
 
 
