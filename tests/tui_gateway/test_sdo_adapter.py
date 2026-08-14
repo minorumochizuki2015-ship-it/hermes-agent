@@ -1,6 +1,7 @@
 """Focused FP-2 pure-consumer and projection contract."""
 
 from contextlib import contextmanager
+import threading
 from types import SimpleNamespace
 import time
 
@@ -331,14 +332,23 @@ def test_ready_agent_identity_is_verified_per_operation(
 
     monkeypatch.setattr(server, "_session_db", db_context)
     session = {
+        "session_key": "session-ready",
+        "profile_home": None,
         "_orch_operational": True,
-        "_orch_model_route": {
-            "provider": "openai-codex",
-            "model": "gpt-5.6-luna",
-            "reasoning_effort": "max",
-            "service_tier_preference": "fast",
+    }
+    token = server._orch_open_orch_turn(
+        session,
+        "gateway-ready",
+        {
+            "operation_id": "operation-ready",
+            "decision_binding": {"logical_session_id": "logical-ready"},
         },
-        "_orch_operation_id": "operation-ready",
+    )
+    session["_orch_model_route"] = {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "max",
+        "service_tier_preference": "fast",
     }
     agent = _RuntimeAgent(
         provider=provider,
@@ -347,7 +357,7 @@ def test_ready_agent_identity_is_verified_per_operation(
         service_tier=tier,
     )
     with pytest.raises(RuntimeError):
-        server._orch_prepare_orch_agent_for_turn(session, agent)
+        server._orch_prepare_orch_agent_for_turn(session, agent, token)
     assert db.calls == []
     assert session.get("_orch_runtime_identity_verified") is not True
 
@@ -361,14 +371,23 @@ def test_correct_reused_agent_identity_is_recorded_before_call(monkeypatch) -> N
 
     monkeypatch.setattr(server, "_session_db", db_context)
     session = {
+        "session_key": "session-reused",
+        "profile_home": None,
         "_orch_operational": True,
-        "_orch_model_route": {
-            "provider": "openai-codex",
-            "model": "gpt-5.6-luna",
-            "reasoning_effort": "max",
-            "service_tier_preference": "fast",
+    }
+    token = server._orch_open_orch_turn(
+        session,
+        "gateway-reused",
+        {
+            "operation_id": "operation-reused",
+            "decision_binding": {"logical_session_id": "logical-reused"},
         },
-        "_orch_operation_id": "operation-reused",
+    )
+    session["_orch_model_route"] = {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "max",
+        "service_tier_preference": "fast",
     }
     agent = _RuntimeAgent(
         provider="openai-codex",
@@ -376,7 +395,7 @@ def test_correct_reused_agent_identity_is_recorded_before_call(monkeypatch) -> N
         reasoning_config={"effort": "max"},
         service_tier="priority",
     )
-    assert server._orch_prepare_orch_agent_for_turn(session, agent) is True
+    assert server._orch_prepare_orch_agent_for_turn(session, agent, token) is True
     assert db.calls == ["runtime_identity"]
     assert session["_orch_runtime_identity_verified"] is True
 
@@ -643,6 +662,209 @@ def test_status_keeps_profile_db_handle_inside_context(monkeypatch) -> None:
     )
     assert db.read_inside_context is True
     assert projection["terminal_result_status"] == "complete"
+
+
+@pytest.mark.parametrize("mutation", ["runtime_identity", "first_delta", "finish"])
+def test_turn_mutation_serializes_context_swap_until_db_and_flags_finish(
+    monkeypatch, mutation
+) -> None:
+    class _BlockingDB(_RecordingDB):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.recorded = []
+
+        def record_orch_task_runtime_identity(self, operation_id, *args, **kwargs):
+            self.entered.set()
+            self.release.wait(timeout=2.0)
+            self.recorded.append(("runtime_identity", operation_id))
+            return True
+
+        def mark_orch_task_first_delta(self, operation_id, *args, **kwargs):
+            self.entered.set()
+            self.release.wait(timeout=2.0)
+            self.recorded.append(("first_delta", operation_id))
+            return True
+
+        def finish_orch_task_observation(self, operation_id, *args, **kwargs):
+            self.entered.set()
+            self.release.wait(timeout=2.0)
+            self.recorded.append(("finish", operation_id))
+            return True
+
+    db = _BlockingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    session = {"session_key": "session-serialized", "profile_home": None}
+    token = server._orch_open_orch_turn(
+        session,
+        "gateway-serialized",
+        {
+            "operation_id": "operation-serialized",
+            "decision_binding": {"logical_session_id": "logical-serialized"},
+        },
+    )
+    session["_orch_model_route"] = {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "max",
+        "service_tier_preference": "fast",
+    }
+    agent = _RuntimeAgent(
+        provider="openai-codex",
+        model="gpt-5.6-luna",
+        reasoning_config={"effort": "max"},
+        service_tier="priority",
+    )
+
+    def mutate():
+        if mutation == "runtime_identity":
+            server._orch_prepare_orch_agent_for_turn(session, agent, token)
+        elif mutation == "first_delta":
+            server._orch_mark_first_delta(session, token)
+        else:
+            server._orch_finish_task_observation(session, token, "complete")
+
+    worker = threading.Thread(target=mutate)
+    worker.start()
+    assert db.entered.wait(timeout=1.0)
+
+    swapped = threading.Event()
+
+    def swap_turn():
+        server._orch_open_orch_turn(
+            session,
+            "gateway-next",
+            {
+                "operation_id": "operation-next",
+                "decision_binding": {"logical_session_id": "logical-next"},
+            },
+        )
+        swapped.set()
+
+    swapper = threading.Thread(target=swap_turn)
+    swapper.start()
+    assert swapped.wait(timeout=0.05) is False
+
+    db.release.set()
+    worker.join(timeout=2.0)
+    swapper.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert not swapper.is_alive()
+    assert swapped.is_set()
+    assert db.recorded == [(mutation, "operation-serialized")]
+    assert session.get("_orch_runtime_identity_verified") is not True
+    assert session.get("_orch_first_delta_observed") is not True
+    assert session.get("_orch_result_consumed") is not True
+
+
+def test_db_acquisition_turn_swap_cannot_fence_current_callback(monkeypatch) -> None:
+    class _SwapDB(_RecordingDB):
+        def __init__(self):
+            super().__init__()
+            self.marked = []
+
+        def mark_orch_task_first_delta(self, operation_id, *args, **kwargs):
+            self.marked.append(operation_id)
+            return True
+
+    db = _SwapDB()
+    session = {"session_key": "session-acquisition", "profile_home": None}
+    token = server._orch_open_orch_turn(
+        session,
+        "gateway-acquisition",
+        {
+            "operation_id": "operation-acquisition",
+            "decision_binding": {"logical_session_id": "logical-acquisition"},
+        },
+    )
+    attempted_swaps = []
+
+    @contextmanager
+    def db_context(_session):
+        attempted_swaps.append(
+            server._orch_open_orch_turn(
+                session,
+                "gateway-raced",
+                {
+                    "operation_id": "operation-raced",
+                    "decision_binding": {"logical_session_id": "logical-raced"},
+                },
+            )
+        )
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    server._orch_mark_first_delta(session, token)
+
+    assert attempted_swaps == [token]
+    assert server._orch_turn_token_matches(session, token) is True
+    assert db.marked == ["operation-acquisition"]
+    assert session.get("_orch_first_delta_observed") is True
+
+
+def test_pre_ready_cancellation_finishes_interrupted_and_restores_ordinary_route(
+    monkeypatch,
+) -> None:
+    class _CancellationDB(_RecordingDB):
+        def __init__(self):
+            super().__init__()
+            self.finished = []
+
+        def finish_orch_task_observation(self, operation_id, *, result_status):
+            self.finished.append((operation_id, result_status))
+            return True
+
+    db = _CancellationDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    ordinary = {
+        "model_override": {"provider": "ordinary-provider", "model": "ordinary-model"},
+        "create_reasoning_override": {"enabled": True, "effort": "ordinary-effort"},
+        "create_service_tier_override": "ordinary-tier",
+    }
+    session = {"session_key": "session-cancel", "profile_home": None, **ordinary}
+    context = {
+        "operation_id": "operation-cancel",
+        "decision_binding": {"logical_session_id": "logical-cancel"},
+    }
+    token = server._orch_open_orch_turn(session, "gateway-cancel", context)
+    admitted = sdo_adapter.consume_sdo_decision(
+        _decision("operation-cancel"),
+        context={"operation_id": "operation-cancel"},
+        now=1000.0,
+    )
+    sdo_adapter.apply_sdo_decision_to_session(session, admitted)
+    session["running"] = False
+    session["_turn_cancel_requested"] = True
+
+    assert server._orch_cancel_before_agent_ready(session, token) is True
+    assert db.finished == [("operation-cancel", "interrupted")]
+    assert session.get("_orch_turn_binding") is None
+    assert session.get("_orch_operation_id") is None
+    assert session.get("_orch_operational") is None
+    assert session["model_override"] == ordinary["model_override"]
+    assert session["create_reasoning_override"] == ordinary["create_reasoning_override"]
+    assert session["create_service_tier_override"] == ordinary["create_service_tier_override"]
+
+    session["model_override"] = {
+        "provider": "ordinary-next-provider",
+        "model": "ordinary-next-model",
+    }
+    server._orch_clear_orch_turn(session)
+    assert session["model_override"] == {
+        "provider": "ordinary-next-provider",
+        "model": "ordinary-next-model",
+    }
 
 
 def test_operational_inflight_failure_is_fixed_and_value_free() -> None:

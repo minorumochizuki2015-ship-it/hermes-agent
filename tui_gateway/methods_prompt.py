@@ -680,6 +680,9 @@ def _(rid, params: dict) -> dict:
             )
         if session.get("_orch_turn_binding") is None:
             _orch_open_orch_turn(session, sid, orch_context)
+    orch_turn_token = (
+        session.get("_orch_turn_binding") if orch_context is not None else None
+    )
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -713,26 +716,34 @@ def _(rid, params: dict) -> dict:
             _orch_clear_orch_turn(session)
             _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
+        cancelled_before_ready = False
+        cancel_message = ""
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
-                # Surface the cancellation to the client. Without this emit the
-                # turn vanishes silently — the Desktop sees `prompt.submit`
-                # return `{"status": "streaming"}` but never receives a
-                # `message.start` or `error` event, so the composer shows no
-                # feedback (issue #63078 server-side half). Match the
-                # `_wait_agent` error branch above: emit, then bail.
-                _emit(
-                    "error",
-                    sid,
-                    {
-                        "message": "Turn cancelled before the agent was ready"
-                        if session.get("_turn_cancel_requested")
-                        else "Session no longer running before the agent was ready"
-                    },
+                cancelled_before_ready = True
+                cancel_message = (
+                    "Turn cancelled before the agent was ready"
+                    if session.get("_turn_cancel_requested")
+                    else "Session no longer running before the agent was ready"
                 )
-                return
+        if cancelled_before_ready:
+            _orch_cancel_before_agent_ready(session, orch_turn_token)
+            # Surface the cancellation to the client. Without this emit the
+            # turn vanishes silently — the Desktop sees `prompt.submit`
+            # return `{"status": "streaming"}` but never receives a
+            # `message.start` or `error` event, so the composer shows no
+            # feedback (issue #63078 server-side half). Match the
+            # `_wait_agent` error branch above: emit, then bail.
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": cancel_message,
+                },
+            )
+            return
         _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)

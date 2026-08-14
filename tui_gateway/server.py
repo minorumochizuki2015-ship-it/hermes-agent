@@ -1423,44 +1423,59 @@ class _OrchTurnBinding(NamedTuple):
     turn_generation: int
 
 
+def _orch_ownership_lock(session: dict):
+    """Return the shared reentrant ownership lock for one live session."""
+    lock = session.get("_orch_ownership_lock")
+    if lock is None:
+        candidate = threading.RLock()
+        lock = session.setdefault("_orch_ownership_lock", candidate)
+    return lock
+
+
 def _orch_snapshot_route_overrides(session: dict) -> None:
     """Capture ordinary route state once, before applying an SDO route."""
-    if "_orch_previous_overrides" in session:
-        return
-    session["_orch_previous_overrides"] = {
-        key: copy.deepcopy(session[key])
-        for key in _ORCH_ROUTE_OVERRIDE_KEYS
-        if key in session
-    }
+    with _orch_ownership_lock(session):
+        if "_orch_previous_overrides" in session:
+            return
+        session["_orch_previous_overrides"] = {
+            key: copy.deepcopy(session[key])
+            for key in _ORCH_ROUTE_OVERRIDE_KEYS
+            if key in session
+        }
 
 
 def _orch_open_orch_turn(session: dict, sid: str, context: dict) -> _OrchTurnBinding:
     """Create the immutable owner token for one admitted operational turn."""
-    if session.get("_orch_turn_binding") is not None:
-        _orch_clear_orch_turn(session)
-    binding = context.get("decision_binding")
-    logical_session_id = (
-        binding.get("logical_session_id") if isinstance(binding, dict) else None
-    )
-    generation = int(session.get("_orch_turn_generation", 0)) + 1
-    token = _OrchTurnBinding(
-        gateway_session_id=str(sid),
-        session_key=str(session.get("session_key") or ""),
-        profile=_orch_profile_name(session),
-        logical_session_id=(
-            logical_session_id if isinstance(logical_session_id, str) else None
-        ),
-        operation_id=str(context.get("operation_id") or ""),
-        turn_generation=generation,
-    )
-    session["_orch_turn_generation"] = generation
-    session["_orch_turn_binding"] = token
-    session["_orch_operational"] = True
-    session["_orch_operation_id"] = token.operation_id
-    session["_orch_status_operation_id"] = token.operation_id
-    _orch_snapshot_route_overrides(session)
-    session["_orch_gateway_session_id"] = sid
-    return token
+    with _orch_ownership_lock(session):
+        mutation_token = session.get("_orch_mutation_token")
+        current = session.get("_orch_turn_binding")
+        if mutation_token is not None:
+            return current
+        if current is not None:
+            _orch_clear_orch_turn(session)
+        binding = context.get("decision_binding")
+        logical_session_id = (
+            binding.get("logical_session_id") if isinstance(binding, dict) else None
+        )
+        generation = int(session.get("_orch_turn_generation", 0)) + 1
+        token = _OrchTurnBinding(
+            gateway_session_id=str(sid),
+            session_key=str(session.get("session_key") or ""),
+            profile=_orch_profile_name(session),
+            logical_session_id=(
+                logical_session_id if isinstance(logical_session_id, str) else None
+            ),
+            operation_id=str(context.get("operation_id") or ""),
+            turn_generation=generation,
+        )
+        session["_orch_turn_generation"] = generation
+        session["_orch_turn_binding"] = token
+        session["_orch_operational"] = True
+        session["_orch_operation_id"] = token.operation_id
+        session["_orch_status_operation_id"] = token.operation_id
+        _orch_snapshot_route_overrides(session)
+        session["_orch_gateway_session_id"] = sid
+        return token
 
 
 def _orch_turn_token_matches(session: dict, token: Any) -> bool:
@@ -1487,30 +1502,34 @@ def _orch_callback_is_current(session: dict, token: Any) -> bool:
 
 def _orch_clear_orch_turn(session: dict) -> None:
     """Drop active route/failure state while retaining exact status identity."""
-    operation_id = session.get("_orch_operation_id")
-    if isinstance(operation_id, str) and operation_id:
-        session["_orch_status_operation_id"] = operation_id
-    previous = session.pop("_orch_previous_overrides", None)
-    if isinstance(previous, dict):
-        for key in _ORCH_ROUTE_OVERRIDE_KEYS:
-            if key in previous:
-                session[key] = previous[key]
-            else:
-                session.pop(key, None)
-    for key in (
-        "_orch_operational",
-        "_orch_operation_id",
-        "_orch_model_route",
-        "_orch_sdo_decision",
-        "_orch_runtime_identity_verified",
-        "_orch_runtime_identity_operation_id",
-        "_orch_first_delta_observed",
-        "_orch_result_consumed",
-        "_orch_initialization_category",
-        "_orch_turn_binding",
-        "_orch_gateway_session_id",
-    ):
-        session.pop(key, None)
+    with _orch_ownership_lock(session):
+        if session.get("_orch_mutation_token") is not None:
+            return
+        operation_id = session.get("_orch_operation_id")
+        if isinstance(operation_id, str) and operation_id:
+            session["_orch_status_operation_id"] = operation_id
+        previous = session.pop("_orch_previous_overrides", None)
+        if isinstance(previous, dict):
+            for key in _ORCH_ROUTE_OVERRIDE_KEYS:
+                if key in previous:
+                    session[key] = previous[key]
+                else:
+                    session.pop(key, None)
+        for key in (
+            "_orch_operational",
+            "_orch_operation_id",
+            "_orch_model_route",
+            "_orch_sdo_decision",
+            "_orch_runtime_identity_verified",
+            "_orch_runtime_identity_operation_id",
+            "_orch_first_delta_observed",
+            "_orch_result_consumed",
+            "_orch_initialization_category",
+            "_orch_turn_binding",
+            "_orch_gateway_session_id",
+            "_orch_mutation_token",
+        ):
+            session.pop(key, None)
 
 
 def _consume_orch_sdo_submit(
@@ -1677,46 +1696,61 @@ def _orch_record_initialization_failure(session: dict) -> str:
     return category
 
 
-def _orch_record_runtime_identity(session: dict, agent: Any) -> None:
+def _orch_record_runtime_identity(
+    session: dict, agent: Any, token: _OrchTurnBinding | None
+) -> None:
     """Verify and durably record the exact bound runtime before first call."""
-    route = session.get("_orch_model_route")
-    if not isinstance(route, dict):
-        raise RuntimeError("sdo_runtime_identity_unavailable")
-    actual_provider = getattr(agent, "provider", None)
-    actual_model = getattr(agent, "model", None)
-    reasoning = getattr(agent, "reasoning_config", None)
-    actual_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
-    actual_tier = getattr(agent, "service_tier", None)
-    if (
-        actual_provider != route.get("provider")
-        or actual_model != route.get("model")
-        or actual_effort != route.get("reasoning_effort")
-        or actual_tier not in {"priority", route.get("service_tier_preference")}
-    ):
-        session["_orch_initialization_category"] = "model_provider_unavailable"
-        raise RuntimeError("sdo_runtime_identity_mismatch")
-    operation_id = session.get("_orch_operation_id")
-    if not isinstance(operation_id, str) or not operation_id:
-        raise RuntimeError("sdo_runtime_identity_unavailable")
-    if session.get("_orch_runtime_identity_operation_id") == operation_id:
-        session["_orch_runtime_identity_verified"] = True
-        return
-    with _session_db(session) as db:
-        if db is None or not db.record_orch_task_runtime_identity(
-            operation_id,
-            model=actual_model,
-            effort=actual_effort,
-        ):
+    with _orch_ownership_lock(session):
+        if not _orch_turn_token_matches(session, token):
+            raise RuntimeError("sdo_runtime_identity_stale")
+        route = session.get("_orch_model_route")
+        if not isinstance(route, dict):
             raise RuntimeError("sdo_runtime_identity_unavailable")
-    session["_orch_runtime_identity_verified"] = True
-    session["_orch_runtime_identity_operation_id"] = operation_id
+        actual_provider = getattr(agent, "provider", None)
+        actual_model = getattr(agent, "model", None)
+        reasoning = getattr(agent, "reasoning_config", None)
+        actual_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+        actual_tier = getattr(agent, "service_tier", None)
+        if (
+            actual_provider != route.get("provider")
+            or actual_model != route.get("model")
+            or actual_effort != route.get("reasoning_effort")
+            or actual_tier not in {"priority", route.get("service_tier_preference")}
+        ):
+            session["_orch_initialization_category"] = "model_provider_unavailable"
+            raise RuntimeError("sdo_runtime_identity_mismatch")
+        operation_id = token.operation_id
+        session["_orch_mutation_token"] = token
+        try:
+            if session.get("_orch_runtime_identity_operation_id") == operation_id:
+                if _orch_turn_token_matches(session, token):
+                    session["_orch_runtime_identity_verified"] = True
+                return
+            with _session_db(session) as db:
+                if not _orch_turn_token_matches(session, token):
+                    raise RuntimeError("sdo_runtime_identity_stale")
+                if db is None or not db.record_orch_task_runtime_identity(
+                    operation_id,
+                    model=actual_model,
+                    effort=actual_effort,
+                ):
+                    raise RuntimeError("sdo_runtime_identity_unavailable")
+            if not _orch_turn_token_matches(session, token):
+                raise RuntimeError("sdo_runtime_identity_stale")
+            session["_orch_runtime_identity_verified"] = True
+            session["_orch_runtime_identity_operation_id"] = operation_id
+        finally:
+            if session.get("_orch_mutation_token") == token:
+                session.pop("_orch_mutation_token", None)
 
 
-def _orch_prepare_orch_agent_for_turn(session: dict, agent: Any) -> bool:
+def _orch_prepare_orch_agent_for_turn(
+    session: dict, agent: Any, token: _OrchTurnBinding | None
+) -> bool:
     """Enforce the selected route on a ready/reused agent before any call."""
     if session.get("_orch_operational") is not True:
         return True
-    _orch_record_runtime_identity(session, agent)
+    _orch_record_runtime_identity(session, agent, token)
     return True
 
 
@@ -1731,15 +1765,23 @@ def _orch_terminalize_before_agent_call(sid: str, session: dict) -> None:
 def _orch_mark_first_delta(
     session: dict, token: _OrchTurnBinding | None
 ) -> None:
-    if not _orch_turn_token_matches(session, token):
-        return
-    operation_id = token.operation_id
-    try:
-        with _session_db(session) as db:
-            if db is not None and db.mark_orch_task_first_delta(operation_id):
+    with _orch_ownership_lock(session):
+        if not _orch_turn_token_matches(session, token):
+            return
+        operation_id = token.operation_id
+        session["_orch_mutation_token"] = token
+        try:
+            with _session_db(session) as db:
+                if not _orch_turn_token_matches(session, token):
+                    return
+                marked = db is not None and db.mark_orch_task_first_delta(operation_id)
+            if marked and _orch_turn_token_matches(session, token):
                 session["_orch_first_delta_observed"] = True
-    except Exception:
-        pass
+        except Exception:
+            pass
+        finally:
+            if session.get("_orch_mutation_token") == token:
+                session.pop("_orch_mutation_token", None)
 
 
 def _orch_finish_task_observation(
@@ -1747,18 +1789,40 @@ def _orch_finish_task_observation(
 ) -> None:
     if result_status not in {"complete", "error", "interrupted"}:
         return
-    if not _orch_turn_token_matches(session, token):
-        return
-    operation_id = token.operation_id
-    try:
-        with _session_db(session) as db:
-            if db is not None and db.finish_orch_task_observation(
-                operation_id,
-                result_status=result_status,
-            ):
+    with _orch_ownership_lock(session):
+        if not _orch_turn_token_matches(session, token):
+            return
+        operation_id = token.operation_id
+        session["_orch_mutation_token"] = token
+        try:
+            with _session_db(session) as db:
+                if not _orch_turn_token_matches(session, token):
+                    return
+                finished = db is not None and db.finish_orch_task_observation(
+                    operation_id,
+                    result_status=result_status,
+                )
+            if finished and _orch_turn_token_matches(session, token):
                 session["_orch_result_consumed"] = True
-    except Exception:
-        pass
+        except Exception:
+            pass
+        finally:
+            if session.get("_orch_mutation_token") == token:
+                session.pop("_orch_mutation_token", None)
+
+
+def _orch_cancel_before_agent_ready(
+    session: dict, token: _OrchTurnBinding | None
+) -> bool:
+    """Finish and scrub an admitted turn cancelled before the agent is ready."""
+    with _orch_ownership_lock(session):
+        if not _orch_turn_token_matches(session, token):
+            return False
+        _orch_finish_task_observation(session, token, "interrupted")
+        if not _orch_turn_token_matches(session, token):
+            return False
+        _orch_clear_orch_turn(session)
+        return True
 
 
 _SDO_INITIALIZATION_TERMINAL_CATEGORIES = frozenset(
@@ -2803,7 +2867,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
                 if current.get("_orch_operational"):
-                    _orch_prepare_orch_agent_for_turn(current, agent)
+                    _orch_prepare_orch_agent_for_turn(current, agent, turn_token)
             finally:
                 _clear_session_context(tokens)
 
@@ -10406,7 +10470,7 @@ def _run_prompt_submit(
                     turn_current = False
                     return
                 try:
-                    _orch_prepare_orch_agent_for_turn(session, agent)
+                    _orch_prepare_orch_agent_for_turn(session, agent, orch_turn_token)
                 except Exception:
                     _orch_terminalize_before_agent_call(sid, session)
                     return
@@ -10587,7 +10651,7 @@ def _run_prompt_submit(
                 return
             if orch_turn_token is not None:
                 try:
-                    _orch_prepare_orch_agent_for_turn(session, agent)
+                    _orch_prepare_orch_agent_for_turn(session, agent, orch_turn_token)
                 except Exception:
                     _orch_terminalize_before_agent_call(sid, session)
                     return
