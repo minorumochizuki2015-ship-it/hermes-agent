@@ -1411,6 +1411,374 @@ def test_deferred_current_operational_success_dispatches_once_with_expected_toke
     assert events == []
 
 
+def _ordinary_deferred_session_and_context(operation_id: str, gateway_session_id: str):
+    session, context, stale_token = _deferred_session_and_token(
+        operation_id, gateway_session_id
+    )
+    server._orch_clear_orch_turn(session)
+    return session, context, stale_token
+
+
+def _install_ordinary_deferred_prompt_hooks(
+    monkeypatch,
+    session: dict,
+    context: dict,
+    wait_for_agent,
+    run_prompt,
+    events: list,
+    *,
+    terminal_events: list | None = None,
+):
+    real_thread = _install_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        run_prompt,
+        events,
+        terminal_events=terminal_events,
+    )
+    monkeypatch.setattr(
+        server,
+        "_validate_orch_submit_context",
+        lambda _params, _rid: (None, None),
+    )
+    return real_thread
+
+
+def test_ordinary_deferred_success_successor_is_zero_dispatch_and_mutation(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _ordinary_deferred_session_and_context(
+        "ordinary-success-stale", "gateway-ordinary-success"
+    )
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+    events = []
+    dispatches = []
+
+    def wait_for_agent(*_args):
+        wait_entered.set()
+        assert release_wait.wait(timeout=2.0)
+        return None
+
+    real_thread = _install_ordinary_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        lambda *args, **kwargs: dispatches.append((args, kwargs)),
+        events,
+    )
+    result_holder = []
+    error_holder = []
+
+    def submit():
+        try:
+            result_holder.append(
+                server._methods["prompt.submit"](
+                    "rid-ordinary-success",
+                    {
+                        "session_id": "gateway-ordinary-success",
+                        "text": "synthetic ordinary success",
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion
+            error_holder.append(exc)
+
+    submit_thread = real_thread(target=submit)
+    submit_thread.start()
+    assert wait_entered.wait(timeout=1.0)
+    successor_token = server._orch_open_orch_turn(
+        session,
+        "gateway-ordinary-success-next",
+        {
+            "operation_id": "ordinary-success-next",
+            "decision_binding": {"logical_session_id": "logical-ordinary-success-next"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": "synthetic-success-next"}
+    after_successor = _deferred_turn_state(session)
+    release_wait.set()
+    submit_thread.join(timeout=2.0)
+
+    assert not submit_thread.is_alive()
+    assert error_holder == []
+    assert result_holder[0]["result"]["status"] == "streaming"
+    assert dispatches == []
+    assert events == []
+    assert _deferred_turn_state(session) == after_successor
+    assert session["_orch_turn_binding"] == successor_token
+    assert stale_token is not None
+
+
+def test_ordinary_deferred_wait_error_successor_is_zero_mutation_or_event(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _ordinary_deferred_session_and_context(
+        "ordinary-error-stale", "gateway-ordinary-error"
+    )
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+    events = []
+    terminal_events = []
+
+    def wait_for_agent(*_args):
+        wait_entered.set()
+        assert release_wait.wait(timeout=2.0)
+        return {"error": {"message": "synthetic ordinary wait failure"}}
+
+    real_thread = _install_ordinary_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        lambda *_args: pytest.fail("stale ordinary wait-error dispatched"),
+        events,
+        terminal_events=terminal_events,
+    )
+    monkeypatch.setattr(
+        server,
+        "_orch_terminalize_before_agent_call",
+        lambda *_args: pytest.fail("stale ordinary wait-error terminalized"),
+    )
+    result_holder = []
+    error_holder = []
+
+    def submit():
+        try:
+            result_holder.append(
+                server._methods["prompt.submit"](
+                    "rid-ordinary-error",
+                    {
+                        "session_id": "gateway-ordinary-error",
+                        "text": "synthetic ordinary error",
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion
+            error_holder.append(exc)
+
+    submit_thread = real_thread(target=submit)
+    submit_thread.start()
+    assert wait_entered.wait(timeout=1.0)
+    server._orch_open_orch_turn(
+        session,
+        "gateway-ordinary-error-next",
+        {
+            "operation_id": "ordinary-error-next",
+            "decision_binding": {"logical_session_id": "logical-ordinary-error-next"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": "synthetic-error-next"}
+    after_successor = _deferred_turn_state(session)
+    release_wait.set()
+    submit_thread.join(timeout=2.0)
+
+    assert not submit_thread.is_alive()
+    assert error_holder == []
+    assert result_holder[0]["result"]["status"] == "streaming"
+    assert terminal_events == []
+    assert events == []
+    assert _deferred_turn_state(session) == after_successor
+    assert stale_token is not None
+
+
+def test_ordinary_deferred_cancel_successor_is_zero_inflight_mutation_or_event(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _ordinary_deferred_session_and_context(
+        "ordinary-cancel-stale", "gateway-ordinary-cancel"
+    )
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+    events = []
+
+    def wait_for_agent(*_args):
+        wait_entered.set()
+        assert release_wait.wait(timeout=2.0)
+        return None
+
+    real_thread = _install_ordinary_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        lambda *_args: pytest.fail("stale ordinary cancellation dispatched"),
+        events,
+    )
+    result_holder = []
+    error_holder = []
+
+    def submit():
+        try:
+            result_holder.append(
+                server._methods["prompt.submit"](
+                    "rid-ordinary-cancel",
+                    {
+                        "session_id": "gateway-ordinary-cancel",
+                        "text": "synthetic ordinary cancel",
+                    },
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion
+            error_holder.append(exc)
+
+    submit_thread = real_thread(target=submit)
+    submit_thread.start()
+    assert wait_entered.wait(timeout=1.0)
+    server._orch_open_orch_turn(
+        session,
+        "gateway-ordinary-cancel-next",
+        {
+            "operation_id": "ordinary-cancel-next",
+            "decision_binding": {"logical_session_id": "logical-ordinary-cancel-next"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": "synthetic-cancel-next"}
+    session["_turn_cancel_requested"] = True
+    after_successor = _deferred_turn_state(session)
+    release_wait.set()
+    submit_thread.join(timeout=2.0)
+
+    assert not submit_thread.is_alive()
+    assert error_holder == []
+    assert result_holder[0]["result"]["status"] == "streaming"
+    assert events == []
+    assert _deferred_turn_state(session) == after_successor
+    assert stale_token is not None
+
+
+def test_current_ordinary_deferred_success_dispatches_once_with_expected_state(
+    monkeypatch,
+) -> None:
+    session, context, stale_token = _ordinary_deferred_session_and_context(
+        "ordinary-current", "gateway-ordinary-current"
+    )
+    events = []
+    dispatches = []
+
+    def run_prompt(*args, **kwargs):
+        dispatches.append((args, kwargs))
+
+    _install_ordinary_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        lambda *_args: None,
+        run_prompt,
+        events,
+    )
+    result = server._methods["prompt.submit"](
+        "rid-ordinary-current",
+        {
+            "session_id": "gateway-ordinary-current",
+            "text": "synthetic ordinary current",
+        },
+    )
+
+    assert result["result"]["status"] == "streaming"
+    assert len(dispatches) == 1
+    assert dispatches[0][1]["expected_orch_turn_token"] is not None
+    assert dispatches[0][1]["expected_orch_turn_token"].gateway_session_id == (
+        "gateway-ordinary-current"
+    )
+    assert events == []
+    assert stale_token is not None
+
+
+def test_current_ordinary_deferred_cancel_emits_one_error_unchanged(monkeypatch) -> None:
+    session, context, stale_token = _ordinary_deferred_session_and_context(
+        "ordinary-current-cancel", "gateway-ordinary-current-cancel"
+    )
+    events = []
+
+    def wait_for_agent(*_args):
+        session["_turn_cancel_requested"] = True
+        return None
+
+    _install_ordinary_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        wait_for_agent,
+        lambda *_args: pytest.fail("ordinary cancellation dispatched"),
+        events,
+    )
+    result = server._methods["prompt.submit"](
+        "rid-ordinary-current-cancel",
+        {
+            "session_id": "gateway-ordinary-current-cancel",
+            "text": "synthetic ordinary current cancel",
+        },
+    )
+
+    assert result["result"]["status"] == "streaming"
+    assert len([event for event in events if event[0] == "error"]) == 1
+    assert session.get("inflight_turn") is None
+    assert stale_token is not None
+
+
+def test_ordinary_post_wait_successor_at_run_entry_is_rejected(monkeypatch) -> None:
+    session, context, stale_token = _ordinary_deferred_session_and_context(
+        "ordinary-entry-race", "gateway-ordinary-entry"
+    )
+    events = []
+    original_run_prompt = server._run_prompt_submit
+    successor_state = []
+
+    _install_ordinary_deferred_prompt_hooks(
+        monkeypatch,
+        session,
+        context,
+        lambda *_args: None,
+        lambda *_args, **_kwargs: pytest.fail("race reached unrestricted dispatch"),
+        events,
+    )
+
+    def race_at_run_entry(
+        rid,
+        sid,
+        active_session,
+        text,
+        *,
+        expected_orch_turn_token,
+    ):
+        successor = server._orch_open_orch_turn(
+            active_session,
+            "gateway-ordinary-entry-next",
+            {
+                "operation_id": "ordinary-entry-next",
+                "decision_binding": {"logical_session_id": "logical-ordinary-entry-next"},
+            },
+        )
+        active_session["_orch_model_route"] = {"provider": "synthetic-entry-next"}
+        successor_state.append(_deferred_turn_state(active_session))
+        original_run_prompt(
+            rid,
+            sid,
+            active_session,
+            text,
+            expected_orch_turn_token=expected_orch_turn_token,
+        )
+
+    monkeypatch.setattr(server, "_run_prompt_submit", race_at_run_entry)
+    result = server._methods["prompt.submit"](
+        "rid-ordinary-entry",
+        {
+            "session_id": "gateway-ordinary-entry",
+            "text": "synthetic ordinary entry race",
+        },
+    )
+
+    assert result["result"]["status"] == "streaming"
+    assert len(successor_state) == 1
+    assert _deferred_turn_state(session) == successor_state[0]
+    assert events == []
+    assert stale_token is not None
+
+
 def test_operational_inflight_failure_is_fixed_and_value_free() -> None:
     session = {
         "inflight_turn": {"assistant": "", "user": "synthetic"},

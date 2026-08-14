@@ -683,6 +683,9 @@ def _(rid, params: dict) -> dict:
     orch_turn_token = (
         session.get("_orch_turn_binding") if orch_context is not None else None
     )
+    orch_turn_expectation = _orch_capture_turn_expectation(
+        session, sid, orch_turn_token
+    )
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -742,71 +745,49 @@ def _(rid, params: dict) -> dict:
                     expected_orch_turn_token=orch_turn_token,
                 )
             return
-        if err:
-            terminal_message = (
-                "agent initialization failed"
-                if session.get("_orch_operational")
-                else (err.get("error") or {}).get(
+        with _orch_ownership_lock(session):
+            if not _orch_turn_expectation_matches(
+                session, sid, orch_turn_expectation
+            ):
+                return
+            if err:
+                # Terminal frame + retained snapshot (not a bare "error" event
+                # + cleared inflight): if the client is disconnected right now,
+                # the retained snapshot is the only way resume can show this
+                # failure.
+                terminal_message = (err.get("error") or {}).get(
                     "message", "agent initialization failed"
                 )
-            )
-            if session.get("_orch_operational"):
-                with _orch_ownership_lock(session):
-                    terminalized = _orch_terminalize_before_agent_call(
-                        sid, session, orch_turn_token
-                    )
-                    if not terminalized:
-                        return
-                    with session["history_lock"]:
-                        session["running"] = False
-                        session["last_active"] = time.time()
-                    _emit("session.info", sid, _session_info(session.get("agent"), session))
-                return
-            # Terminal frame + retained snapshot (not a bare "error" event +
-            # cleared inflight): if the client is disconnected right now, the
-            # retained snapshot is the only way resume can show this failure.
-            _emit_terminal_turn_error(
-                sid,
-                session,
-                terminal_message,
-            )
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-            _orch_clear_orch_turn(session)
-            _emit("session.info", sid, _session_info(session.get("agent"), session))
-            return
-        cancelled_before_ready = False
-        cancel_message = ""
-        with session["history_lock"]:
-            if session.get("_turn_cancel_requested") or not session.get("running"):
-                session["running"] = False
-                _clear_inflight_turn(session)
-                cancelled_before_ready = True
-                cancel_message = (
-                    "Turn cancelled before the agent was ready"
-                    if session.get("_turn_cancel_requested")
-                    else "Session no longer running before the agent was ready"
+                _emit_terminal_turn_error(
+                    sid,
+                    session,
+                    terminal_message,
                 )
-        if cancelled_before_ready:
-            # Surface the cancellation to the client. Without this emit the
-            # turn vanishes silently — the Desktop sees `prompt.submit`
-            # return `{"status": "streaming"}` but never receives a
-            # `message.start` or `error` event, so the composer shows no
-            # feedback (issue #63078 server-side half). Match the
-            # `_wait_agent` error branch above: emit, then bail.
-            if orch_turn_token is not None:
-                with _orch_ownership_lock(session):
-                    if not _orch_cancel_before_agent_ready(session, orch_turn_token):
-                        return
-                    _emit(
-                        "error",
-                        sid,
-                        {
-                            "message": cancel_message,
-                        },
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                _orch_clear_orch_turn(session)
+                _emit("session.info", sid, _session_info(session.get("agent"), session))
+                return
+            cancelled_before_ready = False
+            cancel_message = ""
+            with session["history_lock"]:
+                if session.get("_turn_cancel_requested") or not session.get("running"):
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+                    cancelled_before_ready = True
+                    cancel_message = (
+                        "Turn cancelled before the agent was ready"
+                        if session.get("_turn_cancel_requested")
+                        else "Session no longer running before the agent was ready"
                     )
-            else:
+            if cancelled_before_ready:
+                # Surface the cancellation to the client. Without this emit the
+                # turn vanishes silently — the Desktop sees `prompt.submit`
+                # return `{"status": "streaming"}` but never receives a
+                # `message.start` or `error` event, so the composer shows no
+                # feedback (issue #63078 server-side half). Match the
+                # `_wait_agent` error branch above: emit, then bail.
                 _emit(
                     "error",
                     sid,
@@ -814,8 +795,22 @@ def _(rid, params: dict) -> dict:
                         "message": cancel_message,
                     },
                 )
-            return
-        _run_prompt_submit(rid, sid, session, text)
+                return
+            submit_parameters = inspect.signature(_run_prompt_submit).parameters
+            accepts_expectation = "expected_orch_turn_token" in submit_parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in submit_parameters.values()
+            )
+            if accepts_expectation:
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    expected_orch_turn_token=orch_turn_expectation,
+                )
+            else:
+                _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

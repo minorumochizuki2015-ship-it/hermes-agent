@@ -1423,6 +1423,15 @@ class _OrchTurnBinding(NamedTuple):
     turn_generation: int
 
 
+class _OrchOrdinaryTurnBinding(NamedTuple):
+    """Immutable no-owner identity captured by an ordinary deferred submit."""
+
+    gateway_session_id: str
+    session_key: str
+    profile: str
+    turn_generation: int
+
+
 def _orch_ownership_lock(session: dict):
     """Return the shared reentrant ownership lock for one live session."""
     lock = session.get("_orch_ownership_lock")
@@ -1492,6 +1501,41 @@ def _orch_turn_token_matches(session: dict, token: Any) -> bool:
         and token.logical_session_id == current.logical_session_id
         and token.operation_id == session.get("_orch_operation_id")
         and token.turn_generation == session.get("_orch_turn_generation")
+    )
+
+
+def _orch_capture_turn_expectation(
+    session: dict, sid: str, token: _OrchTurnBinding | None
+) -> _OrchTurnBinding | _OrchOrdinaryTurnBinding:
+    """Capture an immutable operational or ordinary submit expectation."""
+    with _orch_ownership_lock(session):
+        if token is not None:
+            return token
+        generation = int(session.get("_orch_turn_generation", 0)) + 1
+        session["_orch_turn_generation"] = generation
+        return _OrchOrdinaryTurnBinding(
+            gateway_session_id=str(sid),
+            session_key=str(session.get("session_key") or ""),
+            profile=_orch_profile_name(session),
+            turn_generation=generation,
+        )
+
+
+def _orch_turn_expectation_matches(
+    session: dict, sid: str, expectation: Any
+) -> bool:
+    """Match either an exact operational owner or an ordinary no-owner state."""
+    if isinstance(expectation, _OrchTurnBinding):
+        return _orch_turn_token_matches(session, expectation)
+    if not isinstance(expectation, _OrchOrdinaryTurnBinding):
+        return False
+    return (
+        str(sid) == expectation.gateway_session_id
+        and session.get("_orch_turn_binding") is None
+        and session.get("_orch_operational") is not True
+        and expectation.session_key == session.get("session_key")
+        and expectation.profile == _orch_profile_name(session)
+        and expectation.turn_generation == session.get("_orch_turn_generation")
     )
 
 
@@ -10411,7 +10455,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    expected_orch_turn_token: _OrchTurnBinding | None = None,
+    expected_orch_turn_token: _OrchTurnBinding | _OrchOrdinaryTurnBinding | None = None,
 ) -> None:
     ownership_context = (
         _orch_ownership_lock(session)
@@ -10421,7 +10465,9 @@ def _run_prompt_submit(
     with ownership_context:
         if (
             expected_orch_turn_token is not None
-            and not _orch_turn_token_matches(session, expected_orch_turn_token)
+            and not _orch_turn_expectation_matches(
+                session, sid, expected_orch_turn_token
+            )
         ):
             return
         with session["history_lock"]:
@@ -10443,15 +10489,16 @@ def _run_prompt_submit(
             if not isinstance(inflight, dict) or inflight.get("status") == "error":
                 _start_inflight_turn(session, text)
             agent = session["agent"]
-            orch_turn_token = (
-                expected_orch_turn_token
-                if expected_orch_turn_token is not None
-                else (
+            if isinstance(expected_orch_turn_token, _OrchTurnBinding):
+                orch_turn_token = expected_orch_turn_token
+            elif isinstance(expected_orch_turn_token, _OrchOrdinaryTurnBinding):
+                orch_turn_token = None
+            else:
+                orch_turn_token = (
                     session.get("_orch_turn_binding")
                     if session.get("_orch_operational") is True
                     else None
                 )
-            )
             if hasattr(agent, "clear_interrupt"):
                 try:
                     agent.clear_interrupt()
