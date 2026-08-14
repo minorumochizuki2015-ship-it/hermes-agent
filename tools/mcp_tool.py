@@ -7328,6 +7328,21 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # A delegated capability profile owns a positive tool boundary.  Apply it
+    # to the complete rebuilt snapshot before the atomic publication so a
+    # registry/MCP refresh cannot widen an already-running child.
+    exact_allowlist = getattr(agent, "_delegate_tool_allowlist", None)
+    if isinstance(exact_allowlist, (set, frozenset)):
+        exact_allowlist = frozenset(exact_allowlist)
+        new_defs = [
+            definition
+            for definition in new_defs
+            if (definition.get("function") or {}).get("name", "")
+            in exact_allowlist
+        ]
+        new_names.intersection_update(exact_allowlist)
+        staged_engine_names.intersection_update(exact_allowlist)
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.

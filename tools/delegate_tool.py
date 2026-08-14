@@ -58,6 +58,25 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
 )
 
 
+# The audit profile is intentionally a positive capability boundary.  It is
+# applied after the current registry/toolset resolver has produced the child
+# snapshot, so future tools added to a bundled toolset cannot widen it.
+READ_ONLY_AUDIT_PROFILE = "read_only_audit"
+READ_ONLY_AUDIT_ALLOWED_TOOLS = frozenset(
+    {"read_file", "search_files", "skills_list", "skill_view", "vision_analyze"}
+)
+READ_ONLY_AUDIT_DEFAULT_TIMEOUT_SECONDS = 600.0
+READ_ONLY_AUDIT_MAX_TIMEOUT_SECONDS = 1800.0
+_DELEGATE_MAX_TIMEOUT_SECONDS = 3600.0
+_READ_ONLY_AUDIT_TOOLSETS = ("file", "skills", "vision")
+
+
+class CapabilityRuntimeIncompatibleError(RuntimeError):
+    """The selected child runtime cannot enforce a requested profile."""
+
+    code = "capability_runtime_incompatible"
+
+
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
 # ---------------------------------------------------------------------------
@@ -731,6 +750,52 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _normalize_capability_profile(value: Any) -> tuple[Optional[str], Optional[str]]:
+    if value is None or value == "":
+        return None, None
+    normalized = str(value).strip().lower()
+    if normalized == READ_ONLY_AUDIT_PROFILE:
+        return normalized, None
+    return None, (
+        "Unsupported delegate_task capability_profile. The only admitted "
+        f"profile is '{READ_ONLY_AUDIT_PROFILE}'."
+    )
+
+
+def _normalize_target_revision(value: Any) -> tuple[Optional[str], Optional[str]]:
+    if value is None or value == "":
+        return None, None
+    normalized = str(value).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{7,64}", normalized):
+        return normalized, None
+    return None, (
+        "target_revision must be a fixed 7-64 character hexadecimal revision; "
+        "symbolic or moving targets are not admitted."
+    )
+
+
+def _normalize_delegate_timeout(
+    value: Any,
+    capability_profile: Optional[str],
+) -> tuple[Optional[float], Optional[str]]:
+    if value is None or value == "":
+        if capability_profile == READ_ONLY_AUDIT_PROFILE:
+            return READ_ONLY_AUDIT_DEFAULT_TIMEOUT_SECONDS, None
+        return None, None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None, "timeout_seconds must be a number."
+    maximum = (
+        READ_ONLY_AUDIT_MAX_TIMEOUT_SECONDS
+        if capability_profile == READ_ONLY_AUDIT_PROFILE
+        else _DELEGATE_MAX_TIMEOUT_SECONDS
+    )
+    if not 30.0 <= normalized <= maximum:
+        return None, f"timeout_seconds must be between 30 and {int(maximum)}."
+    return normalized, None
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -856,6 +921,126 @@ def _get_child_timeout() -> Optional[float]:
         else:
             return None if parsed <= 0 else max(30.0, parsed)
     return DEFAULT_CHILD_TIMEOUT
+
+
+def _resolve_child_timeout(child: Any) -> Optional[float]:
+    """Prefer a validated per-task timeout over the operator default."""
+    per_call_timeout = getattr(child, "_delegate_timeout_seconds", None)
+    if isinstance(per_call_timeout, (int, float)):
+        return float(per_call_timeout)
+    return _get_child_timeout()
+
+
+def _enforce_child_tool_allowlist(child: Any, allowed_tools: frozenset[str]) -> None:
+    """Apply an exact positive tool boundary to a resolved child snapshot."""
+    exact_allowlist = frozenset(allowed_tools)
+    filtered_definitions = [
+        definition
+        for definition in list(getattr(child, "tools", None) or [])
+        if (definition.get("function") or {}).get("name", "") in exact_allowlist
+    ]
+    child.tools = filtered_definitions
+    child.valid_tool_names = {
+        (definition.get("function") or {}).get("name", "")
+        for definition in filtered_definitions
+    }
+    child.valid_tool_names.discard("")
+    child._delegate_tool_allowlist = exact_allowlist
+    # Any Tool Search scope computed before the positive boundary is stale.
+    child._tool_search_scope_cache = None
+
+
+def _resolve_child_execution_runtime(
+    *,
+    parent_agent: Any,
+    model: Optional[str],
+    override_provider: Optional[str],
+    override_api_mode: Optional[str],
+    override_acp_command: Optional[str],
+    override_acp_args: Optional[List[str]],
+    capability_profile: Optional[str],
+) -> Dict[str, Any]:
+    """Reject child runtimes that cannot enforce the requested profile.
+
+    Hermes' exact allowlist is enforced by its own AIAgent loop.  ACP and
+    Codex app-server loops own a different tool surface, so an audit request
+    must fail before child construction rather than silently downgrade to a
+    different runtime.
+    """
+    effective_model = model or parent_agent.model
+    effective_provider = override_provider or getattr(parent_agent, "provider", None)
+    parent_provider = getattr(parent_agent, "provider", None) or ""
+    provider_normalized = (effective_provider or "").strip().lower()
+
+    if override_api_mode is not None:
+        effective_api_mode = override_api_mode
+    elif provider_normalized in {"nous", "nous-portal", "nousresearch"}:
+        from hermes_cli.providers import nous_api_mode
+
+        effective_api_mode = nous_api_mode(effective_model)
+    elif effective_provider != parent_provider:
+        effective_api_mode = None
+    else:
+        effective_api_mode = getattr(parent_agent, "api_mode", None)
+
+    if capability_profile == READ_ONLY_AUDIT_PROFILE and override_acp_command:
+        raise CapabilityRuntimeIncompatibleError(
+            "read_only_audit is unavailable for the selected child runtime: "
+            "its tool loop is not proven to traverse the Hermes exact allowlist."
+        )
+
+    resolved_acp_command = override_acp_command
+    resolved_acp_args = override_acp_args
+    if resolved_acp_command:
+        import shutil as _shutil
+
+        if not _shutil.which(resolved_acp_command):
+            logger.warning(
+                "Ignoring acp_command=%r: binary not found on PATH; "
+                "falling back to default transport.",
+                resolved_acp_command,
+            )
+            resolved_acp_command = None
+            resolved_acp_args = None
+
+    inherited_acp_command = getattr(parent_agent, "acp_command", None)
+    if not isinstance(inherited_acp_command, str) or not inherited_acp_command.strip():
+        inherited_acp_command = None
+    inherited_acp_args = getattr(parent_agent, "acp_args", [])
+    if not isinstance(inherited_acp_args, (list, tuple)):
+        inherited_acp_args = []
+    effective_acp_command = resolved_acp_command or inherited_acp_command
+    effective_acp_args = list(
+        resolved_acp_args
+        if resolved_acp_args is not None
+        else inherited_acp_args
+    )
+    if override_provider and not resolved_acp_command:
+        effective_acp_command = None
+        effective_acp_args = []
+    if resolved_acp_command:
+        effective_provider = "copilot-acp"
+        effective_api_mode = "chat_completions"
+
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        incompatible = (
+            str(effective_api_mode or "").strip().lower() == "codex_app_server"
+            or bool(effective_acp_command)
+            or str(effective_provider or "").strip().lower() == "copilot-acp"
+        )
+        if incompatible:
+            raise CapabilityRuntimeIncompatibleError(
+                "read_only_audit is unavailable for the selected child runtime: "
+                "its tool loop is not proven to traverse the Hermes exact allowlist."
+            )
+
+    return {
+        "model": effective_model,
+        "provider": effective_provider,
+        "api_mode": effective_api_mode,
+        "acp_command": effective_acp_command,
+        "acp_args": effective_acp_args,
+    }
 
 
 def _get_max_spawn_depth() -> int:
@@ -1064,6 +1249,8 @@ def _build_child_system_prompt(
     *,
     workspace_path: Optional[str] = None,
     role: str = "leaf",
+    capability_profile: Optional[str] = None,
+    target_revision: Optional[str] = None,
     max_spawn_depth: int = 2,
     child_depth: int = 1,
 ) -> str:
@@ -1082,6 +1269,21 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    if target_revision:
+        parts.append(
+            "\nTARGET REVISION (FIXED):\n"
+            f"{target_revision}\n"
+            "Evaluate only this immutable revision. Do not substitute HEAD, "
+            "a branch name, or a later working-tree state."
+        )
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        parts.append(
+            "\nCAPABILITY PROFILE: read_only_audit\n"
+            "The runtime exposes only read/search/view tools for this task. "
+            "You cannot use terminal/process execution, write_file, patch, "
+            "skill_manage, browser mutation, delegation, or other mutation "
+            "surfaces. Return findings without changing source or runtime state."
+        )
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -1486,6 +1688,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    capability_profile: Optional[str] = None,
+    target_revision: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1509,6 +1714,8 @@ def _build_child_agent(
     max_spawn = _get_max_spawn_depth()
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        effective_role = "leaf"
 
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
@@ -1540,7 +1747,12 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        expanded_parent = _expand_parent_toolsets(parent_toolsets)
+        child_toolsets = [
+            name for name in _READ_ONLY_AUDIT_TOOLSETS if name in expanded_parent
+        ]
+    elif toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
@@ -1593,6 +1805,8 @@ def _build_child_agent(
         context,
         workspace_path=workspace_hint,
         role=effective_role,
+        capability_profile=capability_profile,
+        target_revision=target_revision,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
     )
@@ -1669,6 +1883,21 @@ def _build_child_agent(
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
         effective_api_mode = getattr(parent_agent, "api_mode", None)
+
+    # Fail closed before any AIAgent construction when the selected transport
+    # cannot enforce the positive audit boundary.  Ordinary delegation does
+    # not enter this helper's restricted branch.
+    if capability_profile:
+        _resolve_child_execution_runtime(
+            parent_agent=parent_agent,
+            model=model,
+            override_provider=override_provider,
+            override_api_mode=override_api_mode,
+            override_acp_command=override_acp_command,
+            override_acp_args=override_acp_args,
+            capability_profile=capability_profile,
+        )
+
     # Defensive: validate trusted delegation.command exists on PATH before
     # honoring it. Stale config should not force a child onto the ACP transport
     # and then fail at subprocess startup.
@@ -1816,6 +2045,11 @@ def _build_child_agent(
             iteration_budget=None,  # fresh budget per subagent
             **child_optional_kwargs,
         )
+    if capability_profile == READ_ONLY_AUDIT_PROFILE:
+        _enforce_child_tool_allowlist(child, READ_ONLY_AUDIT_ALLOWED_TOOLS)
+    child._delegate_capability_profile = capability_profile
+    child._delegate_target_revision = target_revision
+    child._delegate_timeout_seconds = timeout_seconds
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -2536,7 +2770,7 @@ def _run_single_child(
         # Run child with an optional hard timeout (off by default —
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
-        child_timeout = _get_child_timeout()
+        child_timeout = _resolve_child_timeout(child)
         # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
         # below; a stdlib non-daemon worker would then block interpreter
         # exit at atexit-join time if the child never unwinds.
@@ -3375,6 +3609,9 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    capability_profile: Optional[str] = None,
+    target_revision: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
     action: Optional[str] = None,
@@ -3430,6 +3667,18 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    top_profile, profile_error = _normalize_capability_profile(capability_profile)
+    if profile_error:
+        return tool_error(profile_error)
+    top_revision, revision_error = _normalize_target_revision(target_revision)
+    if revision_error:
+        return tool_error(revision_error)
+    top_timeout, timeout_error = _normalize_delegate_timeout(
+        timeout_seconds,
+        top_profile,
+    )
+    if timeout_error:
+        return tool_error(timeout_error)
 
     # Background (async) delegation now applies to BOTH single tasks and
     # batches. A batch is dispatched as ONE async unit: the whole fan-out runs
@@ -3505,7 +3754,14 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
+        single_task: Dict[str, Any] = {
+            "goal": goal,
+            "context": context,
+            "role": top_role,
+            "capability_profile": top_profile,
+            "target_revision": top_revision,
+            "timeout_seconds": top_timeout,
+        }
         if output_schema is not None:
             single_task["output_schema"] = output_schema
         task_list = [single_task]
@@ -3523,6 +3779,33 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        task_profile, task_profile_error = _normalize_capability_profile(
+            task.get("capability_profile", top_profile)
+        )
+        if task_profile_error:
+            return tool_error(f"Task {i}: {task_profile_error}")
+        task_revision, task_revision_error = _normalize_target_revision(
+            task.get("target_revision", top_revision)
+        )
+        if task_revision_error:
+            return tool_error(f"Task {i}: {task_revision_error}")
+        task_timeout, task_timeout_error = _normalize_delegate_timeout(
+            task.get("timeout_seconds", top_timeout),
+            task_profile,
+        )
+        if task_timeout_error:
+            return tool_error(f"Task {i}: {task_timeout_error}")
+        if task_profile == READ_ONLY_AUDIT_PROFILE and not task_revision:
+            return tool_error(
+                f"Task {i}: capability_profile='{READ_ONLY_AUDIT_PROFILE}' "
+                "requires target_revision."
+            )
+        task["role"] = "leaf" if task_profile else _normalize_role(
+            task.get("role") or top_role
+        )
+        task["capability_profile"] = task_profile
+        task["target_revision"] = task_revision
+        task["timeout_seconds"] = task_timeout
 
     # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
     # unexpanded multi-word template markers, 1-task batches) before any
@@ -3550,6 +3833,31 @@ def delegate_task(
         if schema_err:
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
+
+    # Resolve every restricted child's tool-loop runtime before creating any
+    # transcript or child. Mixed batches therefore fail atomically instead of
+    # launching compatible siblings before an incompatible route is found.
+    try:
+        for task in task_list:
+            if task.get("capability_profile") != READ_ONLY_AUDIT_PROFILE:
+                continue
+            _resolve_child_execution_runtime(
+                parent_agent=parent_agent,
+                model=creds["model"],
+                override_provider=creds["provider"],
+                override_api_mode=creds["api_mode"],
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
+                capability_profile=READ_ONLY_AUDIT_PROFILE,
+            )
+    except CapabilityRuntimeIncompatibleError as exc:
+        return tool_error(
+            str(exc),
+            code=exc.code,
+            status="unavailable",
+            launch=False,
+            launch_count=0,
+        )
 
     overall_start = time.monotonic()
     results = []
@@ -3632,6 +3940,9 @@ def delegate_task(
             override_acp_command=creds.get("command"),
             override_acp_args=creds.get("args"),
             role=effective_role,
+            capability_profile=t.get("capability_profile"),
+            target_revision=t.get("target_revision"),
+            timeout_seconds=t.get("timeout_seconds"),
         )
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
@@ -4527,6 +4838,29 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "capability_profile": {
+                            "type": "string",
+                            "enum": [READ_ONLY_AUDIT_PROFILE],
+                            "description": (
+                                "Optional enforced child capability restriction. "
+                                "read_only_audit requires target_revision."
+                            ),
+                        },
+                        "target_revision": {
+                            "type": "string",
+                            "pattern": "^[0-9a-fA-F]{7,64}$",
+                            "description": "Fixed immutable revision for the task.",
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 30,
+                            "maximum": _DELEGATE_MAX_TIMEOUT_SECONDS,
+                            "description": (
+                                "Per-task bounded wall-clock timeout. The "
+                                "read_only_audit profile defaults to 600 seconds "
+                                "and is capped at 1800."
+                            ),
                         },
                         "output_schema": {
                             "type": "object",

@@ -354,11 +354,17 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    exact_allowlist = getattr(agent, "_delegate_tool_allowlist", None)
+    if isinstance(exact_allowlist, (set, frozenset)):
+        exact_allowlist = frozenset(exact_allowlist)
+    else:
+        exact_allowlist = None
     cache_key = (
         _registry.current_scope_key(),
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        exact_allowlist,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -371,6 +377,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
             skip_tool_search_assembly=True,
         ) or []
         names = _ts.scoped_deferrable_names(scoped_defs)
+        if exact_allowlist is not None:
+            names = frozenset(names.intersection(exact_allowlist))
     except Exception:
         names = frozenset()
     try:

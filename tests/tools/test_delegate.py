@@ -21,6 +21,8 @@ from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
+    READ_ONLY_AUDIT_ALLOWED_TOOLS,
+    READ_ONLY_AUDIT_PROFILE,
     _get_max_concurrent_children,
     _load_config,
     delegate_task,
@@ -81,6 +83,15 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_read_only_audit_task_schema_is_fixed_and_bounded(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"][
+            "items"
+        ]["properties"]
+        self.assertEqual(task_props["capability_profile"]["enum"], [READ_ONLY_AUDIT_PROFILE])
+        self.assertEqual(task_props["target_revision"]["pattern"], "^[0-9a-fA-F]{7,64}$")
+        self.assertEqual(task_props["timeout_seconds"]["minimum"], 30)
+        self.assertEqual(task_props["timeout_seconds"]["maximum"], 3600.0)
+
     def test_top_level_description_compact_and_complete(self):
         """The top-level description must stay compact while keeping every
         contract that exists nowhere else in the schema (keyword-level, not
@@ -139,6 +150,50 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertNotIn("CONTEXT", prompt)
 
 class TestStripBlockedTools(unittest.TestCase):
+    def test_read_only_audit_profile_requires_fixed_revision_and_exact_allowlist(self):
+        import model_tools
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["hermes-cli"]
+        parent.disabled_toolsets = []
+
+        class ResolvingAgent:
+            def __init__(self, **kwargs):
+                self.enabled_toolsets = kwargs["enabled_toolsets"]
+                self.disabled_toolsets = kwargs["disabled_toolsets"]
+                self.tools = model_tools.get_tool_definitions(
+                    enabled_toolsets=self.enabled_toolsets,
+                    disabled_toolsets=self.disabled_toolsets,
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+                self.valid_tool_names = {
+                    definition["function"]["name"] for definition in self.tools
+                }
+                self.ephemeral_system_prompt = kwargs["ephemeral_system_prompt"]
+
+        with patch("run_agent.AIAgent", ResolvingAgent):
+            child = _build_child_agent(
+                task_index=0,
+                goal="Audit the fixed revision",
+                context="Read the stated sources only",
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="leaf",
+                capability_profile=READ_ONLY_AUDIT_PROFILE,
+                target_revision="a1b2c3d4",
+                timeout_seconds=120.0,
+            )
+
+        names = {item["function"]["name"] for item in child.tools}
+        self.assertTrue({"read_file", "search_files"} <= names)
+        self.assertTrue(names <= READ_ONLY_AUDIT_ALLOWED_TOOLS)
+        self.assertEqual(child._delegate_target_revision, "a1b2c3d4")
+        self.assertEqual(child._delegate_timeout_seconds, 120.0)
+
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
         self.assertEqual(sorted(result), ["code_execution", "file", "terminal"])
@@ -261,6 +316,46 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(goal="test", parent_agent=parent))
         self.assertIn("error", result)
         self.assertIn("depth limit", result["error"].lower())
+
+    def test_read_only_audit_requires_fixed_revision_before_child_launch(self):
+        parent = _make_mock_parent()
+        with (
+            patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10}),
+            patch("tools.delegation_live_log.create_live_transcripts") as transcripts,
+            patch("run_agent.AIAgent") as agent_constructor,
+        ):
+            result = json.loads(
+                delegate_task(
+                    goal="audit the fixed source",
+                    capability_profile=READ_ONLY_AUDIT_PROFILE,
+                    parent_agent=parent,
+                )
+            )
+        self.assertIn("requires target_revision", result["error"])
+        transcripts.assert_not_called()
+        agent_constructor.assert_not_called()
+
+    def test_read_only_audit_rejects_codex_runtime_before_child_launch(self):
+        parent = _make_mock_parent()
+        parent.api_mode = "codex_app_server"
+        with (
+            patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10}),
+            patch("tools.delegation_live_log.create_live_transcripts") as transcripts,
+            patch("run_agent.AIAgent") as agent_constructor,
+        ):
+            result = json.loads(
+                delegate_task(
+                    goal="audit the fixed source",
+                    capability_profile=READ_ONLY_AUDIT_PROFILE,
+                    target_revision="a1b2c3d4",
+                    parent_agent=parent,
+                )
+            )
+        self.assertEqual(result["code"], "capability_runtime_incompatible")
+        self.assertFalse(result["launch"])
+        self.assertEqual(result["launch_count"], 0)
+        transcripts.assert_not_called()
+        agent_constructor.assert_not_called()
 
 
     def test_child_inherits_runtime_credentials(self):
