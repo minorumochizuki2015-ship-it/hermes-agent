@@ -10457,6 +10457,7 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     expected_orch_turn_token: _OrchTurnBinding | _OrchOrdinaryTurnBinding | None = None,
 ) -> None:
+    turn_expectation = expected_orch_turn_token
     ownership_context = (
         _orch_ownership_lock(session)
         if expected_orch_turn_token is not None
@@ -10504,9 +10505,45 @@ def _run_prompt_submit(
                     agent.clear_interrupt()
                 except Exception:
                     pass
-    _emit("message.start", sid)
 
     def run():
+        @contextlib.contextmanager
+        def _worker_ownership():
+            if turn_expectation is None:
+                yield True
+                return
+            with _orch_ownership_lock(session):
+                yield _orch_turn_expectation_matches(
+                    session, sid, turn_expectation
+                )
+
+        result = None  # turn outcome; read after the finally for leftover /steer
+        tts_queue = None  # streaming-TTS feed for this turn (voice mode)
+        thinking_started = False  # ambient thinking sound armed for this turn
+        turn_current = True
+        goal_followup = None  # set by the post-turn goal hook below
+        # True once a failed turn's snapshot was retained for resume replay —
+        # tells the finally below to skip the normal inflight clear.
+        turn_error_retained = False
+        post_result_ownership = None
+        with _worker_ownership() as worker_current:
+            if not worker_current:
+                return
+            one_turn_restore = session.pop("one_turn_model_restore", None)
+            # Durable crash marker: written before the turn runs, retired the
+            # moment its outcome reaches the client (see _retire_turn_marker).
+            # Any concluded turn — success, handled error, interrupt — retires
+            # it, so a marker that survives means the process died mid-turn;
+            # session.resume auto-continues from it. Compression can rotate
+            # session_key mid-turn, so remember the key we wrote under.
+            marker_home = _session_home(session)
+            marker_key = str(session.get("session_key") or "")
+            marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
+            marker_text = session.pop("_auto_continue_prompt", None) or text
+            if isinstance(marker_text, str) and marker_text.strip():
+                record_turn_start(
+                    marker_home, marker_key, marker_text, attempts=marker_attempt
+                )
         # The conversation runs on a fresh thread, so ContextVars from the RPC
         # dispatcher do not follow automatically. Rebind the exact transport
         # stored on this session generation before any tool can commission a
@@ -10517,27 +10554,6 @@ def _run_prompt_submit(
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         secret_token = None
-        goal_followup = None  # set by the post-turn goal hook below
-        result = None  # turn outcome; read after the finally for leftover /steer
-        tts_queue = None  # streaming-TTS feed for this turn (voice mode)
-        thinking_started = False  # ambient thinking sound armed for this turn
-        turn_current = True
-        one_turn_restore = session.pop("one_turn_model_restore", None)
-        # True once a failed turn's snapshot was retained for resume replay —
-        # tells the finally below to skip the normal inflight clear.
-        turn_error_retained = False
-        # Durable crash marker: written before the turn runs, retired the
-        # moment its outcome reaches the client (see _retire_turn_marker).
-        # Any concluded turn — success, handled error, interrupt — retires
-        # it, so a marker that survives means the process died mid-turn;
-        # session.resume auto-continues from it. Compression can rotate
-        # session_key mid-turn, so remember the key we wrote under.
-        marker_home = _session_home(session)
-        marker_key = str(session.get("session_key") or "")
-        marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
-        marker_text = session.pop("_auto_continue_prompt", None) or text
-        if isinstance(marker_text, str) and marker_text.strip():
-            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -10560,15 +10576,20 @@ def _run_prompt_submit(
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
-            if orch_turn_token is not None:
-                if not _orch_turn_token_matches(session, orch_turn_token):
+            with _worker_ownership() as worker_current:
+                if not worker_current:
                     turn_current = False
                     return
-                try:
-                    _orch_prepare_orch_agent_for_turn(session, agent, orch_turn_token)
-                except Exception:
-                    _orch_terminalize_before_agent_call(sid, session, orch_turn_token)
-                    return
+                if orch_turn_token is not None:
+                    try:
+                        _orch_prepare_orch_agent_for_turn(
+                            session, agent, orch_turn_token
+                        )
+                    except Exception:
+                        _orch_terminalize_before_agent_call(
+                            sid, session, orch_turn_token
+                        )
+                        return
             # Skip the config-model sync while a /model --once override is
             # active: the once-model is intentionally not pinned as a session
             # model_override (it must not persist), so without this guard the
@@ -10578,11 +10599,15 @@ def _run_prompt_submit(
             # the NEXT turn, after the finally-restore below.
             if not one_turn_restore:
                 # A model picked mid-turn was queued (not applied in-place) —
-                # apply it now, on the turn thread before the first model call,
-                # so this turn runs on the model the user chose. Runs before the
-                # config sync so an explicit pick wins over a config.yaml change.
-                _apply_pending_model_switch(sid, session)
-                _sync_agent_model_with_config(sid, session)
+            # apply it now, on the turn thread before the first model call,
+            # so this turn runs on the model the user chose. Runs before the
+            # config sync so an explicit pick wins over a config.yaml change.
+                with _worker_ownership() as worker_current:
+                    if not worker_current:
+                        turn_current = False
+                        return
+                    _apply_pending_model_switch(sid, session)
+                    _sync_agent_model_with_config(sid, session)
             # Snapshot after turn-start model sync. A deferred switch mutates
             # history and its version; that mutation belongs to this turn.
             with session["history_lock"]:
@@ -10741,47 +10766,58 @@ def _run_prompt_submit(
             # state, so it cannot live in the (byte-stable) system prompt.
             run_message = _prepend_note(run_message, _hud_surface_note(session))
 
-            if not _orch_callback_is_current(session, orch_turn_token):
-                turn_current = False
-                return
-            if orch_turn_token is not None:
-                try:
-                    _orch_prepare_orch_agent_for_turn(session, agent, orch_turn_token)
-                except Exception:
-                    _orch_terminalize_before_agent_call(sid, session, orch_turn_token)
+            with _worker_ownership() as worker_current:
+                if not worker_current:
+                    turn_current = False
                     return
+                if orch_turn_token is not None:
+                    try:
+                        _orch_prepare_orch_agent_for_turn(
+                            session, agent, orch_turn_token
+                        )
+                    except Exception:
+                        _orch_terminalize_before_agent_call(
+                            sid, session, orch_turn_token
+                        )
+                        return
 
             def _stream(delta):
-                if not _orch_callback_is_current(session, orch_turn_token):
-                    return
-                with session["history_lock"]:
-                    _append_inflight_delta(session, delta)
-                if session.get("_orch_operational") and delta:
-                    _orch_mark_first_delta(session, orch_turn_token)
-                payload = {"text": delta}
-                if streamer and (r := streamer.feed(delta)) is not None:
-                    payload["rendered"] = r
-                if tts_queue is not None and isinstance(delta, str):
-                    tts_queue.put(delta)
-                _emit("message.delta", sid, payload)
+                with _worker_ownership() as worker_current:
+                    if not worker_current:
+                        return
+                    with session["history_lock"]:
+                        _append_inflight_delta(session, delta)
+                    if orch_turn_token is not None and delta:
+                        _orch_mark_first_delta(session, orch_turn_token)
+                    payload = {"text": delta}
+                    if streamer and (r := streamer.feed(delta)) is not None:
+                        payload["rendered"] = r
+                    if tts_queue is not None and isinstance(delta, str):
+                        tts_queue.put(delta)
+                    _emit("message.delta", sid, payload)
 
             # Surface interim assistant text (commentary emitted alongside
             # tool calls, or the attempted final answer before a verify-on-stop
             # nudge) so the desktop can seal it as its own segment instead of
             # losing it when message.complete replaces the streaming buffer.
             # Gated on display.interim_assistant_messages (default true).
-            if _load_interim_assistant_messages():
-                def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-                    if not _orch_callback_is_current(session, orch_turn_token):
-                        return
-                    _emit("message.interim", sid, {
-                        "text": text,
-                        "already_streamed": already_streamed,
-                    })
+            with _worker_ownership() as worker_current:
+                if not worker_current:
+                    turn_current = False
+                    return
+                if _load_interim_assistant_messages():
+                    def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                        with _worker_ownership() as callback_current:
+                            if not callback_current:
+                                return
+                            _emit("message.interim", sid, {
+                                "text": text,
+                                "already_streamed": already_streamed,
+                            })
 
-                agent.interim_assistant_callback = _interim_assistant_cb
-            else:
-                agent.interim_assistant_callback = None
+                    agent.interim_assistant_callback = _interim_assistant_cb
+                else:
+                    agent.interim_assistant_callback = None
 
             run_kwargs = {
                 "conversation_history": list(history),
@@ -10811,12 +10847,17 @@ def _run_prompt_submit(
             # for the next list refresh.
             _title_key = session.get("session_key") or sid
             def _on_session_title(t, _src, _k=_title_key):
-                if _orch_callback_is_current(session, orch_turn_token):
+                with _worker_ownership() as worker_current:
+                    if not worker_current:
+                        return
                     _emit("session.title", sid, {"session_id": _k, "title": t})
 
             agent._on_session_title = _on_session_title
             result = agent.run_conversation(run_message, **run_kwargs)
-            if not _orch_callback_is_current(session, orch_turn_token):
+            post_result_ownership = _worker_ownership()
+            if not post_result_ownership.__enter__():
+                post_result_ownership.__exit__(None, None, None)
+                post_result_ownership = None
                 turn_current = False
                 return
             if display_kind and isinstance(text, str):
@@ -10962,7 +11003,7 @@ def _run_prompt_submit(
                     if result.get("interrupted")
                     else "error" if result.get("error") else "complete"
                 )
-                if session.get("_orch_operational"):
+                if orch_turn_token is not None:
                     _orch_finish_task_observation(session, orch_turn_token, status)
                     if status == "error":
                         raw = "agent operation failed"
@@ -11039,10 +11080,12 @@ def _run_prompt_submit(
                 payload["recoverable"] = True
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
-            if orch_turn_token is not None and _orch_callback_is_current(
-                session, orch_turn_token
-            ):
-                _orch_clear_orch_turn(session)
+            if orch_turn_token is not None:
+                with _worker_ownership() as worker_current:
+                    if not worker_current:
+                        turn_current = False
+                        return
+                    _orch_clear_orch_turn(session)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -11169,6 +11212,13 @@ def _run_prompt_submit(
                 except Exception as e:
                     logger.warning("voice TTS dispatch failed: %s", e)
         except Exception as e:
+            if post_result_ownership is None:
+                post_result_ownership = _worker_ownership()
+                if not post_result_ownership.__enter__():
+                    post_result_ownership.__exit__(None, None, None)
+                    post_result_ownership = None
+                    turn_current = False
+                    return
             operational_failure = (
                 session.get("_orch_operational") is True
                 and turn_current
@@ -11260,20 +11310,26 @@ def _run_prompt_submit(
             _clear_session_context(session_tokens)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
-            if turn_current:
-                # Clear the per-turn interim callback so a stale closure from
-                # this turn can't fire during a later turn on the same agent.
-                agent.interim_assistant_callback = None
-                with session["history_lock"]:
-                    session["running"] = False
-                    session["last_active"] = time.time()
-                    if not turn_error_retained:
-                        _clear_inflight_turn(session)
-                # Backstop for turns that never reached a terminal frame (the
-                # frame paths retire the marker as they emit).
-                _retire_turn_marker(session, marker_key)
-                session.pop("_auto_continue_scheduled", None)
-                _emit_settled_session_info(sid, session, agent)
+            with _worker_ownership() as worker_current:
+                if not worker_current:
+                    turn_current = False
+                elif turn_current:
+                    # Clear the per-turn interim callback so a stale closure from
+                    # this turn can't fire during a later turn on the same agent.
+                    agent.interim_assistant_callback = None
+                    with session["history_lock"]:
+                        session["running"] = False
+                        session["last_active"] = time.time()
+                        if not turn_error_retained:
+                            _clear_inflight_turn(session)
+                    # Backstop for turns that never reached a terminal frame (the
+                    # frame paths retire the marker as they emit).
+                    _retire_turn_marker(session, marker_key)
+                    session.pop("_auto_continue_scheduled", None)
+                    _emit_settled_session_info(sid, session, agent)
+            if post_result_ownership is not None:
+                post_result_ownership.__exit__(None, None, None)
+                post_result_ownership = None
 
         if not turn_current:
             return
@@ -11373,9 +11429,20 @@ def _run_prompt_submit(
                 file=sys.stderr,
             )
 
-    run_thread = threading.Thread(target=run, daemon=True)
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    with (
+        _orch_ownership_lock(session)
+        if turn_expectation is not None
+        else contextlib.nullcontext()
+    ):
+        if (
+            turn_expectation is not None
+            and not _orch_turn_expectation_matches(session, sid, turn_expectation)
+        ):
+            return
+        _emit("message.start", sid)
+        run_thread = threading.Thread(target=run, daemon=True)
+        session["_run_thread"] = run_thread
+        run_thread.start()
 
 
 # Byte-upload attach caps. 25 MB matches Anthropic's per-image limit; 50 MB / 25

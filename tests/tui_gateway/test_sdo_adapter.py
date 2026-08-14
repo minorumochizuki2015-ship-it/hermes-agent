@@ -1779,6 +1779,363 @@ def test_ordinary_post_wait_successor_at_run_entry_is_rejected(monkeypatch) -> N
     assert stale_token is not None
 
 
+class _WorkerLifetimeAgent:
+    model = "synthetic-model"
+    provider = "synthetic-provider"
+    base_url = ""
+    api_key = ""
+    api_mode = ""
+    session_id = "worker-session"
+    _config_context_length = None
+
+    def __init__(self, behavior):
+        self._behavior = behavior
+        self.interim_assistant_callback = None
+        self._on_session_title = None
+
+    def clear_interrupt(self) -> None:
+        return None
+
+    def run_conversation(self, _prompt, **kwargs):
+        return self._behavior(self, kwargs)
+
+
+def _worker_lifetime_session(agent: _WorkerLifetimeAgent, sid: str) -> dict:
+    return {
+        "session_key": "session-worker-" + sid,
+        "profile_home": None,
+        "history": [],
+        "history_version": 0,
+        "history_lock": threading.RLock(),
+        "running": True,
+        "last_active": 0.0,
+        "_turn_cancel_requested": False,
+        "agent": agent,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "pending_title": None,
+        "transport": None,
+    }
+
+
+def _worker_lifetime_state(session: dict) -> dict:
+    return copy.deepcopy(
+        {
+            key: session.get(key)
+            for key in (
+                "running",
+                "last_active",
+                "history",
+                "history_version",
+                "inflight_turn",
+                "_orch_operational",
+                "_orch_operation_id",
+                "_orch_turn_binding",
+                "_orch_gateway_session_id",
+                "_orch_model_route",
+                "_orch_status_operation_id",
+                "_orch_first_delta_observed",
+                "_orch_result_consumed",
+                "_orch_initialization_category",
+                "pending_title",
+            )
+        }
+    )
+
+
+def _install_worker_lifetime_hooks(
+    monkeypatch,
+    events: list,
+    *,
+    first_delta_calls: list | None = None,
+    finish_calls: list | None = None,
+    terminal_calls: list | None = None,
+) -> None:
+    monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
+    monkeypatch.setattr(server, "_emit_settled_session_info", lambda *_args: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda *_args: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda *_args: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_args: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda *_args: "/tmp")
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *_args: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda *_args: None)
+    monkeypatch.setattr(server, "render_message", lambda *_args: None)
+    monkeypatch.setattr(server, "_get_usage", lambda *_args: {})
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *_args: False)
+    monkeypatch.setattr(server, "_voice_mode_enabled", lambda: False)
+    monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(server, "_pending_reaction_notes", lambda *_args: "")
+    monkeypatch.setattr(server, "_hud_surface_note", lambda *_args: "")
+    monkeypatch.setattr(server, "_load_interim_assistant_messages", lambda: True)
+    monkeypatch.setattr(server, "_retire_turn_marker", lambda *_args: None)
+    monkeypatch.setattr(server, "record_turn_start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_is_successful_goal_turn", lambda *_args: False)
+    monkeypatch.setattr(
+        server,
+        "_plan_goal_compression_recovery",
+        lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr(server, "_orch_prepare_orch_agent_for_turn", lambda *_args: True)
+    if first_delta_calls is not None:
+        monkeypatch.setattr(
+            server,
+            "_orch_mark_first_delta",
+            lambda *args: first_delta_calls.append(args),
+        )
+    if finish_calls is not None:
+        monkeypatch.setattr(
+            server,
+            "_orch_finish_task_observation",
+            lambda *args: finish_calls.append(args),
+        )
+    if terminal_calls is not None:
+        monkeypatch.setattr(
+            server,
+            "_orch_terminalize_before_agent_call",
+            lambda *args: terminal_calls.append(args),
+        )
+
+
+def _open_worker_successor(session: dict, sid: str) -> object:
+    token = server._orch_open_orch_turn(
+        session,
+        sid,
+        {
+            "operation_id": sid + "-operation",
+            "decision_binding": {"logical_session_id": sid + "-logical"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": sid + "-provider"}
+    return token
+
+
+def test_ordinary_worker_callbacks_are_fenced_after_operational_successor(
+    monkeypatch,
+) -> None:
+    entered = threading.Event()
+    release_callbacks = threading.Event()
+    callbacks_done = threading.Event()
+    release_result = threading.Event()
+    events = []
+    first_delta_calls = []
+
+    def behavior(agent, kwargs):
+        entered.set()
+        assert release_callbacks.wait(timeout=2.0)
+        kwargs["stream_callback"]("stale stream delta")
+        if agent.interim_assistant_callback is not None:
+            agent.interim_assistant_callback("stale interim")
+        if agent._on_session_title is not None:
+            agent._on_session_title("stale title", "synthetic")
+        callbacks_done.set()
+        assert release_result.wait(timeout=2.0)
+        return {
+            "final_response": "stale ordinary result",
+            "messages": [{"role": "assistant", "content": "stale ordinary result"}],
+        }
+
+    agent = _WorkerLifetimeAgent(behavior)
+    session = _worker_lifetime_session(agent, "ordinary-callbacks")
+    expectation = server._orch_capture_turn_expectation(
+        session, "gateway-ordinary-callbacks", None
+    )
+    _install_worker_lifetime_hooks(
+        monkeypatch,
+        events,
+        first_delta_calls=first_delta_calls,
+    )
+
+    server._run_prompt_submit(
+        "rid-ordinary-callbacks",
+        "gateway-ordinary-callbacks",
+        session,
+        "ordinary callback prompt",
+        expected_orch_turn_token=expectation,
+    )
+    assert entered.wait(timeout=2.0)
+    events.clear()
+    successor = _open_worker_successor(session, "gateway-ordinary-callbacks-next")
+    after_successor = _worker_lifetime_state(session)
+
+    release_callbacks.set()
+    assert callbacks_done.wait(timeout=2.0)
+    assert events == []
+    assert first_delta_calls == []
+    assert _worker_lifetime_state(session) == after_successor
+    assert session["_orch_turn_binding"] == successor
+
+    release_result.set()
+    session["_run_thread"].join(timeout=2.0)
+    assert not session["_run_thread"].is_alive()
+
+
+@pytest.mark.parametrize("result_kind", ["complete", "error"])
+def test_ordinary_worker_result_after_operational_successor_is_zero_mutation(
+    monkeypatch, result_kind
+) -> None:
+    entered = threading.Event()
+    release_result = threading.Event()
+    events = []
+    finish_calls = []
+
+    def behavior(_agent, _kwargs):
+        entered.set()
+        assert release_result.wait(timeout=2.0)
+        result = {
+            "final_response": "stale ordinary result",
+            "messages": [{"role": "assistant", "content": "stale ordinary result"}],
+        }
+        if result_kind == "error":
+            result.update({"error": "synthetic stale provider error", "failed": True})
+        return result
+
+    agent = _WorkerLifetimeAgent(behavior)
+    session = _worker_lifetime_session(agent, "ordinary-result-" + result_kind)
+    expectation = server._orch_capture_turn_expectation(
+        session, "gateway-ordinary-result-" + result_kind, None
+    )
+    _install_worker_lifetime_hooks(monkeypatch, events, finish_calls=finish_calls)
+
+    server._run_prompt_submit(
+        "rid-ordinary-result-" + result_kind,
+        "gateway-ordinary-result-" + result_kind,
+        session,
+        "ordinary result prompt",
+        expected_orch_turn_token=expectation,
+    )
+    assert entered.wait(timeout=2.0)
+    events.clear()
+    _open_worker_successor(session, "gateway-ordinary-result-" + result_kind + "-next")
+    after_successor = _worker_lifetime_state(session)
+
+    release_result.set()
+    session["_run_thread"].join(timeout=2.0)
+    assert not session["_run_thread"].is_alive()
+    assert events == []
+    assert finish_calls == []
+    assert _worker_lifetime_state(session) == after_successor
+
+
+def test_ordinary_worker_exception_finally_cannot_clear_operational_successor(
+    monkeypatch, tmp_path
+) -> None:
+    entered = threading.Event()
+    release_error = threading.Event()
+    events = []
+    terminal_calls = []
+
+    def behavior(_agent, _kwargs):
+        entered.set()
+        assert release_error.wait(timeout=2.0)
+        raise RuntimeError("synthetic stale worker exception")
+
+    agent = _WorkerLifetimeAgent(behavior)
+    session = _worker_lifetime_session(agent, "ordinary-finally")
+    expectation = server._orch_capture_turn_expectation(
+        session, "gateway-ordinary-finally", None
+    )
+    _install_worker_lifetime_hooks(
+        monkeypatch,
+        events,
+        terminal_calls=terminal_calls,
+    )
+    monkeypatch.setattr(
+        server,
+        "_restore_agent_history_after_turn_error",
+        lambda *_args: pytest.fail("stale ordinary worker restored history"),
+    )
+    monkeypatch.setattr(server, "_CRASH_LOG", str(tmp_path / "synthetic-crash.log"))
+
+    server._run_prompt_submit(
+        "rid-ordinary-finally",
+        "gateway-ordinary-finally",
+        session,
+        "ordinary exception prompt",
+        expected_orch_turn_token=expectation,
+    )
+    assert entered.wait(timeout=2.0)
+    events.clear()
+    _open_worker_successor(session, "gateway-ordinary-finally-next")
+    after_successor = _worker_lifetime_state(session)
+
+    release_error.set()
+    session["_run_thread"].join(timeout=2.0)
+    assert not session["_run_thread"].is_alive()
+    assert events == []
+    assert terminal_calls == []
+    assert _worker_lifetime_state(session) == after_successor
+
+
+@pytest.mark.parametrize("operational", [False, True])
+def test_current_worker_expectation_completes_for_ordinary_and_operational(
+    monkeypatch, operational
+) -> None:
+    events = []
+    first_delta_calls = []
+    finish_calls = []
+
+    def behavior(_agent, kwargs):
+        kwargs["stream_callback"]("current stream delta")
+        return {
+            "final_response": "current result",
+            "messages": [{"role": "assistant", "content": "current result"}],
+        }
+
+    agent = _WorkerLifetimeAgent(behavior)
+    sid = "gateway-current-" + ("operational" if operational else "ordinary")
+    session = _worker_lifetime_session(agent, "current-" + sid)
+    if operational:
+        expectation = server._orch_open_orch_turn(
+            session,
+            sid,
+            {
+                "operation_id": "operation-" + sid,
+                "decision_binding": {"logical_session_id": "logical-" + sid},
+            },
+        )
+        session["_orch_model_route"] = {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "max",
+            "service_tier_preference": "fast",
+        }
+    else:
+        expectation = server._orch_capture_turn_expectation(session, sid, None)
+    _install_worker_lifetime_hooks(
+        monkeypatch,
+        events,
+        first_delta_calls=first_delta_calls,
+        finish_calls=finish_calls,
+    )
+
+    server._run_prompt_submit(
+        "rid-" + sid,
+        sid,
+        session,
+        "current worker prompt",
+        expected_orch_turn_token=expectation,
+    )
+    session["_run_thread"].join(timeout=2.0)
+    assert not session["_run_thread"].is_alive()
+    event_types = [event[0] for event in events]
+    assert event_types.count("message.start") == 1
+    assert event_types.count("message.delta") == 1
+    assert event_types.count("message.complete") == 1
+    if operational:
+        assert len(first_delta_calls) == 1
+        assert len(finish_calls) == 1
+    else:
+        assert first_delta_calls == []
+        assert finish_calls == []
+
+
 def test_operational_inflight_failure_is_fixed_and_value_free() -> None:
     session = {
         "inflight_turn": {"assistant": "", "user": "synthetic"},
