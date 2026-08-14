@@ -14,7 +14,7 @@ from agent.session_activity import ActivityProvenance
 from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
-def _orch_context(operation_id="orch-op-1"):
+def _orch_context(operation_id="orch-op-1", logical_session_id="s1"):
     now = time.time()
     return {
         "contract_version": hermes_state.HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION,
@@ -32,7 +32,7 @@ def _orch_context(operation_id="orch-op-1"):
             "requester": "hermes_operational_harness",
             "account_id": "account-test",
             "project_id": "project-test",
-            "logical_session_id": "s1",
+            "logical_session_id": logical_session_id,
             "method": "prompt.submit",
             "target": "hermes",
             "runtime_revision": "1" * 40,
@@ -203,17 +203,14 @@ def test_orch_observation_schema_and_replay_fence_are_durable(db):
     assert row["observation"]["first_delta"]["present"] is False
 
 
-def test_immutable_read_only_session_uses_checkpointed_store(tmp_path):
+def test_immutable_read_only_requires_frozen_snapshot_pin(tmp_path):
     path = tmp_path / "state.db"
     writable = SessionDB(db_path=path)
     writable.create_session("s1", source="cli")
     writable.close()
 
-    read_only = SessionDB(db_path=path, read_only=True, immutable=True)
-    try:
-        assert read_only.get_session("s1")["id"] == "s1"
-    finally:
-        read_only.close()
+    with pytest.raises(ValueError, match="immutable_snapshot_unsupported"):
+        SessionDB(db_path=path, read_only=True, immutable=True)
 
 
 def test_preflight_reserves_operation_before_external_authority(tmp_path):
@@ -259,6 +256,84 @@ def test_expired_preflight_reservation_is_terminal_fence(tmp_path, monkeypatch):
         db.close()
 
 
+def test_reservation_owner_and_running_state_fence(tmp_path):
+    path = tmp_path / "reservation-owner.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli", profile_name="alpha")
+    db.create_session("s2", source="cli", profile_name="beta")
+    try:
+        assert db.preflight_orch_task_observation(
+            "s1", "orch-op-owner", profile_name="alpha"
+        ) is True
+        wrong_context = _orch_context("orch-op-owner", logical_session_id="s2")
+        assert db.begin_orch_task_observation(
+            "s1", wrong_context, profile_name="alpha"
+        ) is False
+        assert db.begin_orch_task_observation(
+            "s2", wrong_context, profile_name="beta"
+        ) is False
+        assert db.record_orch_task_runtime_identity(
+            "orch-op-owner", model="openai/gpt-5", effort="high"
+        ) is False
+        assert db.mark_orch_task_first_delta("orch-op-owner") is False
+        assert db.finish_orch_task_observation(
+            "orch-op-owner", result_status="complete"
+        ) is False
+        assert db.mark_orch_task_finalization_unavailable(
+            "orch-op-owner", terminal_category="agent_initialization_failed"
+        ) is False
+
+        owner_context = _orch_context("orch-op-owner", logical_session_id="s1")
+        assert db.begin_orch_task_observation(
+            "s1", owner_context, profile_name="alpha"
+        ) is True
+        assert db.begin_orch_task_observation(
+            "s1", owner_context, profile_name="alpha"
+        ) is False
+    finally:
+        db.close()
+
+
+def test_expired_reservation_preserves_receipt_tombstone(tmp_path, monkeypatch):
+    path = tmp_path / "reservation-tombstone.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli")
+    try:
+        monkeypatch.setattr(hermes_state.time, "time", lambda: 1000.0)
+        assert db.preflight_orch_task_observation("s1", "orch-op-tombstone") is True
+        digest = "c" * 64
+        assert db.claim_orch_sdo_receipt(
+            "orch-op-tombstone",
+            receipt_digest=digest,
+            binding=_orch_sdo_binding("orch-op-tombstone"),
+            expires_at=1010.0,
+            now=1000.0,
+        ) is True
+
+        monkeypatch.setattr(hermes_state.time, "time", lambda: 1032.0)
+        assert db.preflight_orch_task_observation("s1", "orch-op-tombstone") is False
+        raw = db._conn.execute(
+            "SELECT observation_json FROM orch_task_observations "
+            "WHERE operation_id = ?",
+            ("orch-op-tombstone",),
+        ).fetchone()[0]
+        assert digest in raw
+        assert "sdo_claim" not in db.read_orch_task_observations("s1")[0]["observation"]
+
+        assert db.begin_orch_task_observation(
+            "s1", _orch_context("orch-op-tombstone-2"), profile_name=""
+        ) is True
+        assert db.claim_orch_sdo_receipt(
+            "orch-op-tombstone-2",
+            receipt_digest=digest,
+            binding=_orch_sdo_binding("orch-op-tombstone-2"),
+            expires_at=1040.0,
+            now=1032.0,
+        ) is False
+    finally:
+        db.close()
+
+
 def test_sdo_claim_requires_finite_future_expiry_and_global_sanitized_fence(tmp_path):
     path = tmp_path / "claim.db"
     db = SessionDB(db_path=path)
@@ -288,15 +363,10 @@ def test_sdo_claim_requires_finite_future_expiry_and_global_sanitized_fence(tmp_
 
     binding = _orch_sdo_binding(
         "orch-op-claim-1",
-        project_id="synthetic://example.invalid/tenant?canary=1",
-        repo_id="synthetic/private/checkout",
-        worktree_id="sk-SYNTHETIC-CANARY",
-        goal_ref="opaque:sha256:short",
+        project_id="opaque:sha256:" + "a" * 64,
     )
     outcome = _orch_sdo_outcome(
-        selected_action_id="synthetic://example.invalid/action",
-        base_selected_action_id="synthetic/private/base",
-        model="custom:synthetic://provider/canary",
+        model="custom:sha256:" + "c" * 64,
     )
     assert db.claim_orch_sdo_receipt(
         "orch-op-claim-1",
@@ -312,12 +382,8 @@ def test_sdo_claim_requires_finite_future_expiry_and_global_sanitized_fence(tmp_
         "WHERE operation_id = ?",
         ("orch-op-claim-1",),
     ).fetchone()[0]
-    assert "synthetic://example.invalid" not in raw
-    assert "synthetic/private/checkout" not in raw
-    assert "sk-SYNTHETIC-CANARY" not in raw
-    assert "opaque:sha256:short" not in raw
-    assert "opaque:sha256:" in raw
-    assert "custom:sha256:" in raw
+    assert "opaque:sha256:" + "a" * 64 in raw
+    assert "custom:sha256:" + "c" * 64 in raw
 
     projected = db.read_orch_task_observations("s1")[0]["observation"]
     assert "sdo_claim" not in projected
@@ -329,6 +395,44 @@ def test_sdo_claim_requires_finite_future_expiry_and_global_sanitized_fence(tmp_
         now=1002.0,
     ) is False
     db.close()
+
+
+@pytest.mark.parametrize(
+    "unsafe_value",
+    [
+        "mailto:private@example.invalid",
+        "ssh://synthetic.example/private",
+        "https://synthetic.example/private",
+        "file:/synthetic/private",
+        "ref:ghp_SYNTHETIC",
+        "ref:xoxb-SYNTHETIC",
+        "ref:sk-SYNTHETIC",
+    ],
+)
+def test_sdo_claim_rejects_uri_and_secret_delimiters(tmp_path, unsafe_value):
+    path = tmp_path / "claim-delimiter.db"
+    db = SessionDB(db_path=path)
+    db.create_session("s1", source="cli")
+    try:
+        operation_id = "orch-op-delimiter"
+        assert db.begin_orch_task_observation(
+            "s1", _orch_context(operation_id)
+        ) is True
+        with pytest.raises(ValueError, match="sdo_binding_invalid"):
+            db.claim_orch_sdo_receipt(
+                operation_id,
+                receipt_digest="d" * 64,
+                binding=_orch_sdo_binding(operation_id, project_id=unsafe_value),
+                expires_at=time.time() + 30.0,
+            )
+        raw = db._conn.execute(
+            "SELECT observation_json FROM orch_task_observations "
+            "WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()[0]
+        assert "sdo_claim" not in raw
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize("field", ["issued_at", "expires_at"])
@@ -348,7 +452,7 @@ def test_operational_context_rejects_nonfinite_caller_now(timestamp):
     )[0] == "context_invalid"
 
 
-def test_immutable_read_only_rejects_live_uncheckpointed_wal(tmp_path):
+def test_immutable_read_only_rejects_unpinned_live_wal(tmp_path):
     path = tmp_path / "live-wal.db"
     conn = sqlite3.connect(path)
     try:
@@ -359,8 +463,15 @@ def test_immutable_read_only_rejects_live_uncheckpointed_wal(tmp_path):
         conn.commit()
         wal_path = Path(f"{path}-wal")
         assert wal_path.exists() and wal_path.stat().st_size > 0
-        with pytest.raises(ValueError, match="immutable_snapshot_unavailable"):
+        with pytest.raises(ValueError, match="immutable_snapshot_unsupported"):
             SessionDB(db_path=path, read_only=True, immutable=True)
+        read_only = SessionDB(db_path=path, read_only=True)
+        try:
+            assert read_only._conn.execute(
+                "SELECT value FROM marker"
+            ).fetchone()[0] == "synthetic-canary"
+        finally:
+            read_only.close()
     finally:
         conn.close()
 

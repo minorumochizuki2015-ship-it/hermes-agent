@@ -238,6 +238,10 @@ _ORCH_SECRET_PREFIX_RE = re.compile(
 _ORCH_SECRET_SHAPED_RE = re.compile(
     r"(?i)(?:^|[._-])(secret|token|password|api[_-]?key)(?:$|[=:._-])"
 )
+_ORCH_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_ORCH_SECRET_MARKER_RE = re.compile(
+    r"(?:sk-|gh[opurs]_|xox[baprs]-|AIza|eyJ[A-Za-z0-9_-]*\.)"
+)
 _ORCH_BINDING_SAFE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@:\-]{0,127}$")
 _ORCH_CANONICAL_DIGEST_RE = re.compile(
     r"^(?:opaque|custom):sha256:[0-9a-f]{64}$"
@@ -255,32 +259,30 @@ def _finite_orch_timestamp(value: Any) -> Optional[float]:
 
 
 def _canonical_orch_binding_value(value: Any) -> Optional[str]:
-    """Return a bounded binding value without persisting private material."""
+    """Return a bounded opaque binding identifier or reject it."""
     if not isinstance(value, str) or not value or len(value) > 1024:
         return None
     if _ORCH_CANONICAL_DIGEST_RE.fullmatch(value):
         return value
-    segments = value.split("/")
-    digest_like = value.startswith(("opaque:sha256:", "custom:sha256:"))
     path_like = bool(
-        value.startswith(("/", "~", "./", "../", ".\\", "..\\", "file:"))
+        value.startswith(("/", "~", "./", "../", ".\\", "..\\"))
         or re.match(r"^[A-Za-z]:[\\/]", value)
         or value.startswith("Users/")
         or "\\" in value
         or "/" in value
-        or "://" in value
     )
-    secret_like = any(_ORCH_SECRET_PREFIX_RE.match(segment) for segment in segments)
-    secret_like = secret_like or _ORCH_SECRET_SHAPED_RE.search(value) is not None
+    secret_like = (
+        _ORCH_SECRET_MARKER_RE.search(value) is not None
+        or _ORCH_SECRET_SHAPED_RE.search(value) is not None
+    )
     if (
         any(ord(character) < 32 for character in value)
+        or _ORCH_URI_SCHEME_RE.match(value) is not None
         or path_like
         or secret_like
-        or digest_like
         or _ORCH_BINDING_SAFE_RE.fullmatch(value) is None
     ):
-        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-        return f"opaque:sha256:{digest}"
+        return None
     return value
 _ORCH_TASK_CLASSES = frozenset(
     {"mechanical", "implementation", "audit", "operations", "product", "research", "migration"}
@@ -326,7 +328,7 @@ def _canonical_orch_model_id(value: Any) -> Optional[str]:
     ):
         return None
     lowered = value.lower()
-    if re.fullmatch(r"custom:sha256:[0-9a-f]{24}", value):
+    if re.fullmatch(r"custom:sha256:(?:[0-9a-f]{24}|[0-9a-f]{64})", value):
         return value
     path_like = bool(
         value.startswith(("/", "~", "./", "../", ".\\", "..\\", "file:"))
@@ -387,18 +389,101 @@ def _initial_orch_observation(
     }
 
 
-def _initial_orch_reservation(*, expires_at: float) -> Dict[str, Any]:
+def _orch_reservation_context_identity(operation_id: str) -> Dict[str, Any]:
+    return {
+        "contract_version": HERMES_ORCH_OPERATIONAL_CONTEXT_VERSION,
+        "authority_bundle_digest": HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST,
+        "goal": HERMES_ORCH_OPERATIONAL_GOAL,
+        "operation": "prompt.submit",
+        "target": HERMES_ORCH_OPERATIONAL_TARGET,
+        "revision": HERMES_ORCH_OPERATIONAL_REVISION,
+        "operation_id": operation_id,
+    }
+
+
+def _initial_orch_reservation(
+    *,
+    expires_at: float,
+    operation_id: str,
+    session_id: str,
+    profile_name: str,
+    logical_session_id: str,
+) -> Dict[str, Any]:
     return {
         "reservation": {
             "status": "reserved",
             "expires_at": float(expires_at),
             "provenance": "local_replay_fence",
+            "owner": {
+                "session_id": session_id,
+                "profile_name": profile_name,
+                "logical_session_id": logical_session_id,
+                "operation_id": operation_id,
+            },
+            "context_identity": _orch_reservation_context_identity(operation_id),
         },
         "result": {
             "status": "reservation_pending",
             "provenance": "local_replay_fence",
         },
     }
+
+
+def _orch_reservation_owner_matches(
+    reservation: Any,
+    *,
+    session_id: str,
+    profile_name: str,
+    logical_session_id: str,
+    operation_id: str,
+) -> bool:
+    if not isinstance(reservation, dict) or reservation.get("status") != "reserved":
+        return False
+    return (
+        reservation.get("owner")
+        == {
+            "session_id": session_id,
+            "profile_name": profile_name,
+            "logical_session_id": logical_session_id,
+            "operation_id": operation_id,
+        }
+        and reservation.get("context_identity")
+        == _orch_reservation_context_identity(operation_id)
+    )
+
+
+def _orch_receipt_tombstone(observation: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(observation, dict):
+        return None
+    claim = observation.get("sdo_claim")
+    if not isinstance(claim, dict):
+        return None
+    digest = claim.get("receipt_digest")
+    if not isinstance(digest, str) or _ORCH_SHA256_RE.fullmatch(digest) is None:
+        return None
+    tombstone = {"receipt_digest": digest}
+    expires_at = _finite_orch_timestamp(claim.get("expires_at"))
+    if expires_at is not None:
+        tombstone["expires_at"] = expires_at
+    return tombstone
+
+
+def _expired_orch_reservation(observation: Any) -> Dict[str, Any]:
+    expired = {
+        "reservation": {
+            "status": "expired",
+            "provenance": "local_replay_fence",
+        },
+        "result": {
+            "status": "failed",
+            "telemetry_status": "reservation_expired",
+            "provenance": "local_replay_fence",
+        },
+    }
+    tombstone = _orch_receipt_tombstone(observation)
+    if tombstone is not None:
+        expired["sdo_claim"] = tombstone
+    return expired
 
 
 def _canonical_orch_effort(value: Any) -> str:
@@ -898,20 +983,6 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 "database, mark it with "
                 "@pytest.mark.live_system_guard_bypass."
             )
-
-
-def _ensure_immutable_snapshot_frozen(db_path: Path) -> None:
-    """Reject immutable reads while an uncheckpointed WAL can still change."""
-    wal_path = Path(f"{db_path}-wal")
-    try:
-        if wal_path.is_symlink() or (
-            wal_path.exists() and wal_path.stat().st_size > 0
-        ):
-            raise ValueError("immutable_snapshot_unavailable")
-    except ValueError:
-        raise
-    except OSError as exc:
-        raise ValueError("immutable_snapshot_unavailable") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -3208,10 +3279,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
+        if immutable:
+            raise ValueError("immutable_snapshot_unsupported")
         self.read_only = read_only
-        self.immutable = bool(immutable and read_only)
-        if self.immutable:
-            _ensure_immutable_snapshot_frozen(self.db_path)
+        self.immutable = False
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -3313,10 +3384,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # db_path.exists()); a SELECT against an empty file raises and
                 # the caller degrades per-profile.
                 read_only_uri = f"file:{self.db_path}?mode=ro"
-                if self.immutable:
-                    # Retained identity probes must not create or update
-                    # WAL/SHM sidecars in the profile store.
-                    read_only_uri += "&immutable=1"
                 self._conn = _connect_tracked_db(
                     read_only_uri,
                     tracking_path=self.db_path,
@@ -3553,8 +3620,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         conn = None
         try:
             read_only_uri = f"file:{self.db_path}?mode=ro"
-            if self.immutable:
-                read_only_uri += "&immutable=1"
             conn = _connect_tracked_db(
                 read_only_uri,
                 tracking_path=self.db_path,
@@ -4458,6 +4523,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         operation_id: str,
         *,
         profile_name: str = "",
+        logical_session_id: Optional[str] = None,
     ) -> bool:
         """Reserve an operation before authority consumption.
 
@@ -4473,10 +4539,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             raise ValueError("context_invalid")
         if not isinstance(profile_name, str) or len(profile_name) > 128:
             raise ValueError("profile_mismatch")
+        logical_session_id = session_id if logical_session_id is None else logical_session_id
+        if not isinstance(logical_session_id, str) or not _ORCH_ID_RE.fullmatch(
+            logical_session_id
+        ):
+            raise ValueError("context_invalid")
         when = time.time()
         reservation_expires_at = when + HERMES_ORCH_RESERVATION_TTL_SECONDS
         reservation_json = json.dumps(
-            _initial_orch_reservation(expires_at=reservation_expires_at),
+            _initial_orch_reservation(
+                expires_at=reservation_expires_at,
+                operation_id=operation_id,
+                session_id=session_id,
+                profile_name=profile_name,
+                logical_session_id=logical_session_id,
+            ),
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -4510,17 +4587,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     if stored_expiry is not None and stored_expiry > when:
                         return False
-                    expired_observation = {
-                        "reservation": {
-                            "status": "expired",
-                            "provenance": "local_replay_fence",
-                        },
-                        "result": {
-                            "status": "failed",
-                            "telemetry_status": "reservation_expired",
-                            "provenance": "local_replay_fence",
-                        },
-                    }
+                    expired_observation = _expired_orch_reservation(stored)
                     conn.execute(
                         "UPDATE orch_task_observations "
                         "SET state = 'failed', finished_at = ?, observation_json = ? "
@@ -4627,23 +4694,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     if isinstance(reserved_observation, dict)
                     else None
                 )
+                if not _orch_reservation_owner_matches(
+                    reservation,
+                    session_id=session_id,
+                    profile_name=profile_name,
+                    logical_session_id=checked["decision_binding"]["logical_session_id"],
+                    operation_id=checked["operation_id"],
+                ):
+                    return False
                 reservation_expires_at = (
                     _finite_orch_timestamp(reservation.get("expires_at"))
                     if isinstance(reservation, dict)
                     else None
                 )
                 if reservation_expires_at is None or reservation_expires_at <= when:
-                    expired_observation = {
-                        "reservation": {
-                            "status": "expired",
-                            "provenance": "local_replay_fence",
-                        },
-                        "result": {
-                            "status": "failed",
-                            "telemetry_status": "reservation_expired",
-                            "provenance": "local_replay_fence",
-                        },
-                    }
+                    expired_observation = _expired_orch_reservation(
+                        reserved_observation
+                    )
                     conn.execute(
                         "UPDATE orch_task_observations "
                         "SET state = 'failed', finished_at = ?, observation_json = ? "
@@ -4849,7 +4916,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     return False
 
             row = conn.execute(
-                "SELECT observation_json FROM orch_task_observations "
+                "SELECT state, observation_json FROM orch_task_observations "
                 "WHERE operation_id = ? AND finished_at IS NULL",
                 (operation_id,),
             ).fetchone()
@@ -4859,6 +4926,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 observation = json.loads(row["observation_json"])
             except (TypeError, ValueError):
                 return False
+            if row["state"] == "reserved":
+                reservation = (
+                    observation.get("reservation")
+                    if isinstance(observation, dict)
+                    else None
+                )
+                reservation_expires_at = (
+                    _finite_orch_timestamp(reservation.get("expires_at"))
+                    if isinstance(reservation, dict)
+                    else None
+                )
+                if reservation_expires_at is None or reservation_expires_at <= checked_now:
+                    return False
             if isinstance(observation.get("sdo_claim"), dict):
                 return False
             observation["sdo_claim"] = claim
@@ -4888,7 +4968,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             row = conn.execute(
                 "SELECT observation_json FROM orch_task_observations "
-                "WHERE operation_id = ? AND finished_at IS NULL",
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND finished_at IS NULL",
                 (operation_id,),
             ).fetchone()
             if row is None:
@@ -4906,7 +4987,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             }
             cursor = conn.execute(
                 "UPDATE orch_task_observations SET observation_json = ? "
-                "WHERE operation_id = ? AND finished_at IS NULL",
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND finished_at IS NULL",
                 (
                     json.dumps(observation, sort_keys=True, separators=(",", ":")),
                     operation_id,
@@ -4928,7 +5010,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             row = conn.execute(
                 "SELECT observation_json, started_at FROM orch_task_observations "
-                "WHERE operation_id = ? AND first_delta_at IS NULL "
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND first_delta_at IS NULL "
                 "AND finished_at IS NULL",
                 (operation_id,),
             ).fetchone()
@@ -4946,7 +5029,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "UPDATE orch_task_observations "
                 "SET first_delta_at = ?, observation_json = ? "
                 "WHERE operation_id = ? AND first_delta_at IS NULL "
-                "AND finished_at IS NULL",
+                "AND state = 'running' AND finished_at IS NULL",
                 (
                     when,
                     json.dumps(observation, sort_keys=True, separators=(",", ":")),
@@ -5004,7 +5087,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             row = conn.execute(
                 "SELECT observation_json FROM orch_task_observations "
-                "WHERE operation_id = ? AND finished_at IS NULL",
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND finished_at IS NULL",
                 (operation_id,),
             ).fetchone()
             if row is None:
@@ -5032,7 +5116,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cursor = conn.execute(
                 "UPDATE orch_task_observations "
                 "SET state = ?, finished_at = ?, observation_json = ? "
-                "WHERE operation_id = ? AND finished_at IS NULL",
+                "WHERE operation_id = ? AND state = 'running' "
+                "AND finished_at IS NULL",
                 (
                     result_status,
                     when,
