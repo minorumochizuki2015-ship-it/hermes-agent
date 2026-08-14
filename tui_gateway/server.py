@@ -1355,6 +1355,354 @@ def _get_db():
     return _db
 
 
+_ORCH_OPERATIONAL_ERROR_CODE = 5038
+
+
+def _orch_operational_error(rid, code: str) -> dict:
+    """Return a value-free typed error for the operational boundary."""
+    from tui_gateway.sdo_adapter import safe_local_continuation
+
+    safe = safe_local_continuation(code)
+    return _err(rid, _ORCH_OPERATIONAL_ERROR_CODE, safe["claim_withheld_reason"])
+
+
+def _validate_orch_submit_context(
+    params: dict, rid
+) -> tuple[dict | None, dict | None]:
+    """Validate optional ORCH context without accepting raw private payloads."""
+    operation_class = params.get("operational_class")
+    context = params.get("operational_context")
+    if operation_class is None and context is None:
+        return None, None
+    if operation_class == "ordinary" and context is None:
+        return None, None
+    if operation_class != "orch" or context is None:
+        return None, _orch_operational_error(rid, "sdo_context_invalid")
+    try:
+        from hermes_state import validate_orch_operational_context
+
+        code, checked = validate_orch_operational_context(context)
+    except Exception:
+        return None, _orch_operational_error(rid, "sdo_context_unavailable")
+    if code != "context_accepted" or checked is None:
+        return None, _orch_operational_error(rid, code)
+    return checked, None
+
+
+def _orch_sdo_unavailable(_context: dict) -> None:
+    from tui_gateway.sdo_adapter import unavailable_decision
+
+    return unavailable_decision(_context)
+
+
+# Later distribution/runtime binding may inject the current callable. The
+# source-only default is unavailable and cannot select a fallback route.
+_orch_sdo_decision_callable = _orch_sdo_unavailable
+
+
+def _orch_profile_name(session: dict) -> str:
+    profile_home = session.get("profile_home")
+    return Path(profile_home).name if profile_home else ""
+
+
+def _consume_orch_sdo_submit(
+    params: dict,
+    session: dict,
+    context: dict,
+    *,
+    decision_callable=None,
+) -> dict:
+    """Reserve, consume, claim, and project one injected SDO decision."""
+    del params
+    from tui_gateway.sdo_adapter import (
+        apply_sdo_decision_to_session,
+        consume_sdo_decision,
+        safe_local_continuation,
+    )
+
+    operation_id = context.get("operation_id")
+    session_key = session.get("session_key")
+    binding = context.get("decision_binding")
+    logical_session_id = (
+        binding.get("logical_session_id") if isinstance(binding, dict) else None
+    )
+    session["_orch_operational"] = True
+    session["_orch_operation_id"] = operation_id
+    if not isinstance(operation_id, str) or not isinstance(session_key, str):
+        decision = safe_local_continuation("sdo_session_unavailable")
+        apply_sdo_decision_to_session(session, decision)
+        return decision
+
+    provider = decision_callable or _orch_sdo_decision_callable
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                decision = safe_local_continuation("sdo_state_unavailable")
+                apply_sdo_decision_to_session(session, decision)
+                return decision
+            reserved = db.preflight_orch_task_observation(
+                session_key,
+                operation_id,
+                profile_name=_orch_profile_name(session),
+                logical_session_id=logical_session_id,
+                context=context,
+            )
+            if not reserved:
+                decision = safe_local_continuation("sdo_reservation_unavailable")
+                apply_sdo_decision_to_session(session, decision)
+                return decision
+            try:
+                raw_decision = provider(context)
+            except Exception:
+                raw_decision = None
+            decision = consume_sdo_decision(raw_decision, context=context)
+            if decision["claim_status"] != "admitted":
+                try:
+                    if db.begin_orch_task_observation(
+                        session_key,
+                        context,
+                        profile_name=_orch_profile_name(session),
+                    ):
+                        db.finish_orch_task_observation(
+                            operation_id, result_status="failed"
+                        )
+                except Exception:
+                    pass
+                apply_sdo_decision_to_session(session, decision)
+                return decision
+            claim = decision["claim"]
+            try:
+                claimed = db.claim_orch_sdo_receipt(
+                    operation_id,
+                    receipt_digest=claim["receipt_digest"],
+                    binding=claim["binding"],
+                    expires_at=claim["expires_at"],
+                    outcome=claim["outcome"],
+                )
+            except Exception:
+                claimed = False
+            if not claimed:
+                decision = safe_local_continuation("sdo_claim_unavailable")
+                apply_sdo_decision_to_session(session, decision)
+                return decision
+            try:
+                begun = db.begin_orch_task_observation(
+                    session_key,
+                    context,
+                    profile_name=_orch_profile_name(session),
+                )
+            except Exception:
+                begun = False
+            if not begun:
+                decision = safe_local_continuation("sdo_observation_unavailable")
+                apply_sdo_decision_to_session(session, decision)
+                return decision
+            apply_sdo_decision_to_session(session, decision)
+            return decision
+    except Exception:
+        decision = safe_local_continuation("sdo_consumer_unavailable")
+        apply_sdo_decision_to_session(session, decision)
+        return decision
+
+
+def _orch_record_initialization_failure(session: dict) -> str:
+    """Persist only a closed initialization category, never the raw error."""
+    fixed_category = session.pop("_orch_initialization_category", None)
+    raw = str(session.get("agent_error") or "").lower()
+    if fixed_category in _SDO_INITIALIZATION_TERMINAL_CATEGORIES:
+        category = fixed_category
+    elif "not configured" in raw or "no llm" in raw:
+        category = "model_provider_unconfigured"
+    elif (
+        "unavailable" in raw
+        or "credential" in raw
+        or "auth" in raw
+        or "timeout" in raw
+        or "connection" in raw
+    ):
+        category = "model_provider_unavailable"
+    else:
+        category = "agent_initialization_failed"
+    session["agent_error"] = None
+    operation_id = session.get("_orch_operation_id")
+    if isinstance(operation_id, str) and operation_id:
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    db.mark_orch_task_finalization_unavailable(
+                        operation_id,
+                        terminal_category=category,
+                    )
+        except Exception:
+            pass
+    return category
+
+
+def _orch_record_runtime_identity(session: dict, agent: Any) -> None:
+    """Verify and durably record the exact bound runtime before first call."""
+    route = session.get("_orch_model_route")
+    if not isinstance(route, dict):
+        raise RuntimeError("sdo_runtime_identity_unavailable")
+    actual_provider = getattr(agent, "provider", None)
+    actual_model = getattr(agent, "model", None)
+    reasoning = getattr(agent, "reasoning_config", None)
+    actual_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    actual_tier = getattr(agent, "service_tier", None)
+    if (
+        actual_provider != route.get("provider")
+        or actual_model != route.get("model")
+        or actual_effort != route.get("reasoning_effort")
+        or actual_tier not in {"priority", route.get("service_tier_preference")}
+    ):
+        session["_orch_initialization_category"] = "model_provider_unavailable"
+        raise RuntimeError("sdo_runtime_identity_mismatch")
+    operation_id = session.get("_orch_operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        raise RuntimeError("sdo_runtime_identity_unavailable")
+    with _session_db(session) as db:
+        if db is None or not db.record_orch_task_runtime_identity(
+            operation_id,
+            model=actual_model,
+            effort=actual_effort,
+        ):
+            raise RuntimeError("sdo_runtime_identity_unavailable")
+    session["_orch_runtime_identity_verified"] = True
+
+
+def _orch_mark_first_delta(session: dict) -> None:
+    operation_id = session.get("_orch_operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        return
+    try:
+        with _session_db(session) as db:
+            if db is not None and db.mark_orch_task_first_delta(operation_id):
+                session["_orch_first_delta_observed"] = True
+    except Exception:
+        pass
+
+
+def _orch_finish_task_observation(session: dict, result_status: str) -> None:
+    if result_status not in {"complete", "error", "interrupted"}:
+        return
+    operation_id = session.get("_orch_operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        return
+    try:
+        with _session_db(session) as db:
+            if db is not None and db.finish_orch_task_observation(
+                operation_id,
+                result_status=result_status,
+            ):
+                session["_orch_result_consumed"] = True
+    except Exception:
+        pass
+
+
+_SDO_INITIALIZATION_TERMINAL_CATEGORIES = frozenset(
+    {
+        "model_provider_unconfigured",
+        "model_provider_unavailable",
+        "agent_initialization_failed",
+    }
+)
+
+
+def _orch_sdo_status_projection(session: dict) -> dict[str, Any]:
+    """Project only bounded route, observation, and terminal facts."""
+    result: dict[str, Any] = {
+        "availability": "unavailable",
+        "receipt_digest": None,
+        "project_id": None,
+        "binding_digest": None,
+        "selected_action_id": None,
+        "base_selected_action_id": None,
+        "action_changed": False,
+        "decision": "CONTINUE_LOCAL",
+        "replan_required": False,
+        "model_route_consumed": False,
+        "provider": "UNKNOWN",
+        "live_model": "UNKNOWN",
+        "live_effort": "UNKNOWN",
+        "tier": "UNKNOWN",
+        "first_delta_observed": False,
+        "terminal_result_status": "UNKNOWN",
+        "terminal_result_consumed": False,
+        "terminal_category": None,
+    }
+    try:
+        public = session.get("_orch_sdo_decision")
+        if isinstance(public, dict) and public.get("claim_status") == "admitted":
+            result.update(
+                {
+                    "availability": "admitted",
+                    "receipt_digest": public.get("receipt_digest"),
+                    "binding_digest": public.get("binding_digest"),
+                    "selected_action_id": public.get("selected_action_id"),
+                    "base_selected_action_id": public.get("base_selected_action_id"),
+                    "action_changed": public.get("selected_action_id")
+                    != public.get("base_selected_action_id"),
+                    "decision": public.get("decision", "CONTINUE_LOCAL"),
+                    "replan_required": public.get("replan_required") is True,
+                    "model_route_consumed": True,
+                    "provider": public.get("provider") or "UNKNOWN",
+                    "live_model": public.get("model") or "UNKNOWN",
+                    "live_effort": public.get("effort") or "UNKNOWN",
+                    "tier": public.get("tier") or "UNKNOWN",
+                }
+            )
+    except Exception:
+        pass
+    try:
+        session_key = str(session.get("session_key") or "")
+        if not session_key:
+            return result
+        with _session_db(session) as db:
+            if db is None:
+                return result
+            rows = db.read_orch_task_observations(
+                session_key,
+                profile_name=_orch_profile_name(session),
+                limit=1,
+            )
+        if not rows:
+            return result
+        observation = rows[0].get("observation")
+        if not isinstance(observation, dict):
+            return result
+        first_delta = observation.get("first_delta")
+        result["first_delta_observed"] = (
+            isinstance(first_delta, dict)
+            and first_delta.get("status") == "observed"
+            and first_delta.get("present") is True
+        )
+        model = observation.get("model")
+        if (
+            isinstance(model, dict)
+            and model.get("status") == "observed"
+            and model.get("value") == "gpt-5.6-luna"
+        ):
+            result["live_model"] = "gpt-5.6-luna"
+        effort = observation.get("effort")
+        if (
+            isinstance(effort, dict)
+            and effort.get("status") == "observed"
+            and effort.get("value") == "max"
+        ):
+            result["live_effort"] = "max"
+        terminal = observation.get("result")
+        if isinstance(terminal, dict):
+            status = terminal.get("status")
+            if status in {"complete", "error", "interrupted", "blocked", "failed"}:
+                result["terminal_result_status"] = status
+                result["terminal_result_consumed"] = True
+            category = terminal.get("terminal_category")
+            if category in _SDO_INITIALIZATION_TERMINAL_CATEGORIES:
+                result["terminal_category"] = category
+    except Exception:
+        return result
+    return result
+
+
 def _db_for_profile(profile: str | None = None):
     """Return SessionDB for ``params.profile`` when it differs from launch.
 
@@ -2263,6 +2611,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     if (tier := current.get("create_service_tier_override")) is not None:
                         kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
+                if current.get("_orch_operational"):
+                    _orch_record_runtime_identity(current, agent)
             finally:
                 _clear_session_context(tokens)
 
@@ -2337,8 +2687,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # _schedule_mcp_late_refresh. Cache-safe (pre-first-turn only).
             _schedule_mcp_late_refresh(sid, agent)
         except Exception as e:
-            current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            if current.get("_orch_operational"):
+                current["agent_error"] = "agent_initialization_failed"
+                _emit("error", sid, {"message": "agent initialization failed"})
+            else:
+                current["agent_error"] = str(e)
+                _emit("error", sid, {"message": f"agent init failed: {e}"})
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
@@ -10022,6 +10376,8 @@ def _run_prompt_submit(
             def _stream(delta):
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
+                if session.get("_orch_operational") and delta:
+                    _orch_mark_first_delta(session)
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
@@ -10219,6 +10575,10 @@ def _run_prompt_submit(
                     if result.get("interrupted")
                     else "error" if result.get("error") else "complete"
                 )
+                if session.get("_orch_operational"):
+                    _orch_finish_task_observation(session, status)
+                    if status == "error":
+                        raw = "agent operation failed"
                 # When the backend produced no visible response AND reported a
                 # real error (e.g. invalid model slug → provider 4xx), surface
                 # that error as the visible text instead of shipping an empty
@@ -10278,8 +10638,10 @@ def _run_prompt_submit(
                 else:
                     _clear_inflight_turn(session)
             if status == "error":
-                payload["error"] = str(
-                    (result.get("error") if isinstance(result, dict) else "") or raw
+                payload["error"] = (
+                    "agent operation failed"
+                    if session.get("_orch_operational")
+                    else str((result.get("error") if isinstance(result, dict) else "") or raw)
                 )
                 payload["recoverable"] = True
             _retire_turn_marker(session, marker_key)

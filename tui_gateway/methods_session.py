@@ -2438,7 +2438,13 @@ def _(rid, params: dict) -> dict:
             f"Agent Running: {'Yes' if session.get('running') else 'No'}",
         ]
     )
-    return _ok(rid, {"output": "\n".join(lines)})
+    return _ok(
+        rid,
+        {
+            "output": "\n".join(lines),
+            "sdo": _orch_sdo_status_projection(session),
+        },
+    )
 
 
 @method("session.history")

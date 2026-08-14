@@ -258,6 +258,9 @@ def _pending_reaction_notes(session: dict) -> str:
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
 
+    orch_context, orch_error = _validate_orch_submit_context(params, rid)
+    if orch_error is not None:
+        return orch_error
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
@@ -647,11 +650,27 @@ def _(rid, params: dict) -> dict:
                 "disk full: session storage could not be written — free some disk space and try again",
             )
         logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
+        if orch_context is not None:
+            return _orch_operational_error(rid, "sdo_runtime_unavailable")
         return _err(
             rid,
             5071,
             f"session storage could not be written: {exc}",
         )
+    if orch_context is not None:
+        sdo_decision = _consume_orch_sdo_submit(params, session, orch_context)
+        if sdo_decision.get("claim_status") != "admitted":
+            with session["history_lock"]:
+                session["running"] = False
+                session["last_active"] = time.time()
+                _clear_inflight_turn(session)
+            return _ok(
+                rid,
+                {
+                    "status": "safe_local",
+                    "sdo": _orch_sdo_status_projection(session),
+                },
+            )
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -662,13 +681,22 @@ def _(rid, params: dict) -> dict:
         # only errors when the build itself fails or the bounded cap expires.
         err = _wait_agent_for_prompt(session, rid, sid)
         if err:
+            terminal_message = (
+                "agent initialization failed"
+                if session.get("_orch_operational")
+                else (err.get("error") or {}).get(
+                    "message", "agent initialization failed"
+                )
+            )
+            if session.get("_orch_operational"):
+                _orch_record_initialization_failure(session)
             # Terminal frame + retained snapshot (not a bare "error" event +
             # cleared inflight): if the client is disconnected right now, the
             # retained snapshot is the only way resume can show this failure.
             _emit_terminal_turn_error(
                 sid,
                 session,
-                (err.get("error") or {}).get("message", "agent initialization failed"),
+                terminal_message,
             )
             with session["history_lock"]:
                 session["running"] = False
