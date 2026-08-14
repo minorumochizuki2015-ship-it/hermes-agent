@@ -1976,6 +1976,61 @@ def test_ordinary_worker_callbacks_are_fenced_after_operational_successor(
     assert not session["_run_thread"].is_alive()
 
 
+def test_omitted_expectation_worker_is_fenced_after_operational_successor(
+    monkeypatch,
+) -> None:
+    entered = threading.Event()
+    release_worker = threading.Event()
+    callbacks_done = threading.Event()
+    events = []
+    first_delta_calls = []
+
+    def behavior(agent, kwargs):
+        entered.set()
+        assert release_worker.wait(timeout=2.0)
+        kwargs["stream_callback"]("stale omitted stream")
+        if agent.interim_assistant_callback is not None:
+            agent.interim_assistant_callback("stale omitted interim")
+        if agent._on_session_title is not None:
+            agent._on_session_title("stale omitted title", "synthetic")
+        callbacks_done.set()
+        return {
+            "final_response": "OLD-RESULT",
+            "messages": [{"role": "assistant", "content": "OLD-RESULT"}],
+        }
+
+    agent = _WorkerLifetimeAgent(behavior)
+    session = _worker_lifetime_session(agent, "omitted-expectation")
+    _install_worker_lifetime_hooks(
+        monkeypatch,
+        events,
+        first_delta_calls=first_delta_calls,
+    )
+
+    # Exercise the real internal caller shape: no expectation keyword.
+    server._run_prompt_submit(
+        "rid-omitted-expectation",
+        "gateway-omitted-expectation",
+        session,
+        "omitted expectation prompt",
+    )
+    assert entered.wait(timeout=2.0)
+    events.clear()
+    successor = _open_worker_successor(
+        session, "gateway-omitted-expectation-next"
+    )
+    after_successor = _worker_lifetime_state(session)
+
+    release_worker.set()
+    assert callbacks_done.wait(timeout=2.0)
+    session["_run_thread"].join(timeout=2.0)
+    assert not session["_run_thread"].is_alive()
+    assert events == []
+    assert first_delta_calls == []
+    assert _worker_lifetime_state(session) == after_successor
+    assert session["_orch_turn_binding"] == successor
+
+
 @pytest.mark.parametrize("result_kind", ["complete", "error"])
 def test_ordinary_worker_result_after_operational_successor_is_zero_mutation(
     monkeypatch, result_kind

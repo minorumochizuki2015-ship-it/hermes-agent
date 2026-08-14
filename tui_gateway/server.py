@@ -10457,19 +10457,20 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     expected_orch_turn_token: _OrchTurnBinding | _OrchOrdinaryTurnBinding | None = None,
 ) -> None:
-    turn_expectation = expected_orch_turn_token
-    ownership_context = (
-        _orch_ownership_lock(session)
-        if expected_orch_turn_token is not None
-        else contextlib.nullcontext()
-    )
-    with ownership_context:
-        if (
-            expected_orch_turn_token is not None
-            and not _orch_turn_expectation_matches(
-                session, sid, expected_orch_turn_token
-            )
-        ):
+    with _orch_ownership_lock(session):
+        if expected_orch_turn_token is None:
+            if session.get("_orch_operational") is True:
+                current_token = session.get("_orch_turn_binding")
+                if not isinstance(current_token, _OrchTurnBinding):
+                    return
+                turn_expectation = current_token
+            else:
+                turn_expectation = _orch_capture_turn_expectation(
+                    session, sid, None
+                )
+        else:
+            turn_expectation = expected_orch_turn_token
+        if not _orch_turn_expectation_matches(session, sid, turn_expectation):
             return
         with session["history_lock"]:
             if (
@@ -10490,16 +10491,11 @@ def _run_prompt_submit(
             if not isinstance(inflight, dict) or inflight.get("status") == "error":
                 _start_inflight_turn(session, text)
             agent = session["agent"]
-            if isinstance(expected_orch_turn_token, _OrchTurnBinding):
-                orch_turn_token = expected_orch_turn_token
-            elif isinstance(expected_orch_turn_token, _OrchOrdinaryTurnBinding):
-                orch_turn_token = None
-            else:
-                orch_turn_token = (
-                    session.get("_orch_turn_binding")
-                    if session.get("_orch_operational") is True
-                    else None
-                )
+            orch_turn_token = (
+                turn_expectation
+                if isinstance(turn_expectation, _OrchTurnBinding)
+                else None
+            )
             if hasattr(agent, "clear_interrupt"):
                 try:
                     agent.clear_interrupt()
@@ -10509,9 +10505,6 @@ def _run_prompt_submit(
     def run():
         @contextlib.contextmanager
         def _worker_ownership():
-            if turn_expectation is None:
-                yield True
-                return
             with _orch_ownership_lock(session):
                 yield _orch_turn_expectation_matches(
                     session, sid, turn_expectation
@@ -11429,15 +11422,8 @@ def _run_prompt_submit(
                 file=sys.stderr,
             )
 
-    with (
-        _orch_ownership_lock(session)
-        if turn_expectation is not None
-        else contextlib.nullcontext()
-    ):
-        if (
-            turn_expectation is not None
-            and not _orch_turn_expectation_matches(session, sid, turn_expectation)
-        ):
+    with _orch_ownership_lock(session):
+        if not _orch_turn_expectation_matches(session, sid, turn_expectation):
             return
         _emit("message.start", sid)
         run_thread = threading.Thread(target=run, daemon=True)
