@@ -1727,6 +1727,37 @@ class TestDelegateTask(unittest.TestCase):
             self.assertNotIn(fragment, sanitized)
         self.assertIn("safe finding src/README.md", sanitized)
 
+    def test_read_only_audit_text_rejects_wrapped_and_nested_encoded_paths(self):
+        """Markdown wrappers and repeated encodings cannot hide unsafe paths."""
+        from tools.delegate_tool import _sanitize_read_only_audit_text
+
+        cases = (
+            # Auditor cases.
+            ("bold absolute", "**/tmp**", "/tmp"),
+            ("link absolute", "[x](/tmp)", "/tmp"),
+            ("nested traversal", "repo/%252e%252e/x", "repo/../x"),
+            ("nested backslash traversal", r"repo/%252E%252E%255Cx", r"repo/..\x"),
+            # Additional adversarial variants.
+            ("backtick absolute", "`/tmp`", "/tmp"),
+            ("emphasis bracket absolute", "*[/tmp]*", "/tmp"),
+            ("underscore emphasis absolute", "_/tmp_", "/tmp"),
+            ("triple encoded traversal", "repo/%25252e%25252e/x", "repo/../x"),
+        )
+        for label, unsafe, bare in cases:
+            with self.subTest(label=label):
+                sanitized = _sanitize_read_only_audit_text(
+                    f"finding {unsafe} safe finding src/README.md"
+                )
+                expected = _sanitize_read_only_audit_text(
+                    f"finding {bare} safe finding src/README.md"
+                )
+                self.assertEqual(sanitized, expected)
+                self.assertNotIn(unsafe, sanitized)
+                self.assertNotIn("/tmp", sanitized)
+                self.assertNotIn("..", sanitized)
+                self.assertNotIn("%2", sanitized.lower())
+                self.assertIn("safe finding src/README.md", sanitized)
+
     def test_read_only_audit_completion_callback_uses_closed_numeric_fields(self):
         """Completion callbacks cannot receive unbounded or negative counters."""
         from tools.terminal_tool import (

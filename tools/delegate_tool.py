@@ -146,7 +146,11 @@ _READ_ONLY_AUDIT_PRIVATE_MARKER_RE = re.compile(
 )
 _READ_ONLY_AUDIT_TEXT_TOKEN_RE = re.compile(r"[^\s<>]+")
 _READ_ONLY_AUDIT_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
-_READ_ONLY_AUDIT_PATH_EDGE_CHARS = ".,;!?()[]{}\"'"
+_READ_ONLY_AUDIT_PATH_EDGE_CHARS = ".,;!?()[]{}\"'`*_~"
+_READ_ONLY_AUDIT_PATH_DELIMITER_RE = re.compile(
+    r'''[\[\]\(\)\{\}"'`*_~,!;?]+'''
+)
+_READ_ONLY_AUDIT_MAX_PERCENT_DECODE_ROUNDS = 5
 _READ_ONLY_AUDIT_ENUM_FIELDS = {
     "status": frozenset(
         {"completed", "failed", "error", "timeout", "interrupted", "unavailable"}
@@ -250,23 +254,45 @@ def _read_only_audit_token_is_unsafe_path(token: str) -> bool:
     candidate = token.strip(_READ_ONLY_AUDIT_PATH_EDGE_CHARS)
     if not candidate:
         return False
-    if "\x00" in candidate:
-        return True
-    decoded = unquote(candidate)
-    if "\x00" in decoded:
-        return True
-    if re.match(r"(?i)^[a-z]:[\\/]", candidate):
-        return True
-    if candidate.startswith(("/", "\\\\", "\\\\?\\", "\\\\.\\")):
-        return True
-    if re.search(r"(?i)%2f|%5c|%2e", candidate):
-        return True
-    components = re.split(r"[/\\]", decoded)
-    if any(component in {"", ".", ".."} for component in components):
-        return True
-    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", candidate):
-        return True
-    return False
+
+    def is_unsafe_candidate(value: str) -> bool:
+        if not value:
+            return False
+        if "\x00" in value:
+            return True
+        if re.match(r"(?i)^[a-z]:[\\/]", value):
+            return True
+        if value.startswith("/") or "\\" in value:
+            return True
+        if re.search(r"(?i)%2f|%5c|%2e", value):
+            return True
+        components = re.split(r"[/\\]", value)
+        if any(component in {"", ".", ".."} for component in components):
+            return True
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
+            return True
+        return False
+
+    def candidates_for(value: str):
+        normalized = value.strip(_READ_ONLY_AUDIT_PATH_EDGE_CHARS)
+        if not normalized:
+            return ()
+        return (normalized,) + tuple(
+            fragment
+            for fragment in _READ_ONLY_AUDIT_PATH_DELIMITER_RE.split(normalized)
+            if fragment
+        )
+
+    current = candidate
+    for _ in range(_READ_ONLY_AUDIT_MAX_PERCENT_DECODE_ROUNDS):
+        if any(is_unsafe_candidate(item) for item in candidates_for(current)):
+            return True
+        decoded = unquote(current)
+        if decoded == current:
+            return False
+        current = decoded
+
+    return any(is_unsafe_candidate(item) for item in candidates_for(current))
 
 
 def _replace_read_only_audit_path_token(match: re.Match) -> str:
