@@ -20,6 +20,7 @@ NATURAL_PROVIDER: Final = "openai-codex"
 NATURAL_MODEL: Final = "gpt-5.6-luna"
 NATURAL_EFFORT: Final = "max"
 NATURAL_TIER: Final = "fast"
+NATURAL_TRANSITION: Final = "natural-transition"
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_DIGEST_RE = re.compile(r"^opaque:sha256:[0-9a-f]{64}$")
@@ -43,6 +44,24 @@ _BINDING_FIELDS = frozenset(
 )
 _RESULT_STATUSES = frozenset(
     {"complete", "error", "interrupted", "blocked", "failed"}
+)
+_DECISION_FIELDS = frozenset(
+    {
+        "selection_reason",
+        "provider",
+        "model",
+        "effort",
+        "tier",
+        "receipt_digest",
+        "expires_at",
+        "binding",
+        "selected_action_id",
+        "base_selected_action_id",
+        "decision",
+        "dispatch_mode",
+        "action_changed",
+        "replan_required",
+    }
 )
 _INVALID = object()
 
@@ -133,6 +152,12 @@ def consume_sdo_decision(
 
     if not isinstance(raw_decision, Mapping):
         return safe_local_continuation("sdo_decision_unavailable")
+    # Preserve the more useful typed provider-malformed result for the common
+    # missing-provider case while rejecting every other missing/extra field.
+    if "provider" not in raw_decision:
+        return safe_local_continuation("sdo_provider_malformed")
+    if set(raw_decision) != _DECISION_FIELDS:
+        return safe_local_continuation("sdo_decision_malformed")
     selection_reason = raw_decision.get("selection_reason")
     if not isinstance(selection_reason, str):
         return safe_local_continuation("sdo_selection_malformed")
@@ -174,8 +199,31 @@ def consume_sdo_decision(
         if checked is None:
             return safe_local_continuation("sdo_binding_malformed")
         safe_binding[key] = checked
+    if safe_binding["transition"] != NATURAL_TRANSITION:
+        return safe_local_continuation("sdo_binding_mismatch")
     if isinstance(context, Mapping):
-        if safe_binding["operation_id"] != context.get("operation_id"):
+        expected_binding: dict[str, Any] = {}
+        operation_id = context.get("operation_id")
+        if operation_id is not None:
+            expected_binding["operation_id"] = operation_id
+        decision_binding = context.get("decision_binding")
+        if isinstance(decision_binding, Mapping):
+            for key in (
+                "project_id",
+                "repo_id",
+                "worktree_id",
+                "goal_ref",
+                "request_ref",
+                "logical_session_id",
+            ):
+                if key in decision_binding:
+                    expected_binding[key] = decision_binding.get(key)
+        for key in ("repo_id", "worktree_id", "goal_ref", "request_ref"):
+            if key in context:
+                expected_binding[key] = context.get(key)
+        if "transition" in context:
+            expected_binding["transition"] = context.get("transition")
+        if any(safe_binding.get(key) != value for key, value in expected_binding.items()):
             return safe_local_continuation("sdo_binding_mismatch")
 
     selected_action = _optional_identifier(raw_decision.get("selected_action_id"))
@@ -188,14 +236,16 @@ def consume_sdo_decision(
         return safe_local_continuation("sdo_decision_malformed")
     if dispatch_mode not in {"continue_local", "replan_local"}:
         return safe_local_continuation("sdo_dispatch_malformed")
-    action_changed = raw_decision.get(
-        "action_changed",
-        selected_action is not None
-        and base_action is not None
-        and selected_action != base_action,
-    )
-    replan_required = raw_decision.get("replan_required", decision == "REPLAN_NOW")
+    action_changed = raw_decision.get("action_changed")
+    replan_required = raw_decision.get("replan_required")
     if type(action_changed) is not bool or type(replan_required) is not bool:
+        return safe_local_continuation("sdo_outcome_malformed")
+    if action_changed != (selected_action != base_action):
+        return safe_local_continuation("sdo_outcome_malformed")
+    if decision == "REPLAN_NOW":
+        if dispatch_mode != "replan_local" or replan_required is not True:
+            return safe_local_continuation("sdo_outcome_malformed")
+    elif dispatch_mode != "continue_local" or replan_required is not False:
         return safe_local_continuation("sdo_outcome_malformed")
 
     outcome = {
@@ -330,6 +380,7 @@ __all__ = [
     "NATURAL_PROVIDER",
     "NATURAL_SELECTION_REASON",
     "NATURAL_TIER",
+    "NATURAL_TRANSITION",
     "apply_sdo_decision_to_session",
     "consume_sdo_decision",
     "public_decision_projection",

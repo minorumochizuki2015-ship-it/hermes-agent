@@ -1,6 +1,7 @@
 """Focused FP-2 pure-consumer and projection contract."""
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -22,6 +23,15 @@ def _binding(operation_id: str) -> dict[str, str]:
     }
 
 
+def _binding_for_context(operation_id: str, context: dict) -> dict[str, str]:
+    value = _binding(operation_id)
+    decision_binding = context.get("decision_binding") or {}
+    for key in ("project_id", "logical_session_id"):
+        if key in decision_binding:
+            value[key] = decision_binding[key]
+    return value
+
+
 def _decision(operation_id: str, **overrides) -> dict:
     value = {
         "selection_reason": sdo_adapter.NATURAL_SELECTION_REASON,
@@ -36,6 +46,8 @@ def _decision(operation_id: str, **overrides) -> dict:
         "base_selected_action_id": "action-test",
         "decision": "CONTINUE_LOCAL",
         "dispatch_mode": "continue_local",
+        "action_changed": False,
+        "replan_required": False,
     }
     value.update(overrides)
     return value
@@ -144,13 +156,15 @@ def test_non_natural_route_is_withheld_without_identity_or_source_fallback() -> 
 
 
 class _RecordingDB:
-    def __init__(self, observation=None):
+    def __init__(self, observation=None, *, reserve=True, operation_id=None):
         self.calls = []
         self.observation = observation or {}
+        self.reserve = reserve
+        self.operation_id = operation_id
 
     def preflight_orch_task_observation(self, *args, **kwargs):
         self.calls.append("preflight")
-        return True
+        return self.reserve
 
     def claim_orch_sdo_receipt(self, *args, **kwargs):
         self.calls.append("claim")
@@ -168,8 +182,302 @@ class _RecordingDB:
         self.calls.append("terminal")
         return True
 
+    def record_orch_task_runtime_identity(self, *args, **kwargs):
+        self.calls.append("runtime_identity")
+        return True
+
     def read_orch_task_observations(self, *args, **kwargs):
+        if self.operation_id is not None:
+            return [
+                {
+                    "operation_id": self.operation_id,
+                    "session_id": args[0] if args else "",
+                    "profile_name": kwargs.get("profile_name", ""),
+                    "observation": self.observation,
+                }
+            ]
         return [{"observation": self.observation}]
+
+
+class _NoTruthCallable:
+    def __init__(self):
+        self.called = False
+
+    def __bool__(self):
+        raise AssertionError("injected callable was truth-tested before reservation")
+
+    def __call__(self, _context):
+        self.called = True
+        raise AssertionError("provider must not run when reservation is denied")
+
+
+def test_reservation_precedes_injected_callable_truthiness(monkeypatch) -> None:
+    db = _RecordingDB(reserve=False)
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    session = {"session_key": "session-reservation", "profile_home": None}
+    provider = _NoTruthCallable()
+    result = server._consume_orch_sdo_submit(
+        {},
+        session,
+        {"operation_id": "operation-reservation"},
+        decision_callable=provider,
+    )
+    assert result["claim_withheld_reason"] == "sdo_reservation_unavailable"
+    assert db.calls == ["preflight"]
+    assert provider.called is False
+
+
+def test_invalid_injected_callable_is_withheld_after_reservation(monkeypatch) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    result = server._consume_orch_sdo_submit(
+        {},
+        {"session_key": "session-callable", "profile_home": None},
+        {"operation_id": "operation-callable"},
+        decision_callable=object(),
+    )
+    assert result["claim_withheld_reason"] == "sdo_callable_invalid"
+    assert db.calls == ["preflight", "begin", "finish"]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_reason"),
+    [
+        ({"unexpected": "synthetic"}, "sdo_decision_malformed"),
+        ({"binding": {**_binding("operation-closed"), "project_id": "other-project"}}, "sdo_binding_mismatch"),
+        ({"binding": {**_binding("operation-closed"), "logical_session_id": "other-owner"}}, "sdo_binding_mismatch"),
+        ({"binding": {**_binding("operation-closed"), "transition": "other-transition"}}, "sdo_binding_mismatch"),
+        (
+            {
+                "decision": "REPLAN_NOW",
+                "dispatch_mode": "replan_local",
+                "replan_required": False,
+            },
+            "sdo_outcome_malformed",
+        ),
+        ({"action_changed": True}, "sdo_outcome_malformed"),
+    ],
+)
+def test_decision_contract_is_closed_before_receipt_claim(overrides, expected_reason) -> None:
+    value = _decision("operation-closed", **overrides)
+    context = {
+        "operation_id": "operation-closed",
+        "decision_binding": {
+            "project_id": "project-test",
+            "logical_session_id": "logical-test",
+        },
+    }
+    result = sdo_adapter.consume_sdo_decision(
+        value,
+        context=context,
+        now=1000.0,
+    )
+    assert result["claim_status"] == "withheld"
+    assert result["claim_withheld_reason"] == expected_reason
+    assert result["receipt_digest"] is None
+
+
+def test_decision_contract_normalizes_action_and_replan_outcome() -> None:
+    value = _decision(
+        "operation-replan",
+        selected_action_id="action-next",
+        base_selected_action_id="action-base",
+        decision="REPLAN_NOW",
+        dispatch_mode="replan_local",
+        action_changed=True,
+        replan_required=True,
+    )
+    result = sdo_adapter.consume_sdo_decision(
+        value,
+        context={"operation_id": "operation-replan"},
+        now=1000.0,
+    )
+    assert result["claim_status"] == "admitted"
+    assert result["outcome"]["action_changed"] is True
+    assert result["outcome"]["replan_required"] is True
+
+
+class _RuntimeAgent(SimpleNamespace):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "effort", "tier"),
+    [
+        ("terra", "gpt-5.6-luna", "max", "priority"),
+        ("openai-codex", "gpt-5.6-sol", "max", "priority"),
+        ("openai-codex", "gpt-5.6-luna", "high", "priority"),
+        ("openai-codex", "gpt-5.6-luna", "max", "standard"),
+    ],
+)
+def test_ready_agent_identity_is_verified_per_operation(
+    monkeypatch, provider, model, effort, tier
+) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    session = {
+        "_orch_operational": True,
+        "_orch_model_route": {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "max",
+            "service_tier_preference": "fast",
+        },
+        "_orch_operation_id": "operation-ready",
+    }
+    agent = _RuntimeAgent(
+        provider=provider,
+        model=model,
+        reasoning_config={"effort": effort},
+        service_tier=tier,
+    )
+    with pytest.raises(RuntimeError):
+        server._orch_prepare_orch_agent_for_turn(session, agent)
+    assert db.calls == []
+    assert session.get("_orch_runtime_identity_verified") is not True
+
+
+def test_correct_reused_agent_identity_is_recorded_before_call(monkeypatch) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    session = {
+        "_orch_operational": True,
+        "_orch_model_route": {
+            "provider": "openai-codex",
+            "model": "gpt-5.6-luna",
+            "reasoning_effort": "max",
+            "service_tier_preference": "fast",
+        },
+        "_orch_operation_id": "operation-reused",
+    }
+    agent = _RuntimeAgent(
+        provider="openai-codex",
+        model="gpt-5.6-luna",
+        reasoning_config={"effort": "max"},
+        service_tier="priority",
+    )
+    assert server._orch_prepare_orch_agent_for_turn(session, agent) is True
+    assert db.calls == ["runtime_identity"]
+    assert session["_orch_runtime_identity_verified"] is True
+
+
+def test_status_separates_selected_route_from_unobserved_live_identity(monkeypatch) -> None:
+    db = _RecordingDB({"result": {"status": "running"}})
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    admitted = sdo_adapter.consume_sdo_decision(
+        _decision("operation-live-unknown"),
+        context={"operation_id": "operation-live-unknown"},
+        now=1000.0,
+    )
+    session = {
+        "session_key": "session-live-unknown",
+        "profile_home": None,
+        "_orch_operation_id": "operation-live-unknown",
+        "_orch_sdo_decision": sdo_adapter.public_decision_projection(admitted),
+    }
+    projection = server._orch_sdo_status_projection(session)
+    assert projection["model_route_consumed"] is True
+    assert projection["live_model"] == "UNKNOWN"
+    assert projection["live_effort"] == "UNKNOWN"
+    assert projection["tier"] == "UNKNOWN"
+
+
+def test_status_reads_exact_operation_and_owner_not_latest_row(monkeypatch) -> None:
+    class _RowsDB(_RecordingDB):
+        def read_orch_task_observations(self, *args, **kwargs):
+            return [
+                {
+                    "operation_id": "operation-other",
+                    "session_id": "session-exact",
+                    "profile_name": "",
+                    "observation": {"result": {"status": "failed"}},
+                },
+                {
+                    "operation_id": "operation-exact",
+                    "session_id": "session-exact",
+                    "profile_name": "",
+                    "observation": {"result": {"status": "complete"}},
+                },
+            ]
+
+    db = _RowsDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    projection = server._orch_sdo_status_projection(
+        {
+            "session_key": "session-exact",
+            "profile_home": None,
+            "_orch_status_operation_id": "operation-exact",
+        }
+    )
+    assert projection["terminal_result_status"] == "complete"
+
+
+def test_turn_binding_rejects_stale_generation_and_scrubs_route_state() -> None:
+    session = {
+        "session_key": "session-turn",
+        "profile_home": None,
+        "_orch_operational": True,
+        "_orch_operation_id": "operation-turn",
+        "_orch_model_route": {"model": "gpt-5.6-luna"},
+        "_orch_turn_generation": 0,
+        "_orch_sdo_decision": {"claim_status": "admitted"},
+    }
+    first = server._orch_open_orch_turn(
+        session,
+        "gateway-turn",
+        {"operation_id": "operation-turn", "decision_binding": {"logical_session_id": "logical-turn"}},
+    )
+    second = server._orch_open_orch_turn(
+        session,
+        "gateway-turn",
+        {"operation_id": "operation-turn-2", "decision_binding": {"logical_session_id": "logical-turn"}},
+    )
+    assert server._orch_turn_token_matches(session, first) is False
+    assert server._orch_turn_token_matches(session, second) is True
+    server._orch_clear_orch_turn(session)
+    assert "_orch_model_route" not in session
+    assert "_orch_sdo_decision" not in session
+    assert "model_override" not in session
+    assert session.get("_orch_operational") is not True
+
+
+def test_operational_inflight_failure_is_fixed_and_value_free() -> None:
+    session = {
+        "inflight_turn": {"assistant": "", "user": "synthetic"},
+        "_orch_operational": True,
+    }
+    server._fail_inflight_turn(session, "https://private.invalid/provider?token=synthetic")
+    assert session["inflight_turn"]["error"] == "agent operation failed"
 
 
 def test_server_reserves_before_injected_decision_and_binds_route(monkeypatch) -> None:
@@ -189,8 +497,11 @@ def test_server_reserves_before_injected_decision_and_binds_route(monkeypatch) -
 
     def provider(received_context):
         call_order.append("provider")
-        assert received_context is context
-        return _decision("operation-current")
+        assert received_context == context
+        return _decision(
+            "operation-current",
+            binding=_binding_for_context("operation-current", received_context),
+        )
 
     result = server._consume_orch_sdo_submit(
         {},
@@ -222,7 +533,9 @@ def test_server_real_fp1_state_claims_and_begins_before_agent_build(
         {},
         session,
         context,
-        decision_callable=lambda _context: _decision("operation-real"),
+        decision_callable=lambda value: _decision(
+            "operation-real", binding=_binding_for_context("operation-real", value)
+        ),
     )
     try:
         assert result["claim_status"] == "admitted"
@@ -273,7 +586,8 @@ def test_status_first_delta_requires_observed_and_present(
                 "terminal_category": "agent_initialization_failed",
                 "exception": "synthetic raw exception must not project",
             },
-        }
+        },
+        operation_id="operation-status",
     )
 
     @contextmanager
@@ -289,6 +603,7 @@ def test_status_first_delta_requires_observed_and_present(
     session = {
         "session_key": "session-status",
         "profile_home": None,
+        "_orch_operation_id": "operation-status",
         "_orch_sdo_decision": sdo_adapter.public_decision_projection(admitted),
     }
     projection = server._orch_sdo_status_projection(session)

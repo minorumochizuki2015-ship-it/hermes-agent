@@ -660,17 +660,20 @@ def _(rid, params: dict) -> dict:
     if orch_context is not None:
         sdo_decision = _consume_orch_sdo_submit(params, session, orch_context)
         if sdo_decision.get("claim_status") != "admitted":
+            sdo_status = _orch_sdo_status_projection(session)
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
+            _orch_clear_orch_turn(session)
             return _ok(
                 rid,
                 {
                     "status": "safe_local",
-                    "sdo": _orch_sdo_status_projection(session),
+                    "sdo": sdo_status,
                 },
             )
+        _orch_open_orch_turn(session, sid, orch_context)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -701,6 +704,7 @@ def _(rid, params: dict) -> dict:
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
+            _orch_clear_orch_turn(session)
             _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
         with session["history_lock"]:

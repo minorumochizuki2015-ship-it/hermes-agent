@@ -1405,6 +1405,87 @@ def _orch_profile_name(session: dict) -> str:
     return Path(profile_home).name if profile_home else ""
 
 
+_ORCH_ROUTE_OVERRIDE_KEYS = (
+    "model_override",
+    "create_reasoning_override",
+    "create_service_tier_override",
+)
+
+
+def _orch_open_orch_turn(session: dict, sid: str, context: dict) -> dict:
+    """Create the immutable owner token for one admitted operational turn."""
+    if session.get("_orch_turn_binding") is not None:
+        _orch_clear_orch_turn(session)
+    binding = context.get("decision_binding")
+    logical_session_id = (
+        binding.get("logical_session_id") if isinstance(binding, dict) else None
+    )
+    generation = int(session.get("_orch_turn_generation", 0)) + 1
+    token = {
+        "session_id": session.get("session_key"),
+        "profile": _orch_profile_name(session),
+        "logical_session_id": logical_session_id,
+        "operation_id": context.get("operation_id"),
+        "turn_generation": generation,
+    }
+    session["_orch_turn_generation"] = generation
+    session["_orch_turn_binding"] = token
+    session["_orch_operational"] = True
+    session["_orch_operation_id"] = context.get("operation_id")
+    session["_orch_status_operation_id"] = context.get("operation_id")
+    session["_orch_previous_overrides"] = {
+        key: copy.deepcopy(session[key])
+        for key in _ORCH_ROUTE_OVERRIDE_KEYS
+        if key in session
+    }
+    session["_orch_gateway_session_id"] = sid
+    return token
+
+
+def _orch_turn_token_matches(session: dict, token: Any) -> bool:
+    """Return true only while the exact operational turn still owns session."""
+    if not isinstance(token, dict) or session.get("_orch_turn_binding") != token:
+        return False
+    return (
+        token.get("session_id") == session.get("session_key")
+        and token.get("profile") == _orch_profile_name(session)
+        and token.get("operation_id") == session.get("_orch_operation_id")
+        and token.get("turn_generation") == session.get("_orch_turn_generation")
+    )
+
+
+def _orch_callback_is_current(session: dict, token: Any) -> bool:
+    """Allow ordinary turns through while fencing stale operational callbacks."""
+    return token is None or _orch_turn_token_matches(session, token)
+
+
+def _orch_clear_orch_turn(session: dict) -> None:
+    """Drop active route/failure state while retaining exact status identity."""
+    operation_id = session.get("_orch_operation_id")
+    if isinstance(operation_id, str) and operation_id:
+        session["_orch_status_operation_id"] = operation_id
+    previous = session.pop("_orch_previous_overrides", {})
+    for key in _ORCH_ROUTE_OVERRIDE_KEYS:
+        if key in previous:
+            session[key] = previous[key]
+        else:
+            session.pop(key, None)
+    for key in (
+        "_orch_operational",
+        "_orch_operation_id",
+        "_orch_model_route",
+        "_orch_sdo_decision",
+        "_orch_runtime_identity_verified",
+        "_orch_runtime_identity_operation_id",
+        "_orch_first_delta_observed",
+        "_orch_result_consumed",
+        "_orch_initialization_category",
+        "_orch_turn_binding",
+        "_orch_gateway_session_id",
+    ):
+        session.pop(key, None)
+
+
 def _consume_orch_sdo_submit(
     params: dict,
     session: dict,
@@ -1433,7 +1514,6 @@ def _consume_orch_sdo_submit(
         apply_sdo_decision_to_session(session, decision)
         return decision
 
-    provider = decision_callable or _orch_sdo_decision_callable
     try:
         with _session_db(session) as db:
             if db is None:
@@ -1451,8 +1531,28 @@ def _consume_orch_sdo_submit(
                 decision = safe_local_continuation("sdo_reservation_unavailable")
                 apply_sdo_decision_to_session(session, decision)
                 return decision
+            provider = (
+                _orch_sdo_decision_callable
+                if decision_callable is None
+                else decision_callable
+            )
+            if not callable(provider):
+                decision = safe_local_continuation("sdo_callable_invalid")
+                try:
+                    if db.begin_orch_task_observation(
+                        session_key,
+                        context,
+                        profile_name=_orch_profile_name(session),
+                    ):
+                        db.finish_orch_task_observation(
+                            operation_id, result_status="failed"
+                        )
+                except Exception:
+                    pass
+                apply_sdo_decision_to_session(session, decision)
+                return decision
             try:
-                raw_decision = provider(context)
+                raw_decision = provider(copy.deepcopy(context))
             except Exception:
                 raw_decision = None
             decision = consume_sdo_decision(raw_decision, context=context)
@@ -1559,6 +1659,9 @@ def _orch_record_runtime_identity(session: dict, agent: Any) -> None:
     operation_id = session.get("_orch_operation_id")
     if not isinstance(operation_id, str) or not operation_id:
         raise RuntimeError("sdo_runtime_identity_unavailable")
+    if session.get("_orch_runtime_identity_operation_id") == operation_id:
+        session["_orch_runtime_identity_verified"] = True
+        return
     with _session_db(session) as db:
         if db is None or not db.record_orch_task_runtime_identity(
             operation_id,
@@ -1567,6 +1670,23 @@ def _orch_record_runtime_identity(session: dict, agent: Any) -> None:
         ):
             raise RuntimeError("sdo_runtime_identity_unavailable")
     session["_orch_runtime_identity_verified"] = True
+    session["_orch_runtime_identity_operation_id"] = operation_id
+
+
+def _orch_prepare_orch_agent_for_turn(session: dict, agent: Any) -> bool:
+    """Enforce the selected route on a ready/reused agent before any call."""
+    if session.get("_orch_operational") is not True:
+        return True
+    _orch_record_runtime_identity(session, agent)
+    return True
+
+
+def _orch_terminalize_before_agent_call(sid: str, session: dict) -> None:
+    """Close a route mismatch without exposing or invoking the agent."""
+    session["agent_error"] = "agent_initialization_failed"
+    _orch_record_initialization_failure(session)
+    _emit_terminal_turn_error(sid, session, "agent operation failed")
+    _orch_clear_orch_turn(session)
 
 
 def _orch_mark_first_delta(session: dict) -> None:
@@ -1620,7 +1740,12 @@ def _orch_sdo_status_projection(session: dict) -> dict[str, Any]:
         "decision": "CONTINUE_LOCAL",
         "replan_required": False,
         "model_route_consumed": False,
+        "selected_provider": "UNKNOWN",
+        "selected_model": "UNKNOWN",
+        "selected_effort": "UNKNOWN",
+        "selected_tier": "UNKNOWN",
         "provider": "UNKNOWN",
+        "live_provider": "UNKNOWN",
         "live_model": "UNKNOWN",
         "live_effort": "UNKNOWN",
         "tier": "UNKNOWN",
@@ -1644,10 +1769,11 @@ def _orch_sdo_status_projection(session: dict) -> dict[str, Any]:
                     "decision": public.get("decision", "CONTINUE_LOCAL"),
                     "replan_required": public.get("replan_required") is True,
                     "model_route_consumed": True,
+                    "selected_provider": public.get("provider") or "UNKNOWN",
+                    "selected_model": public.get("model") or "UNKNOWN",
+                    "selected_effort": public.get("effort") or "UNKNOWN",
+                    "selected_tier": public.get("tier") or "UNKNOWN",
                     "provider": public.get("provider") or "UNKNOWN",
-                    "live_model": public.get("model") or "UNKNOWN",
-                    "live_effort": public.get("effort") or "UNKNOWN",
-                    "tier": public.get("tier") or "UNKNOWN",
                 }
             )
     except Exception:
@@ -1659,14 +1785,31 @@ def _orch_sdo_status_projection(session: dict) -> dict[str, Any]:
         with _session_db(session) as db:
             if db is None:
                 return result
-            rows = db.read_orch_task_observations(
-                session_key,
-                profile_name=_orch_profile_name(session),
-                limit=1,
-            )
-        if not rows:
+        operation_id = session.get("_orch_status_operation_id") or session.get(
+            "_orch_operation_id"
+        )
+        if not isinstance(operation_id, str) or not operation_id:
             return result
-        observation = rows[0].get("observation")
+        profile_name = _orch_profile_name(session)
+        rows = db.read_orch_task_observations(
+            session_key,
+            profile_name=profile_name,
+            limit=100,
+        )
+        row = next(
+            (
+                candidate
+                for candidate in rows
+                if isinstance(candidate, dict)
+                and candidate.get("operation_id") == operation_id
+                and candidate.get("session_id") == session_key
+                and candidate.get("profile_name") == profile_name
+            ),
+            None,
+        )
+        if row is None:
+            return result
+        observation = row.get("observation")
         if not isinstance(observation, dict):
             return result
         first_delta = observation.get("first_delta")
@@ -2537,6 +2680,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         # its "still starting" eviction exemption.
         session.pop("lazy", None)
     key = session["session_key"]
+    turn_token = session.get("_orch_turn_binding")
 
     def _build() -> None:
         with _sessions_lock:
@@ -2544,6 +2688,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
         if current is None:
             ready.set()
             return
+        if current.get("_orch_operational"):
+            if not _orch_turn_token_matches(current, turn_token):
+                ready.set()
+                return
 
         notify_registered = False
         home_token = None
@@ -2612,7 +2760,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
                 if current.get("_orch_operational"):
-                    _orch_record_runtime_identity(current, agent)
+                    _orch_prepare_orch_agent_for_turn(current, agent)
             finally:
                 _clear_session_context(tokens)
 
@@ -7762,7 +7910,10 @@ def _fail_inflight_turn(session: dict, error: Any) -> None:
 
     Caller must hold ``session["history_lock"]``.
     """
-    message = str(error) if not isinstance(error, BaseException) else (str(error) or type(error).__name__)
+    if session.get("_orch_operational") is True:
+        message = "agent operation failed"
+    else:
+        message = str(error) if not isinstance(error, BaseException) else (str(error) or type(error).__name__)
     now = time.time()
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -10141,6 +10292,11 @@ def _run_prompt_submit(
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(session, text)
         agent = session["agent"]
+        orch_turn_token = (
+            session.get("_orch_turn_binding")
+            if session.get("_orch_operational") is True
+            else None
+        )
         if hasattr(agent, "clear_interrupt"):
             try:
                 agent.clear_interrupt()
@@ -10163,6 +10319,7 @@ def _run_prompt_submit(
         result = None  # turn outcome; read after the finally for leftover /steer
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         thinking_started = False  # ambient thinking sound armed for this turn
+        turn_current = True
         one_turn_restore = session.pop("one_turn_model_restore", None)
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
@@ -10201,6 +10358,15 @@ def _run_prompt_submit(
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
+            if orch_turn_token is not None:
+                if not _orch_turn_token_matches(session, orch_turn_token):
+                    turn_current = False
+                    return
+                try:
+                    _orch_prepare_orch_agent_for_turn(session, agent)
+                except Exception:
+                    _orch_terminalize_before_agent_call(sid, session)
+                    return
             # Skip the config-model sync while a /model --once override is
             # active: the once-model is intentionally not pinned as a session
             # model_override (it must not persist), so without this guard the
@@ -10373,7 +10539,19 @@ def _run_prompt_submit(
             # state, so it cannot live in the (byte-stable) system prompt.
             run_message = _prepend_note(run_message, _hud_surface_note(session))
 
+            if not _orch_callback_is_current(session, orch_turn_token):
+                turn_current = False
+                return
+            if orch_turn_token is not None:
+                try:
+                    _orch_prepare_orch_agent_for_turn(session, agent)
+                except Exception:
+                    _orch_terminalize_before_agent_call(sid, session)
+                    return
+
             def _stream(delta):
+                if not _orch_callback_is_current(session, orch_turn_token):
+                    return
                 with session["history_lock"]:
                     _append_inflight_delta(session, delta)
                 if session.get("_orch_operational") and delta:
@@ -10392,6 +10570,8 @@ def _run_prompt_submit(
             # Gated on display.interim_assistant_messages (default true).
             if _load_interim_assistant_messages():
                 def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                    if not _orch_callback_is_current(session, orch_turn_token):
+                        return
                     _emit("message.interim", sid, {
                         "text": text,
                         "already_streamed": already_streamed,
@@ -10428,10 +10608,15 @@ def _run_prompt_submit(
             # sidebar repaints the moment a title lands, rather than waiting
             # for the next list refresh.
             _title_key = session.get("session_key") or sid
-            agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
-                "session.title", sid, {"session_id": _k, "title": t}
-            )
+            def _on_session_title(t, _src, _k=_title_key):
+                if _orch_callback_is_current(session, orch_turn_token):
+                    _emit("session.title", sid, {"session_id": _k, "title": t})
+
+            agent._on_session_title = _on_session_title
             result = agent.run_conversation(run_message, **run_kwargs)
+            if not _orch_callback_is_current(session, orch_turn_token):
+                turn_current = False
+                return
             if display_kind and isinstance(text, str):
                 db = getattr(agent, "_session_db", None)
                 current_session_id = getattr(agent, "session_id", None) or session.get("session_key")
@@ -10618,7 +10803,7 @@ def _run_prompt_submit(
             # billing_url, is_nous, message) so the TUI/desktop render a
             # billing-specific recovery surface instead of re-parsing text.
             _billing_block = result.get("billing_block") if isinstance(result, dict) else None
-            if _billing_block:
+            if _billing_block and session.get("_orch_operational") is not True:
                 payload["billing"] = _billing_block
                 payload["failure_reason"] = result.get("failure_reason")
             rendered = render_message(raw, cols)
@@ -10632,7 +10817,13 @@ def _run_prompt_submit(
                     # inflight payload is the only carrier of the failure.
                     _fail_inflight_turn(
                         session,
-                        result.get("error") if isinstance(result, dict) else raw,
+                        (
+                            "agent operation failed"
+                            if session.get("_orch_operational") is True
+                            else result.get("error")
+                            if isinstance(result, dict)
+                            else raw
+                        ),
                     )
                     turn_error_retained = True
                 else:
@@ -10646,6 +10837,10 @@ def _run_prompt_submit(
                 payload["recoverable"] = True
             _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
+            if orch_turn_token is not None and _orch_callback_is_current(
+                session, orch_turn_token
+            ):
+                _orch_clear_orch_turn(session)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge
@@ -10772,42 +10967,48 @@ def _run_prompt_submit(
                 except Exception as e:
                     logger.warning("voice TTS dispatch failed: %s", e)
         except Exception as e:
-            import traceback
-
-            trace = traceback.format_exc()
-            try:
-                os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
-                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
-                    f.write(
-                        f"\n=== turn-dispatcher exception · "
-                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
-                    )
-                    f.write(trace)
-            except Exception:
-                pass
-            print(
-                f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
+            operational_failure = (
+                session.get("_orch_operational") is True
+                and turn_current
+                and _orch_callback_is_current(session, orch_turn_token)
             )
-            # The agent persists its working transcript on normal finalization,
-            # but an exception in that finalizer can otherwise leave the
-            # gateway's separate in-memory history at the turn-start snapshot.
-            # Keep the partial turn available to the next prompt; the durable
-            # inflight record still carries the recoverable error state.
-            _restore_agent_history_after_turn_error(session, agent)
-            try:
-                # Close the turn with the same terminal error frame shape as
-                # the returned-error path (uniform client handling), retaining
-                # the failed turn for resume replay.
-                _emit_terminal_turn_error(sid, session, e)
+            if operational_failure:
+                _orch_terminalize_before_agent_call(sid, session)
                 turn_error_retained = True
-            except Exception as emit_exc:
+            elif turn_current:
+                import traceback
+
+                trace = traceback.format_exc()
+                try:
+                    os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+                    with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"\n=== turn-dispatcher exception · "
+                            f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
+                        )
+                        f.write(trace)
+                except Exception:
+                    pass
                 print(
-                    f"[gateway-turn] terminal error emit failed: "
-                    f"{type(emit_exc).__name__}: {emit_exc}",
+                    f"[gateway-turn] {type(e).__name__}: {e}",
                     file=sys.stderr,
                     flush=True,
                 )
-                _emit("error", sid, {"message": str(e)})
+                # The agent persists its working transcript on normal
+                # finalization, but an exception in that finalizer can leave
+                # the gateway history at the turn-start snapshot.
+                _restore_agent_history_after_turn_error(session, agent)
+                try:
+                    _emit_terminal_turn_error(sid, session, e)
+                    turn_error_retained = True
+                except Exception as emit_exc:
+                    print(
+                        f"[gateway-turn] terminal error emit failed: "
+                        f"{type(emit_exc).__name__}: {emit_exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    _emit("error", sid, {"message": str(e)})
         finally:
             # Drop both local snapshots of the pre-turn history before asking
             # glibc to return pages. session["history"] already points at the
@@ -10837,7 +11038,7 @@ def _run_prompt_submit(
                     pass
             if tts_queue is not None:
                 tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
-            if one_turn_restore:
+            if one_turn_restore and turn_current:
                 try:
                     _restore_agent_model_runtime(agent, one_turn_restore)
                     _restart_slash_worker(sid, session)
@@ -10857,19 +11058,23 @@ def _run_prompt_submit(
             _clear_session_context(session_tokens)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
-            # Clear the per-turn interim callback so a stale closure from
-            # this turn can't fire during a later turn on the same agent.
-            agent.interim_assistant_callback = None
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not turn_error_retained:
-                    _clear_inflight_turn(session)
-            # Backstop for turns that never reached a terminal frame (the
-            # frame paths retire the marker as they emit).
-            _retire_turn_marker(session, marker_key)
-            session.pop("_auto_continue_scheduled", None)
-            _emit_settled_session_info(sid, session, agent)
+            if turn_current:
+                # Clear the per-turn interim callback so a stale closure from
+                # this turn can't fire during a later turn on the same agent.
+                agent.interim_assistant_callback = None
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                    if not turn_error_retained:
+                        _clear_inflight_turn(session)
+                # Backstop for turns that never reached a terminal frame (the
+                # frame paths retire the marker as they emit).
+                _retire_turn_marker(session, marker_key)
+                session.pop("_auto_continue_scheduled", None)
+                _emit_settled_session_info(sid, session, agent)
+
+        if not turn_current:
+            return
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
