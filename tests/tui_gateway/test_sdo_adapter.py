@@ -867,6 +867,218 @@ def test_pre_ready_cancellation_finishes_interrupted_and_restores_ordinary_route
     }
 
 
+def test_stale_deferred_initialization_failure_has_zero_mutation_or_event(
+    monkeypatch,
+) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    session = {
+        "session_key": "session-init-stale",
+        "profile_home": None,
+        "agent_error": "synthetic-original-error",
+    }
+    stale_token = server._orch_open_orch_turn(
+        session,
+        "gateway-init-stale",
+        {
+            "operation_id": "operation-init-stale",
+            "decision_binding": {"logical_session_id": "logical-init-stale"},
+        },
+    )
+    server._orch_clear_orch_turn(session)
+    current_token = server._orch_open_orch_turn(
+        session,
+        "gateway-init-current",
+        {
+            "operation_id": "operation-init-current",
+            "decision_binding": {"logical_session_id": "logical-init-current"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": "synthetic-current-route"}
+    before = {
+        key: session.get(key)
+        for key in (
+            "agent_error",
+            "_orch_turn_binding",
+            "_orch_operation_id",
+            "_orch_model_route",
+            "_orch_operational",
+        )
+    }
+
+    server._orch_record_initialization_failure(session, stale_token)
+
+    assert db.calls == []
+    assert {
+        key: session.get(key)
+        for key in before
+    } == before
+    assert session["_orch_turn_binding"] == current_token
+
+
+def test_deferred_cancel_owner_swap_suppresses_stale_error_event(monkeypatch) -> None:
+    session = {
+        "session_key": "session-cancel-stale",
+        "profile_home": None,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "running": False,
+        "agent_ready": threading.Event(),
+        "agent": None,
+        "cols": 80,
+    }
+    stale_token = server._orch_open_orch_turn(
+        session,
+        "gateway-cancel-stale",
+        {
+            "operation_id": "operation-cancel-stale",
+            "decision_binding": {"logical_session_id": "logical-cancel-stale"},
+        },
+    )
+    current_context = {
+        "operation_id": "operation-cancel-current",
+        "decision_binding": {"logical_session_id": "logical-cancel-current"},
+    }
+    events = []
+    cancel_calls = []
+
+    def swap_before_finalization(active_session, captured_token):
+        cancel_calls.append(captured_token)
+        assert captured_token == stale_token
+        server._orch_clear_orch_turn(active_session)
+        current_token = server._orch_open_orch_turn(
+            active_session,
+            "gateway-cancel-current",
+            current_context,
+        )
+        active_session["_orch_model_route"] = {"provider": "synthetic-current"}
+        active_session["_orch_current_test_token"] = current_token
+        return False
+
+    class _ImmediateThread:
+        def __init__(self, target, daemon=True):
+            self._target = target
+            self.daemon = daemon
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(
+        server,
+        "_validate_orch_submit_context",
+        lambda _params, _rid: ({"operation_id": stale_token.operation_id}, None),
+    )
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_voice_mode_enabled", lambda: False)
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {"turn_isolation": False},
+    )
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(
+        server,
+        "_consume_orch_sdo_submit",
+        lambda *_args, **_kwargs: {"claim_status": "admitted"},
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda _sid, active_session: active_session.__setitem__(
+            "_turn_cancel_requested", True
+        ),
+    )
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *_args: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *_args: pytest.fail("stale turn ran"))
+    monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
+    monkeypatch.setattr(
+        server,
+        "_orch_cancel_before_agent_ready",
+        swap_before_finalization,
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    result = server._methods["prompt.submit"](
+        "rid-cancel-stale",
+        {"session_id": "gateway-cancel-stale", "text": "synthetic prompt"},
+    )
+
+    assert result["result"]["status"] == "streaming"
+    assert cancel_calls == [stale_token]
+    assert events == []
+    assert session["_orch_turn_binding"] == session["_orch_current_test_token"]
+    assert session["_orch_operation_id"] == "operation-cancel-current"
+
+
+def test_stale_route_error_terminalization_is_noop_and_current_is_once(
+    monkeypatch,
+) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit_terminal_turn_error",
+        lambda *args: events.append(args),
+    )
+    session = {
+        "session_key": "session-route-stale",
+        "profile_home": None,
+        "agent_error": "synthetic-route-error",
+    }
+    stale_token = server._orch_open_orch_turn(
+        session,
+        "gateway-route-stale",
+        {
+            "operation_id": "operation-route-stale",
+            "decision_binding": {"logical_session_id": "logical-route-stale"},
+        },
+    )
+    server._orch_clear_orch_turn(session)
+    current_token = server._orch_open_orch_turn(
+        session,
+        "gateway-route-current",
+        {
+            "operation_id": "operation-route-current",
+            "decision_binding": {"logical_session_id": "logical-route-current"},
+        },
+    )
+    session["_orch_model_route"] = {"provider": "synthetic-current-route"}
+
+    server._orch_terminalize_before_agent_call(
+        "gateway-route-current", session, stale_token
+    )
+
+    assert db.calls == []
+    assert events == []
+    assert session["_orch_turn_binding"] == current_token
+    assert session["_orch_operation_id"] == "operation-route-current"
+
+    server._orch_terminalize_before_agent_call(
+        "gateway-route-current", session, current_token
+    )
+    server._orch_terminalize_before_agent_call(
+        "gateway-route-current", session, current_token
+    )
+
+    assert db.calls == ["terminal"]
+    assert len(events) == 1
+    assert session.get("_orch_turn_binding") is None
+
+
 def test_operational_inflight_failure_is_fixed_and_value_free() -> None:
     session = {
         "inflight_turn": {"assistant": "", "user": "synthetic"},
@@ -952,10 +1164,19 @@ def test_initialization_failure_persists_category_and_drops_raw_error(monkeypatc
     monkeypatch.setattr(server, "_session_db", db_context)
     session = {
         "agent_error": "synthetic provider unavailable detail",
-        "_orch_operation_id": "operation-init",
+        "session_key": "session-init",
+        "profile_home": None,
     }
+    token = server._orch_open_orch_turn(
+        session,
+        "gateway-init",
+        {
+            "operation_id": "operation-init",
+            "decision_binding": {"logical_session_id": "logical-init"},
+        },
+    )
     assert (
-        server._orch_record_initialization_failure(session)
+        server._orch_record_initialization_failure(session, token)
         == "model_provider_unavailable"
     )
     assert session["agent_error"] is None

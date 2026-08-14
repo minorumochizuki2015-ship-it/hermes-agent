@@ -1663,37 +1663,52 @@ def _consume_orch_sdo_submit(
         return decision
 
 
-def _orch_record_initialization_failure(session: dict) -> str:
-    """Persist only a closed initialization category, never the raw error."""
-    fixed_category = session.pop("_orch_initialization_category", None)
-    raw = str(session.get("agent_error") or "").lower()
-    if fixed_category in _SDO_INITIALIZATION_TERMINAL_CATEGORIES:
-        category = fixed_category
-    elif "not configured" in raw or "no llm" in raw:
-        category = "model_provider_unconfigured"
-    elif (
-        "unavailable" in raw
-        or "credential" in raw
-        or "auth" in raw
-        or "timeout" in raw
-        or "connection" in raw
-    ):
-        category = "model_provider_unavailable"
-    else:
-        category = "agent_initialization_failed"
-    session["agent_error"] = None
-    operation_id = session.get("_orch_operation_id")
-    if isinstance(operation_id, str) and operation_id:
+def _orch_record_initialization_failure(
+    session: dict, token: _OrchTurnBinding | None
+) -> str | None:
+    """Persist a closed initialization category for the captured owner only."""
+    with _orch_ownership_lock(session):
+        if not _orch_turn_token_matches(session, token):
+            return None
+        owns_mutation_marker = session.get("_orch_mutation_token") is None
+        if owns_mutation_marker:
+            session["_orch_mutation_token"] = token
         try:
-            with _session_db(session) as db:
-                if db is not None:
-                    db.mark_orch_task_finalization_unavailable(
-                        operation_id,
-                        terminal_category=category,
-                    )
-        except Exception:
-            pass
-    return category
+            fixed_category = session.pop("_orch_initialization_category", None)
+            raw = str(session.get("agent_error") or "").lower()
+            if fixed_category in _SDO_INITIALIZATION_TERMINAL_CATEGORIES:
+                category = fixed_category
+            elif "not configured" in raw or "no llm" in raw:
+                category = "model_provider_unconfigured"
+            elif (
+                "unavailable" in raw
+                or "credential" in raw
+                or "auth" in raw
+                or "timeout" in raw
+                or "connection" in raw
+            ):
+                category = "model_provider_unavailable"
+            else:
+                category = "agent_initialization_failed"
+            session["agent_error"] = None
+            operation_id = token.operation_id
+            try:
+                with _session_db(session) as db:
+                    if not _orch_turn_token_matches(session, token):
+                        return None
+                    if db is not None:
+                        db.mark_orch_task_finalization_unavailable(
+                            operation_id,
+                            terminal_category=category,
+                        )
+            except Exception:
+                pass
+            if not _orch_turn_token_matches(session, token):
+                return None
+            return category
+        finally:
+            if owns_mutation_marker and session.get("_orch_mutation_token") == token:
+                session.pop("_orch_mutation_token", None)
 
 
 def _orch_record_runtime_identity(
@@ -1754,12 +1769,28 @@ def _orch_prepare_orch_agent_for_turn(
     return True
 
 
-def _orch_terminalize_before_agent_call(sid: str, session: dict) -> None:
-    """Close a route mismatch without exposing or invoking the agent."""
-    session["agent_error"] = "agent_initialization_failed"
-    _orch_record_initialization_failure(session)
-    _emit_terminal_turn_error(sid, session, "agent operation failed")
-    _orch_clear_orch_turn(session)
+def _orch_terminalize_before_agent_call(
+    sid: str, session: dict, token: _OrchTurnBinding | None
+) -> bool:
+    """Close a route mismatch only while the captured owner still holds it."""
+    with _orch_ownership_lock(session):
+        if not _orch_turn_token_matches(session, token):
+            return False
+        session["_orch_mutation_token"] = token
+        try:
+            session["agent_error"] = "agent_initialization_failed"
+            category = _orch_record_initialization_failure(session, token)
+            if category is None or not _orch_turn_token_matches(session, token):
+                return False
+            _emit_terminal_turn_error(sid, session, "agent operation failed")
+            if not _orch_turn_token_matches(session, token):
+                return False
+            session.pop("_orch_mutation_token", None)
+            _orch_clear_orch_turn(session)
+            return True
+        finally:
+            if session.get("_orch_mutation_token") == token:
+                session.pop("_orch_mutation_token", None)
 
 
 def _orch_mark_first_delta(
@@ -10472,7 +10503,7 @@ def _run_prompt_submit(
                 try:
                     _orch_prepare_orch_agent_for_turn(session, agent, orch_turn_token)
                 except Exception:
-                    _orch_terminalize_before_agent_call(sid, session)
+                    _orch_terminalize_before_agent_call(sid, session, orch_turn_token)
                     return
             # Skip the config-model sync while a /model --once override is
             # active: the once-model is intentionally not pinned as a session
@@ -10653,7 +10684,7 @@ def _run_prompt_submit(
                 try:
                     _orch_prepare_orch_agent_for_turn(session, agent, orch_turn_token)
                 except Exception:
-                    _orch_terminalize_before_agent_call(sid, session)
+                    _orch_terminalize_before_agent_call(sid, session, orch_turn_token)
                     return
 
             def _stream(delta):
@@ -11080,7 +11111,7 @@ def _run_prompt_submit(
                 and _orch_callback_is_current(session, orch_turn_token)
             )
             if operational_failure:
-                _orch_terminalize_before_agent_call(sid, session)
+                _orch_terminalize_before_agent_call(sid, session, orch_turn_token)
                 turn_error_retained = True
             elif turn_current:
                 import traceback

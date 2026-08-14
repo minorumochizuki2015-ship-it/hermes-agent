@@ -701,7 +701,17 @@ def _(rid, params: dict) -> dict:
                 )
             )
             if session.get("_orch_operational"):
-                _orch_record_initialization_failure(session)
+                with _orch_ownership_lock(session):
+                    terminalized = _orch_terminalize_before_agent_call(
+                        sid, session, orch_turn_token
+                    )
+                    if not terminalized:
+                        return
+                    with session["history_lock"]:
+                        session["running"] = False
+                        session["last_active"] = time.time()
+                    _emit("session.info", sid, _session_info(session.get("agent"), session))
+                return
             # Terminal frame + retained snapshot (not a bare "error" event +
             # cleared inflight): if the client is disconnected right now, the
             # retained snapshot is the only way resume can show this failure.
@@ -729,20 +739,31 @@ def _(rid, params: dict) -> dict:
                     else "Session no longer running before the agent was ready"
                 )
         if cancelled_before_ready:
-            _orch_cancel_before_agent_ready(session, orch_turn_token)
             # Surface the cancellation to the client. Without this emit the
             # turn vanishes silently — the Desktop sees `prompt.submit`
             # return `{"status": "streaming"}` but never receives a
             # `message.start` or `error` event, so the composer shows no
             # feedback (issue #63078 server-side half). Match the
             # `_wait_agent` error branch above: emit, then bail.
-            _emit(
-                "error",
-                sid,
-                {
-                    "message": cancel_message,
-                },
-            )
+            if orch_turn_token is not None:
+                with _orch_ownership_lock(session):
+                    if not _orch_cancel_before_agent_ready(session, orch_turn_token):
+                        return
+                    _emit(
+                        "error",
+                        sid,
+                        {
+                            "message": cancel_message,
+                        },
+                    )
+            else:
+                _emit(
+                    "error",
+                    sid,
+                    {
+                        "message": cancel_message,
+                    },
+                )
             return
         _run_prompt_submit(rid, sid, session, text)
 
