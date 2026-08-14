@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Eye Review"
+  short_description: "Human-eye visual QA gate: screenshot, look, judge"
+  default_prompt: "Use $design-eye-review to capture mobile+desktop screenshots of the current UI work, visually inspect them, run the obvious-miss checklist and craft rubric, and report the verdict with top improvements before any completion claim."

@@ -14,20 +14,29 @@ session's cwd and the sidebar follows the move; the DB write is the durable part
 
 import json
 import os
+from contextvars import ContextVar, Token
 from typing import Callable, Optional
 
 from tools.registry import registry
 
-# Set by the GUI gateway (tui_gateway) at session wiring. Receives
-# ``(task_id, primary_path, project_name)`` and re-anchors that session's
-# workspace + refreshes the sidebar. ``None`` in CLI / messaging contexts — the
-# DB write still happens; there's just no live GUI session to move.
-_workspace_callback: Optional[Callable[[str, str, str], None]] = None
+# Bound by the GUI gateway for one agent turn.  A ContextVar is intentional:
+# tool calls may run concurrently, and a process-global callback lets an old
+# generation resolve its durable task id to a newly reconnected successor.
+# Context propagation in the tool executor carries this exact-generation
+# callback into worker threads without making it visible to other sessions.
+_workspace_callback: ContextVar[Optional[Callable[[str, str, str], None]]] = (
+    ContextVar("project_workspace_callback", default=None)
+)
 
+def set_project_workspace_callback(
+    fn: Optional[Callable[[str, str, str], None]],
+) -> Token:
+    """Bind a workspace callback to the current execution context."""
+    return _workspace_callback.set(fn)
 
-def set_project_workspace_callback(fn: Optional[Callable[[str, str, str], None]]) -> None:
-    global _workspace_callback
-    _workspace_callback = fn
+def reset_project_workspace_callback(token: Token) -> None:
+    """Restore the prior callback after an agent turn/build context exits."""
+    _workspace_callback.reset(token)
 
 
 def _primary_path(proj) -> Optional[str]:
@@ -40,7 +49,7 @@ def _primary_path(proj) -> Optional[str]:
 
 
 def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> None:
-    cb = _workspace_callback
+    cb = _workspace_callback.get()
     if cb and task_id and path:
         try:
             cb(task_id, path, name)

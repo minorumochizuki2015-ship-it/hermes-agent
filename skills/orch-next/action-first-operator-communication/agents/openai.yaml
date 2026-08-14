@@ -1,0 +1,4 @@
+interface:
+  display_name: "Action-first operator communication"
+  short_description: "Put action, result, and next state before explanation"
+  default_prompt: "Use $action-first-operator-communication to report this work result-first with one clear next action."

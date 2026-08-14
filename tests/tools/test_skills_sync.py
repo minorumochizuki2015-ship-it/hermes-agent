@@ -14,6 +14,7 @@ from tools.skills_sync import (
     _discover_bundled_skills,
     _compute_relative_dest,
     _dir_hash,
+    _skill_file_list,
     sync_skills,
     reset_bundled_skill,
     restore_official_optional_skill,
@@ -95,6 +96,21 @@ class TestDiscoverBundledSkills:
         (nested / "SKILL.md").write_text("---\nname: archived-skill\n---\n")
 
         assert [name for name, _ in _discover_bundled_skills(tmp_path)] == ["umbrella"]
+
+    def test_orch_next_category_is_recursive_and_self_contained(self, tmp_path):
+        skill = tmp_path / "orch-next" / "runtime-owner"
+        reference = skill / "references" / "contract.md"
+        reference.parent.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: runtime-owner\n---\n# Runtime owner\n",
+            encoding="utf-8",
+        )
+        reference.write_text("bounded reference\n", encoding="utf-8")
+
+        discovered = _discover_bundled_skills(tmp_path)
+
+        assert discovered == [("runtime-owner", skill)]
+        assert _skill_file_list(skill) == ["SKILL.md", "references/contract.md"]
 
 
 class TestReadSkillName:

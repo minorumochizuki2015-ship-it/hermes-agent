@@ -1,0 +1,4 @@
+interface:
+  display_name: "Image-Gen Lane Dispatch"
+  short_description: "Asset-first staging, technical review, and human selection"
+  default_prompt: "Use $image-gen-lane-dispatch when asset_needs=material to produce 2-4 isolated staging candidates, technically review each one, present passing candidates for human selection, and permit only the selected candidate into production."

@@ -1,0 +1,86 @@
+{
+  "contract": "hermes_delegate_task.v1",
+  "execution_target": "hermes_delegate_task",
+  "delegate_task_arguments": [
+    "tasks"
+  ],
+  "delegate_task_item_arguments": [
+    "goal",
+    "context",
+    "role",
+    "capability_profile",
+    "target_revision",
+    "timeout_seconds"
+  ],
+  "capability_profile": "read_only_audit",
+  "controller_role": "orchestrator",
+  "worker_role": "leaf",
+  "target": "fixed_revision_read_only_audit",
+  "target_revision": "required_fixed_revision",
+  "timeout_seconds": {
+    "default": 600,
+    "minimum": 30,
+    "maximum": 1800
+  },
+  "read_manifest": "required_goal_requirements_diff_checks_fixtures",
+  "write_manifest": [],
+  "constraint_enforcement": {
+    "capability_profile": "exact_positive_allowlist_after_resolution_refresh_and_search_unwrap",
+    "target_revision": "runtime_validated_prompt_binding_not_checkout_enforcement",
+    "timeout_seconds": "delegate_task_runtime_enforced",
+    "read_manifest": "prompt_constraint_only",
+    "write_manifest": "runtime_no_mutation_tools",
+    "return_contract": "prompt_constraint_only"
+  },
+  "runtime_compatibility": {
+    "required_tool_loop": "hermes_exact_allowlist",
+    "rejected_api_modes": [
+      "codex_app_server"
+    ],
+    "rejected_external_tool_runtimes": [
+      "acp",
+      "copilot-acp"
+    ],
+    "failure": {
+      "code": "capability_runtime_incompatible",
+      "status": "unavailable",
+      "launch": false,
+      "launch_count": 0,
+      "silent_downgrade": false
+    }
+  },
+  "return_contract": {
+    "terminal_class": "completed|blocked|intentional_stop|crash",
+    "source_revision": "required",
+    "findings": "required_array",
+    "verdict_input": "required",
+    "blockers": "required_array",
+    "nonclaims": "required_array"
+  },
+  "ended_session_recovery": {
+    "registered_resume_surfaces": [
+      "gateway:/resume",
+      "cli:hermes --resume"
+    ],
+    "sequence": [
+      "registered_resume_surface",
+      "delegate_task_atomic_successor"
+    ],
+    "reconnect": {
+      "status": "runtime_integration_dependency",
+      "code": "hermes_reconnect_unavailable",
+      "launch": false
+    },
+    "max_successors": 1,
+    "successor_limit_enforcement": "prompt_constraint_only",
+    "user_relay": false
+  },
+  "dispatcher_mutation": "prompt_constraint_only",
+  "worker_mutation_scope": "runtime_read_only_audit_capability_profile",
+  "maestro_codex_execution_fallback": false,
+  "external_authority_reused": false,
+  "authority_unavailable": {
+    "code": "maestro_authority_unavailable",
+    "launch": false
+  }
+}

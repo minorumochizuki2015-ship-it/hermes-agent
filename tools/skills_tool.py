@@ -66,8 +66,10 @@ Usage:
     content = skill_view("axolotl", "references/dataset-formats.md")
 """
 
+import hashlib
 import json
 import logging
+from contextvars import ContextVar, Token
 import time
 import threading
 
@@ -174,7 +176,9 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
-_secret_capture_callback = None
+_secret_capture_callback: ContextVar = ContextVar(
+    "skill_secret_capture_callback", default=None
+)
 
 
 def _skill_lookup_path_error(name: str) -> Optional[str]:
@@ -245,9 +249,20 @@ _INJECTION_PATTERNS: list = [
 ]
 
 
-def set_secret_capture_callback(callback) -> None:
-    global _secret_capture_callback
-    _secret_capture_callback = callback
+def set_secret_capture_callback(callback) -> Token:
+    """Bind secret capture to the current turn/context."""
+    return _secret_capture_callback.set(callback)
+
+
+def reset_secret_capture_callback(token: Token) -> None:
+    """Restore the callback binding that preceded *token*."""
+    _secret_capture_callback.reset(token)
+
+
+def _get_secret_capture_callback():
+    """Read the current callback, tolerating legacy direct test patches."""
+    callback_var = _secret_capture_callback
+    return callback_var.get() if isinstance(callback_var, ContextVar) else callback_var
 
 
 def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
@@ -431,7 +446,8 @@ def _capture_required_environment_variables(
             "gateway_setup_hint": _gateway_setup_hint(),
         }
 
-    if _secret_capture_callback is None:
+    secret_capture_callback = _get_secret_capture_callback()
+    if secret_capture_callback is None:
         return {
             "missing_names": missing_names,
             "setup_skipped": False,
@@ -449,7 +465,7 @@ def _capture_required_environment_variables(
             metadata["required_for"] = entry["required_for"]
 
         try:
-            callback_result = _secret_capture_callback(
+            callback_result = secret_capture_callback(
                 entry["name"],
                 entry["prompt"],
                 metadata,
@@ -1022,18 +1038,267 @@ def _serve_plugin_skill(
                 "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
             )
 
-    return json.dumps(
-        {
-            "success": True,
-            "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
-            "description": description,
-            "linked_files": _plugin_skill_linked_files(skill_md.parent),
-            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
-        },
-        ensure_ascii=False,
+    result = {
+        "success": True,
+        "name": f"{namespace}:{bare}",
+        "content": f"{banner}{rendered_content}" if banner else rendered_content,
+        "description": description,
+        "linked_files": _plugin_skill_linked_files(skill_md.parent),
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+        # Internal exact-source identity for deterministic materialization
+        # and repeat-view dedup. Never shown in the rendered skill body.
+        "skill_dir": str(skill_md.parent),
+        "_source_path": str(skill_md),
+    }
+    try:
+        indexed = _indexed_operational_materialization(skill_md)
+    except Exception as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Operational skill materialization failed: {exc}",
+            },
+            ensure_ascii=False,
+        )
+    if indexed is not None:
+        operational, selected_content = indexed
+        result["content"] = selected_content
+        result["operational_materialization"] = operational
+    return json.dumps(result, ensure_ascii=False)
+
+
+def materialize_selected_skill(
+    name: str,
+    *,
+    qualified_skill_id: str,
+    trigger_mode: str,
+    source_binding: Dict[str, Any],
+    mode: str,
+    plugin_binding: Optional[Dict[str, Any]] = None,
+    source_trigger: Optional[str] = None,
+    expected_profile: Optional[Dict[str, Any]] = None,
+):
+    """Resolve through ``skill_view`` and materialize the exact selected bytes.
+
+    This is a Python adapter for controllers and CLIs, not a new model tool.
+    It deliberately reuses ``skill_view`` so plugin qualification and local
+    collision behavior cannot diverge between interactive and exec callers.
+    """
+
+    from agent.skill_materializer import materialize_skill, verify_expected_profile
+
+    resolved = json.loads(skill_view(name, preprocess=False))
+    if resolved.get("success") is not True:
+        raise ValueError(resolved.get("error") or f"Skill '{name}' is unavailable")
+    source_path = resolved.get("_source_path")
+    if type(source_path) is not str or not source_path:
+        raise ValueError(f"Skill '{name}' did not expose an exact source path")
+    materialized = materialize_skill(
+        Path(source_path),
+        qualified_skill_id=qualified_skill_id,
+        trigger_mode=trigger_mode,
+        source_binding=source_binding,
+        mode=mode,
+        plugin_binding=plugin_binding,
+        source_trigger=source_trigger,
+    )
+    if expected_profile is not None:
+        verify_expected_profile(materialized, expected_profile)
+    return materialized
+
+
+def _indexed_operational_materialization(
+    skill_md: Path,
+) -> Optional[tuple[Dict[str, Any], str]]:
+    """Materialize a resolved distribution skill through its bound index.
+
+    Ordinary user/bundled skills have no profile index and keep their existing
+    progressive-disclosure behavior. If an index is present, any identity or
+    content drift is a hard failure rather than an unprofiled fallback.
+    """
+
+    from agent.skill_materializer import (
+        materialize_skill,
+        secure_regular_file,
+        secure_regular_tree,
+        verify_expected_profile,
     )
 
+    # Admitted distribution layout: <bundle>/skills/<name>/SKILL.md.
+    try:
+        skills_root = skill_md.parent.parent
+        bundle_root = skills_root.parent
+        relative = skill_md.relative_to(bundle_root).as_posix()
+    except ValueError:
+        return None
+    index_path = bundle_root / "OPERATIONAL_PROFILE_INDEX.json"
+    if not index_path.exists() and not index_path.is_symlink():
+        source_marker = bundle_root / "SOURCE_MANIFEST.json"
+        plugin_marker = bundle_root / ".codex-plugin" / "plugin.json"
+        marker_paths = (source_marker, plugin_marker)
+        if not any(path.exists() or path.is_symlink() for path in marker_paths):
+            return None
+        source_marker_record: object = None
+        plugin_marker_record: object = None
+        try:
+            if source_marker.exists() or source_marker.is_symlink():
+                source_marker_record = json.loads(
+                    secure_regular_file(
+                        bundle_root,
+                        "SOURCE_MANIFEST.json",
+                        max_bytes=4_194_304,
+                        label="operational source manifest marker",
+                    ).content.decode("utf-8")
+                )
+            if plugin_marker.exists() or plugin_marker.is_symlink():
+                plugin_marker_record = json.loads(
+                    secure_regular_file(
+                        bundle_root,
+                        ".codex-plugin/plugin.json",
+                        max_bytes=1_048_576,
+                        label="operational plugin manifest marker",
+                    ).content.decode("utf-8")
+                )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("operational distribution marker is invalid") from exc
+        source_identity = (
+            source_marker_record.get("identity")
+            if isinstance(source_marker_record, dict)
+            else None
+        )
+        plugin_identity = (
+            plugin_marker_record.get("name")
+            if isinstance(plugin_marker_record, dict)
+            else None
+        )
+        if "orch-next-hermes-harness" in {source_identity, plugin_identity}:
+            if (
+                source_identity != "orch-next-hermes-harness"
+                or plugin_identity != "orch-next-hermes-harness"
+                or source_marker_record.get("version")
+                != plugin_marker_record.get("version")
+            ):
+                raise ValueError("operational distribution marker identity drift")
+            raise ValueError("admitted operational profile index is missing")
+        return None
+    index_file = secure_regular_file(
+        bundle_root,
+        "OPERATIONAL_PROFILE_INDEX.json",
+        max_bytes=4_194_304,
+        label="operational profile index",
+    )
+    index_bytes = index_file.content
+    try:
+        index = json.loads(index_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("operational profile index is invalid") from exc
+    if type(index) is not dict:
+        raise ValueError("operational profile index must be an object")
+    expected_index_digest = index.get("index_digest")
+    without_digest = {key: value for key, value in index.items() if key != "index_digest"}
+    observed_index_digest = hashlib.sha256(
+        (json.dumps(without_digest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    ).hexdigest()
+    if expected_index_digest != observed_index_digest:
+        raise ValueError("operational profile index digest drift")
+
+    source_manifest_file = secure_regular_file(
+        bundle_root,
+        "SOURCE_MANIFEST.json",
+        max_bytes=4_194_304,
+        label="operational source manifest",
+    )
+    plugin_manifest_file = secure_regular_file(
+        bundle_root,
+        ".codex-plugin/plugin.json",
+        max_bytes=1_048_576,
+        label="operational plugin manifest",
+    )
+    try:
+        source_manifest = json.loads(source_manifest_file.content.decode("utf-8"))
+        plugin_manifest = json.loads(plugin_manifest_file.content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("operational distribution manifest is invalid") from exc
+    declared_index = source_manifest.get("operational_profile_index")
+    if not isinstance(declared_index, dict) or declared_index.get("digest") != hashlib.sha256(
+        index_bytes
+    ).hexdigest():
+        raise ValueError("source manifest operational profile index drift")
+    package = index.get("package")
+    if not isinstance(package, dict):
+        raise ValueError("operational profile package identity is missing")
+    declared_skills = source_manifest.get("skills")
+    if not isinstance(declared_skills, dict):
+        raise ValueError("operational source skill closure is missing")
+    closure_files = tuple(
+        item
+        for item in secure_regular_tree(skills_root)
+        if "__pycache__" not in PurePosixPath(item.path).parts
+        and not item.path.endswith(".pyc")
+    )
+    closure_entries = [
+        {"path": item.path, "sha256": item.sha256} for item in closure_files
+    ]
+    closure_stream = "".join(
+        f"{item.sha256}  skills/orch-next/{item.path}\n"
+        for item in closure_files
+    )
+    closure_digest = hashlib.sha256(closure_stream.encode("utf-8")).hexdigest()
+    closure_skill_count = len(
+        {PurePosixPath(item.path).parts[0] for item in closure_files}
+    )
+    if (
+        closure_entries != declared_skills.get("files")
+        or len(closure_entries) != declared_skills.get("recursive_file_count")
+        or closure_skill_count != declared_skills.get("skill_count")
+        or closure_digest
+        != declared_skills.get("sorted_recursive_file_sha256_stream_digest")
+    ):
+        raise ValueError("operational full skill closure drift")
+    manifest_digest = plugin_manifest_file.sha256
+    if (
+        package.get("plugin_id") != source_manifest.get("identity")
+        or package.get("plugin_version") != source_manifest.get("version")
+        or plugin_manifest.get("name") != package.get("plugin_id")
+        or plugin_manifest.get("version") != package.get("plugin_version")
+        or package.get("plugin_manifest_digest") != manifest_digest
+        or package.get("skill_closure_digest") != closure_digest
+    ):
+        raise ValueError("operational plugin package identity drift")
+
+    profiles = index.get("skills")
+    if not isinstance(profiles, list):
+        raise ValueError("operational skill profile rows are missing")
+    matches = [
+        row
+        for row in profiles
+        if isinstance(row, dict)
+        and isinstance(row.get("source_binding"), dict)
+        and row["source_binding"].get("path") == relative
+    ]
+    if len(matches) != 1:
+        raise ValueError("resolved skill has no unique operational profile")
+    expected = matches[0]
+    materialized = materialize_skill(
+        skill_md,
+        qualified_skill_id=expected["qualified_skill_id"],
+        trigger_mode=expected["trigger_mode"],
+        source_trigger=expected.get("source_trigger"),
+        source_binding=expected["source_binding"],
+        mode="plugin_namespaced_resolve",
+        plugin_binding=expected["plugin_binding"],
+    )
+    verify_expected_profile(materialized, expected)
+    return (
+        {
+            "receipt": materialized.receipt,
+            "required_references": [
+                {"path": item.path, "content": item.content.decode("utf-8")}
+                for item in materialized.required_references
+            ],
+        },
+        materialized.skill.content.decode("utf-8"),
+    )
 
 def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
     from tools.path_security import validate_within_dir
@@ -1830,6 +2095,21 @@ def skill_view(
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):
             result["metadata"] = metadata
+
+        try:
+            indexed = _indexed_operational_materialization(skill_md)
+        except Exception as exc:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Operational skill materialization failed: {exc}",
+                },
+                ensure_ascii=False,
+            )
+        if indexed is not None:
+            operational, selected_content = indexed
+            result["content"] = selected_content
+            result["operational_materialization"] = operational
 
         return json.dumps(result, ensure_ascii=False)
 
