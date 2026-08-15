@@ -143,6 +143,12 @@ def build_dashboard_parser(
         ),
     )
     _add_server_runtime_args(serve_parser)
+    # Internal launchd identity for the fixed ORCH front-door sidecar. The
+    # handler validates the complete tuple; this flag never creates a caller-
+    # configurable endpoint or alters the primary dashboard/serve role.
+    serve_parser.add_argument(
+        "--orch-sidecar", action="store_true", help=argparse.SUPPRESS
+    )
     # Accepted but redundant: `serve` is always headless (see set_defaults
     # below). Kept so callers that pass the legacy `--no-open` flag (e.g. the
     # desktop backend spawn) don't trip "unrecognized arguments".

@@ -136,6 +136,14 @@ except ImportError:
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
+_ORCH_SIDECAR_HOST = "127.0.0.1"
+_ORCH_SIDECAR_PORT = 3518
+
+
+def _is_orch_sidecar_process() -> bool:
+    """Return whether this process is the fixed internal ORCH sidecar."""
+
+    return os.environ.get("HERMES_ORCH_SIDECAR") == "1"
 
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
@@ -218,6 +226,9 @@ def _resolve_restart_drain_timeout() -> float:
 
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
+    orch_sidecar = bool(
+        getattr(app.state, "orch_sidecar", False) or _is_orch_sidecar_process()
+    )
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
@@ -233,14 +244,15 @@ async def _lifespan(app: "FastAPI"):
     # On Windows + Python 3.11 the import does not release the GIL, so
     # run_in_executor still froze the event loop for 15-22 s, causing the
     # Desktop's 10-second WebSocket ready-probe to time out (GH-73083).
-    _warm_gateway_module()
+    if not orch_sidecar:
+        _warm_gateway_module()
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
+    if not orch_sidecar and os.getenv("HERMES_DESKTOP") == "1":
         # Before forking a fresh gateway, reap any orphan left by a previous
         # serve session. Graceful shutdown reaps the managed child, but an
         # abnormal exit (crash, SIGKILL, power loss, forced update) reparents
@@ -264,22 +276,31 @@ async def _lifespan(app: "FastAPI"):
         cron_thread.start()
 
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
-    pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+    pty_reaper_task = (
+        None if orch_sidecar else asyncio.create_task(run_reaper(PTY_REGISTRY))
+    )
 
     # Periodic authenticated self-test (feeds the ``dashboard`` component on
     # /api/status).  The loop exits immediately when httpx is unavailable.
-    selftest_task = asyncio.create_task(_dashboard_selftest_loop())
+    selftest_task = (
+        None if orch_sidecar else asyncio.create_task(_dashboard_selftest_loop())
+    )
 
     # Live auto-archive timer — keeps a backend that stays up for days
     # sweeping stale sessions on schedule, independent of list requests.
-    auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
+    auto_archive_task = (
+        None if orch_sidecar else asyncio.create_task(_auto_archive_ticker_loop())
+    )
 
     try:
         yield
     finally:
-        pty_reaper_task.cancel()
-        selftest_task.cancel()
-        auto_archive_task.cancel()
+        if pty_reaper_task is not None:
+            pty_reaper_task.cancel()
+        if selftest_task is not None:
+            selftest_task.cancel()
+        if auto_archive_task is not None:
+            auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
@@ -345,9 +366,17 @@ app.include_router(_memory_oauth_router)
 
 
 def _resolve_session_token() -> str:
-    return os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+    global _SESSION_TOKEN_FROM_PRIVATE_SOURCE
+    supplied = os.environ.pop("HERMES_DASHBOARD_SESSION_TOKEN", "")
+    if supplied:
+        _SESSION_TOKEN_FROM_PRIVATE_SOURCE = True
+        return supplied
+    if _is_orch_sidecar_process():
+        raise RuntimeError("orch sidecar session token source unavailable")
+    return secrets.token_urlsafe(32)
 
 
+_SESSION_TOKEN_FROM_PRIVATE_SOURCE = False
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
@@ -17790,6 +17819,8 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     so Electron passes ``HERMES_DESKTOP_READY_FILE`` and waits for this JSON.
     Normal CLI/dashboard launches still use the stdout READY line below.
     """
+    if _is_orch_sidecar_process():
+        return
     target = os.environ.get("HERMES_DESKTOP_READY_FILE")
     if not target:
         return
@@ -17932,6 +17963,7 @@ def start_server(
     headless: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
+    orch_sidecar: bool = False,
 ):
     """Start the web UI server.
 
@@ -17947,6 +17979,26 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
+    orch_sidecar = bool(orch_sidecar or _is_orch_sidecar_process())
+    if orch_sidecar:
+        if not _SESSION_TOKEN_FROM_PRIVATE_SOURCE:
+            raise SystemExit("orch sidecar session token source unavailable")
+        if any(
+            (
+                host != _ORCH_SIDECAR_HOST,
+                port != _ORCH_SIDECAR_PORT,
+                not headless,
+                open_browser,
+                allow_public,
+                bool(initial_profile),
+                ssh_session_token,
+                ssh_owner_nonce,
+            )
+        ):
+            raise SystemExit("orch sidecar identity rejected")
+        os.environ["HERMES_ORCH_SIDECAR"] = "1"
+    app.state.orch_sidecar = orch_sidecar
+
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
@@ -17960,12 +18012,13 @@ def start_server(
 
     import uvicorn
 
-    try:
-        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+    if not orch_sidecar:
+        try:
+            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 
-        start_nous_auth_keepalive()
-    except Exception as exc:
-        _log.debug("Nous auth keepalive did not start: %s", exc)
+            start_nous_auth_keepalive()
+        except Exception as exc:
+            _log.debug("Nous auth keepalive did not start: %s", exc)
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
@@ -18162,7 +18215,8 @@ def start_server(
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
 
-            _write_dashboard_ready_file(actual_port)
+            if not orch_sidecar:
+                _write_dashboard_ready_file(actual_port)
             # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
             # plain backend, not a dashboard, so it announces a neutral token;
             # `dashboard` keeps the legacy one. The desktop matches either.
@@ -18214,9 +18268,10 @@ def start_server(
                     _hb_interval, _loop_heartbeat, now + _hb_interval
                 )
 
-            _hb_loop.call_later(
-                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
-            )
+            if not orch_sidecar:
+                _hb_loop.call_later(
+                    _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
+                )
 
             await server.main_loop()
             if server.started:

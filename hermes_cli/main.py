@@ -97,7 +97,12 @@ from hermes_cli import _startup_fast  # noqa: E402
 from hermes_cli import _early_recovery as _early_recovery_mod
 
 try:
-    _early_recovery_mod.recover_if_needed()
+    _sidecar_argv = sys.argv[1:]
+    if not (
+        os.environ.get("HERMES_ORCH_SIDECAR") == "1"
+        or ("serve" in _sidecar_argv and "--orch-sidecar" in _sidecar_argv)
+    ):
+        _early_recovery_mod.recover_if_needed()
 except Exception:
     pass
 
@@ -223,6 +228,15 @@ def _run_and_exit_oneshot(
 
 def _project_root_str_fast() -> str:
     return _startup_fast.project_root_str()
+
+
+def _is_orch_sidecar_process() -> bool:
+    """Return whether this process is the fixed internal ORCH sidecar."""
+
+    argv = sys.argv[1:]
+    return os.environ.get("HERMES_ORCH_SIDECAR") == "1" or (
+        "serve" in argv and "--orch-sidecar" in argv
+    )
 
 
 def _ensure_project_root_on_path_fast() -> None:
@@ -10347,6 +10361,28 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
 
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
+    _headless_backend = getattr(args, "headless_backend", False)
+    _orch_sidecar = bool(getattr(args, "orch_sidecar", False))
+    if _orch_sidecar:
+        if any(
+            (
+                not _headless_backend,
+                args.host != "127.0.0.1",
+                args.port != 3518,
+                getattr(args, "insecure", False),
+                getattr(args, "status", False),
+                getattr(args, "stop", False),
+                getattr(args, "ssh_session_token_file", None),
+                getattr(args, "ssh_owner_nonce", None),
+                getattr(args, "open_profile", ""),
+            )
+        ):
+            raise SystemExit("orch sidecar identity rejected")
+        # The launchd plist supplies this before Python imports the gateway;
+        # retain it here for direct embedding/tests and downstream module
+        # suppression decisions.
+        os.environ["HERMES_ORCH_SIDECAR"] = "1"
+
     _token_file = getattr(args, "ssh_session_token_file", None)
     if _token_file and (
         getattr(args, "status", False) or getattr(args, "stop", False)
@@ -10374,7 +10410,6 @@ def cmd_dashboard(args):
     # `serve` is the headless backend: no UI build, no SPA mount, neutral
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
-    _headless_backend = getattr(args, "headless_backend", False)
     _ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
     if _ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", _ssh_owner_nonce):
         raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
@@ -10414,14 +10449,18 @@ def cmd_dashboard(args):
     #     the sticky active_profile file) with the launching profile
     #     preselected in the UI's switcher.
     # `--isolated` opts out and preserves the old per-profile behavior.
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        _launch_profile = get_active_profile_name()
-    except Exception:
+    if _orch_sidecar:
         _launch_profile = "default"
+    else:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            _launch_profile = get_active_profile_name()
+        except Exception:
+            _launch_profile = "default"
 
     if (
-        _launch_profile not in ("default", "custom")
+        not _orch_sidecar
+        and _launch_profile not in ("default", "custom")
         and not getattr(args, "isolated", False)
         and not getattr(args, "open_profile", "")
         # Desktop pool backends are intentionally per-profile.
@@ -10468,16 +10507,9 @@ def cmd_dashboard(args):
         # machine root below — the factory must not re-inject a profile home.
         env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
         # Pin the child to the machine ROOT, not the launching profile's
-        # HERMES_HOME.  We must resolve the root explicitly instead of just
-        # dropping HERMES_HOME: in the Docker layout the machine root is
-        # /opt/data (set via `ENV HERMES_HOME=/opt/data`), so an unset
-        # HERMES_HOME falls back to $HOME/.hermes = /opt/data/.hermes — an
-        # empty, auto-seeded home where the dashboard sees only the default
-        # profile and the install-method stamp is missing (so the Docker
-        # update-button guard also misfires).  get_default_hermes_root()
-        # returns the root for both layouts: ~/.hermes for a standard install
-        # and /opt/data for Docker (it strips a trailing profiles/<name>).
-        # See the support report for the double-mount workaround this avoids.
+        # HERMES_HOME.  Resolve the root explicitly rather than dropping it:
+        # Docker's machine root is /opt/data, while a bare fallback would use
+        # $HOME/.hermes and lose the machine dashboard's shared state.
         try:
             from hermes_constants import get_default_hermes_root
             env["HERMES_HOME"] = str(get_default_hermes_root())
@@ -10485,11 +10517,8 @@ def cmd_dashboard(args):
             # Best-effort: if root resolution fails, fall back to the prior
             # behaviour (drop HERMES_HOME) rather than block the reroute.
             env.pop("HERMES_HOME", None)
-        # On Windows, os.execvpe() does not truly replace the process — it
-        # spawns via CreateProcess then the parent exits.  Under Python 3.14+
-        # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when
-        # re-executing the dashboard for a non-default profile.  Use
-        # subprocess.Popen + sys.exit() on Windows to avoid the crash.
+        # On Windows, use a child process rather than os.execvpe() to avoid
+        # CreateProcess/finalizer crashes during non-default profile reroutes.
         if sys.platform == "win32":
             proc = subprocess.Popen(reexec_argv, env=env)
             sys.exit(proc.wait())
@@ -10534,7 +10563,8 @@ def cmd_dashboard(args):
     # skills picker / agent skill discovery sees the bundled library.
     # cmd_chat does this in its own pre-dispatch block; the dashboard
     # backend is the desktop's primary entrypoint and needs the same.
-    _sync_bundled_skills_quietly()
+    if not _orch_sidecar:
+        _sync_bundled_skills_quietly()
 
     # Bridge terminal.* config into the TERMINAL_* env vars for THIS process,
     # mirroring the CLI (cli.py env_mappings) and gateway (gateway/run.py
@@ -10615,14 +10645,15 @@ def cmd_dashboard(args):
     # save ~500ms startup; we have to trigger it explicitly here because
     # the dashboard's server-side runtime depends on plugin-registered
     # providers (image_gen, web, dashboard_auth, …).
-    try:
-        from hermes_cli.plugins import discover_plugins
-        discover_plugins()
-    except Exception as exc:
-        # Discovery failures must not block dashboard startup outright —
-        # log and proceed; the gate's fail-closed branch will surface
-        # the missing-provider state if it matters.
-        print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
+    if not _orch_sidecar:
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception as exc:
+            # Discovery failures must not block dashboard startup outright —
+            # log and proceed; the gate's fail-closed branch will surface
+            # the missing-provider state if it matters.
+            print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
     # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
     # agents via tui_gateway.server._make_agent.  That path only snapshots the
@@ -10631,18 +10662,19 @@ def cmd_dashboard(args):
     # this, a profile's configured MCP servers never connect, so desktop
     # sessions show no MCP tools.  Spawn discovery in the background here so a
     # slow/dead server can't block dashboard startup.
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+    if not _orch_sidecar:
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="dashboard-mcp-discovery",
-        )
-    except Exception:
-        logger.debug(
-            "Background MCP tool discovery failed at dashboard startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="dashboard-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at dashboard startup",
+                exc_info=True,
+            )
 
     from hermes_cli.web_server import start_server
 
@@ -10651,7 +10683,8 @@ def cmd_dashboard(args):
     # instead of hard-failing inside start_server. Non-interactive callers
     # (Docker/s6, CI, --no-open pipelines) fall through to start_server's
     # fail-closed SystemExit unchanged.
-    _maybe_setup_dashboard_auth_interactively(args)
+    if not _orch_sidecar:
+        _maybe_setup_dashboard_auth_interactively(args)
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
@@ -10665,6 +10698,7 @@ def cmd_dashboard(args):
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
+        orch_sidecar=_orch_sidecar,
     )
 
 
@@ -11454,16 +11488,18 @@ def main():
     # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
     # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.
-    try:
-        _cleanup_quarantined_exes()
-    except Exception:
-        pass
+    if not _is_orch_sidecar_process():
+        try:
+            _cleanup_quarantined_exes()
+        except Exception:
+            pass
 
     # If the checkout changed since the last launch (hermes update, manual
     # git pull, old-updater update that predates newer clears), sweep stale
     # __pycache__ once so no process — this one's lazy imports included —
     # resolves fresh source against old bytecode. Never raises.
-    _sweep_stale_bytecode_if_checkout_changed()
+    if not _is_orch_sidecar_process():
+        _sweep_stale_bytecode_if_checkout_changed()
 
     # Self-heal a venv left half-built by an interrupted ``hermes update``
     # (Ctrl-C, terminal close, WSL OOM mid-install). Skip when the user is
@@ -11475,11 +11511,12 @@ def main():
     # ``hermes skills install update``) merely defers recovery one launch;
     # under-matching (missing ``hermes -p work update``) would race a recovery
     # install against the real one. Loose wins.
-    try:
-        if "update" not in sys.argv[1:]:
-            _recover_from_interrupted_install()
-    except Exception:
-        pass
+    if not _is_orch_sidecar_process():
+        try:
+            if "update" not in sys.argv[1:]:
+                _recover_from_interrupted_install()
+        except Exception:
+            pass
 
     if _try_termux_fast_tui_launch():
         return
