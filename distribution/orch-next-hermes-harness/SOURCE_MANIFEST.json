@@ -97,7 +97,7 @@
     "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
     "locator": {
       "binding": "runtime/RUNTIME_BINDING.json",
-      "binding_sha256": "40af646ae6660453123d92340895f055f7b9b5c8db2d86c76dbd137dde32e700",
+      "binding_sha256": "f3356b54c45371979c244d41734ed1f8246c39aa9ca83a94e8c5470e1b657be1",
       "mode": "manifest_relative",
       "rollback_identity": "installed:orch-next-hermes-harness@0.1.42"
     },
@@ -175,7 +175,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "d69df5306f0af61b11219ddb2fdd2b60571ca6bd03b204daba4b94c5c9315e32",
+      "digest": "c7ed37a4492e2cfdace3618c35992accef2e12a54cdd20316c795e5c417cbf98",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"
@@ -194,6 +194,7 @@
   "quarantined_exclusions": [
     "fable5-os-durable-user-value-goal"
   ],
+  "release_note": "0.1.48: non-gated front-door WebSocket auth accepts X-Hermes-Session-Token; mixed or duplicate credentials remain fail-closed.",
   "required_admitted_skills": [
     "fable5-derived-advisory-synthesis"
   ],

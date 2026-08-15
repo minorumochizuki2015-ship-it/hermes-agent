@@ -39,6 +39,10 @@ from agent.skill_materializer import (  # noqa: E402
 
 PLUGIN_ID = "orch-next-hermes-harness"
 PLUGIN_VERSION = "0.1.48"
+PLUGIN_RELEASE_NOTE = (
+    "0.1.48: non-gated front-door WebSocket auth accepts "
+    "X-Hermes-Session-Token; mixed or duplicate credentials remain fail-closed."
+)
 MARKETPLACE_ID = "orch-next-hermes-local"
 LEGACY_PLUGIN_ID = "orch-next-codex-harness"
 SOURCE_SCHEMA = "orch-next-hermes-harness-distribution.v1"
@@ -1808,6 +1812,7 @@ def _source_manifest(
             "source_root": OPERATIONAL_SOURCE_ROOT,
             "stream_format": "lowercase_sha256_two_spaces_repo_relative_path_lf",
         },
+        "release_note": PLUGIN_RELEASE_NOTE,
         "version": PLUGIN_VERSION,
     }
     manifest["operational_source_binding"]["self_content_binding"]["digest"] = (
