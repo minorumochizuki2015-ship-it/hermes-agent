@@ -15151,15 +15151,51 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     Audit-logs the rejection so operators can debug "WS keeps closing"
     issues from the log.
     """
-    def _credential_values(source: object, name: str) -> list[str]:
+    def _credential_values(
+        source: object, name: str, *, header: bool = False
+    ) -> list[str]:
         if source is None:
             return []
+
+        if header:
+            # Uvicorn's websockets implementation preserves raw header-name
+            # casing, while Starlette Headers.getlist() lowercases only its
+            # lookup key. Inspect raw pairs so the client's title-cased name
+            # and any differently-cased duplicate follow the same rule.
+            raw = getattr(source, "raw", None)
+            if raw is not None:
+                wanted = name.encode("ascii").lower()
+                values: list[str] = []
+                for raw_name, raw_value in raw:
+                    if raw_name.lower() != wanted:
+                        continue
+                    if isinstance(raw_value, bytes):
+                        values.append(raw_value.decode("latin-1"))
+                    else:
+                        values.append(str(raw_value))
+                return values
+
+            items = getattr(source, "items", None)
+            if callable(items):
+                wanted = name.lower()
+                return [
+                    str(value)
+                    for key, value in items()
+                    if str(key).lower() == wanted
+                ]
+
         getlist = getattr(source, "getlist", None)
         if callable(getlist):
-            return [value for value in getlist(name) if value]
+            values = list(getlist(name))
+            return values if header else [value for value in values if value]
         get = getattr(source, "get", None)
-        value = get(name, "") if callable(get) else ""
-        return [value] if value else []
+        if not callable(get):
+            return []
+        sentinel = object()
+        value = get(name, sentinel)
+        if value is sentinel:
+            return []
+        return [value] if header or value else []
 
     query_params = getattr(ws, "query_params", None)
     headers = getattr(ws, "headers", None)
@@ -15169,10 +15205,15 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             ("internal", _credential_values(query_params, "internal")),
             ("ticket", _credential_values(query_params, "ticket")),
             ("token", _credential_values(query_params, "token")),
-            ("header", _credential_values(headers, _SESSION_HEADER_NAME)),
+            (
+                "header",
+                _credential_values(headers, _SESSION_HEADER_NAME, header=True),
+            ),
         )
         for value in values
     ]
+    # Never select a credential by precedence: multiple occurrences or
+    # mechanisms fail closed, including mixed header casing.
     if len(presented) > 1:
         return "ambiguous_credential", "ambiguous"
 
@@ -15234,6 +15275,23 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 def _ws_auth_ok(ws: "WebSocket") -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
     return _ws_auth_reason(ws)[0] is None
+
+
+def _log_ws_auth_rejection(
+    ws: "WebSocket", surface: str, reason: str, credential: str
+) -> None:
+    """Log only typed WS-auth context; never include credential values."""
+    peer = ws.client.host if ws.client else "?"
+    path = ws.url.path
+    _log.warning(
+        "%s auth rejected reason=%s mode=%s cred=%s path=%s peer=%s",
+        surface,
+        reason,
+        _ws_auth_mode(),
+        credential,
+        path,
+        peer,
+    )
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -16320,7 +16378,9 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, credential = _ws_auth_reason(ws)
+    if auth_reason is not None:
+        _log_ws_auth_rejection(ws, "gateway", auth_reason, credential)
         await ws.close(code=4401)
         return
 
@@ -16351,7 +16411,9 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, credential = _ws_auth_reason(ws)
+    if auth_reason is not None:
+        _log_ws_auth_rejection(ws, "pub", auth_reason, credential)
         await ws.close(code=4401)
         return
 
@@ -16379,7 +16441,9 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth_reason, credential = _ws_auth_reason(ws)
+    if auth_reason is not None:
+        _log_ws_auth_rejection(ws, "events", auth_reason, credential)
         await ws.close(code=4401)
         return
 

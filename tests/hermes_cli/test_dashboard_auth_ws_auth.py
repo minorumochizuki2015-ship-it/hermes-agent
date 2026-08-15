@@ -13,11 +13,14 @@ pre-existing regression unrelated to dashboard-auth.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
 
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers, QueryParams
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
@@ -194,7 +197,7 @@ def _fake_ws(
 
     return SimpleNamespace(
         query_params=_QP(query),
-        headers=headers or {},
+        headers=headers if headers is not None else {},
         client=SimpleNamespace(host=client_host),
         url=SimpleNamespace(path=path),
     )
@@ -246,6 +249,145 @@ class TestWsAuthSessionHeaderContract:
         from agent.transports.hermes_orch_front_door import _SESSION_HEADER_NAME
 
         assert _SESSION_HEADER_NAME == web_server._SESSION_HEADER_NAME
+
+
+class TestWsAuthProductionShapedHeaders:
+    """Raw ASGI headers retain spelling and repeated occurrences."""
+
+    def _ws(self, raw_headers):
+        return _fake_ws(
+            query={},
+            headers=Headers(raw=raw_headers),
+        )
+
+    def test_exact_client_title_case_header_is_accepted(self, loopback_app):
+        ws = self._ws([
+            (
+                b"X-Hermes-Session-Token",
+                web_server._SESSION_TOKEN.encode("ascii"),
+            ),
+        ])
+        assert web_server._ws_auth_reason(ws) == (None, "header")
+
+    def test_all_lowercase_header_is_accepted(self, loopback_app):
+        ws = self._ws([
+            (
+                b"x-hermes-session-token",
+                web_server._SESSION_TOKEN.encode("ascii"),
+            ),
+        ])
+        assert web_server._ws_auth_reason(ws) == (None, "header")
+
+    @pytest.mark.parametrize(
+        "raw_headers",
+        [
+            [
+                (b"x-hermes-session-token", web_server._SESSION_TOKEN.encode()),
+                (b"X-HERMES-SESSION-TOKEN", web_server._SESSION_TOKEN.encode()),
+            ],
+            [
+                (b"X-Hermes-Session-Token", web_server._SESSION_TOKEN.encode()),
+                (b"X-Hermes-Session-Token", web_server._SESSION_TOKEN.encode()),
+            ],
+        ],
+        ids=["mixed-case", "same-case"],
+    )
+    def test_repeated_header_occurrences_are_ambiguous(
+        self, loopback_app, raw_headers
+    ):
+        assert web_server._ws_auth_reason(self._ws(raw_headers)) == (
+            "ambiguous_credential",
+            "ambiguous",
+        )
+
+    @pytest.mark.parametrize(
+        "raw_value",
+        [
+            lambda: f"{web_server._SESSION_TOKEN},{web_server._SESSION_TOKEN}",
+            lambda: "",
+            lambda: f" {web_server._SESSION_TOKEN} ",
+        ],
+        ids=["comma-combined", "empty", "surrounding-whitespace"],
+    )
+    def test_single_header_value_is_compared_as_one_literal_value(
+        self, loopback_app, raw_value
+    ):
+        value = raw_value().encode("ascii")
+        ws = self._ws([(b"X-Hermes-Session-Token", value)])
+        assert web_server._ws_auth_reason(ws) == ("token_mismatch", "header")
+
+
+class TestWsAuthAmbiguityCompatibility:
+    """The 0.1.48 fail-closed ambiguity hardening is intentional."""
+
+    def test_gated_ticket_and_legacy_token_remain_ambiguous(self, gated_app):
+        ws = _fake_ws(query={})
+        ws.query_params = QueryParams(
+            [
+                ("ticket", "short-lived-ticket"),
+                ("token", web_server._SESSION_TOKEN),
+            ]
+        )
+        assert web_server._ws_auth_reason(ws) == (
+            "ambiguous_credential",
+            "ambiguous",
+        )
+
+    def test_duplicate_query_tokens_remain_ambiguous(self, loopback_app):
+        ws = _fake_ws(query={})
+        ws.query_params = QueryParams(
+            [("token", web_server._SESSION_TOKEN), ("token", web_server._SESSION_TOKEN)]
+        )
+        assert web_server._ws_auth_reason(ws) == (
+            "ambiguous_credential",
+            "ambiguous",
+        )
+
+
+@pytest.mark.parametrize(
+    "route_name,path",
+    [
+        ("gateway_ws", "/api/ws"),
+        ("pub_ws", "/api/pub"),
+        ("events_ws", "/api/events"),
+    ],
+)
+def test_rejected_ws_upgrade_logs_once_with_sanitized_context(
+    loopback_app, monkeypatch, caplog, route_name, path
+):
+    monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    original_reason = web_server._ws_auth_reason
+    calls = []
+
+    def counted_reason(ws):
+        calls.append(ws)
+        return original_reason(ws)
+
+    monkeypatch.setattr(web_server, "_ws_auth_reason", counted_reason)
+    ws = _fake_ws(query={}, path=path)
+    closed = []
+
+    async def close(*, code, reason=None):
+        closed.append((code, reason))
+
+    ws.close = close
+    with caplog.at_level(logging.WARNING, logger=web_server._log.name):
+        asyncio.run(getattr(web_server, route_name)(ws))
+
+    assert len(calls) == 1
+    assert closed and closed[0][0] == 4401
+    records = [
+        record
+        for record in caplog.records
+        if "auth rejected" in record.getMessage()
+    ]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "reason=no_credential" in message
+    assert "mode=loopback" in message
+    assert "cred=none" in message
+    assert f"path={path}" in message
+    assert "peer=127.0.0.1" in message
 
 
 class TestWsAuthOkGated:
