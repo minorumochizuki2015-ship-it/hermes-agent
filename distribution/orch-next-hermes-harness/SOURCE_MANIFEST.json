@@ -162,7 +162,7 @@
     }
   },
   "operational_profile_index": {
-    "digest": "aee21154ff76f87174122c0e7bb8cd207b2522a6e338ee6b0802d67de2bedbd6",
+    "digest": "6665027e6fdf8730e388b9d3d7d8700b9fffa59a59507dc8e3063e1438ad8e49",
     "identity": "orch-next-hermes-compact-operational-profile.v1",
     "path": "OPERATIONAL_PROFILE_INDEX.json",
     "schema": "orch-next-hermes-operational-profile-index.v1"
@@ -175,7 +175,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "f194a1946d066df4621601c162cfa653fab2588c644c545123dcbf072f14030f",
+      "digest": "57117bd07628f6724b2f4e0a182b225c358260303286d9dc8d89c344284c58c7",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"

@@ -31,7 +31,7 @@
     "topology": "topology_neutral"
   },
   "identity": "orch-next-hermes-compact-operational-profile.v1",
-  "index_digest": "bca511f101e22e9ed6a2619686758d61efba97d35843bb97f96e1560cab72acb",
+  "index_digest": "c904ec57fae393eb14177338195a4b328ca3dbeb9574d6a91dc5888d81e3cbd2",
   "maestro_skill_source": {
     "adaptation": "existing_hermes_operational_skill_tree",
     "files": [
@@ -428,10 +428,10 @@
       "materialization_binding": {
         "compiler_digest": "ed788818637490d8407476dfcf7c8e046748097c80d3f2cdfc2ddca92a33046d",
         "compiler_identity": "hermes-agent.skill-materializer",
-        "coverage_profile_digest": "1cd9f6ab0bb03a383f41d8676a587f32f3e19f2ec9613273d79df1309c9d17c8",
+        "coverage_profile_digest": "0141e81a6cbba0553327670473054fff6c2d66b32778681d2476b8c8984da95f",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "5b3d123c12fe18ed11f82a811d292f686d9afc738d73bee82265919942d73895",
-        "semantic_operational_digest": "d04fab9343fd08edb99768de261ad178a281e9a100fc9de2b419562a890db4d0"
+        "profile_digest": "d359901bba39269b8ec91b9bd6cbe23c3b50cedee6e76b276dcbda67dd3c6439",
+        "semantic_operational_digest": "10c5ceb558d8a5d3e35efa7b6ba0298525c14c384c13254149c9e2677076fea9"
       },
       "plugin_binding": {
         "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
@@ -441,7 +441,24 @@
         "package_version": "0.1.47"
       },
       "qualified_skill_id": "orch-next-hermes-harness:design-taste",
-      "required_references": [],
+      "required_references": [
+        {
+          "path": "references/anti-generic-rules.md",
+          "sha256": "c6e11d852a86ca474a7ec4658bf01b6a6cdc22ab0a153387024e03d9145abe34"
+        },
+        {
+          "path": "references/japanese-typography.md",
+          "sha256": "8a3d8e169d4641b71db380600febec9b5c81aeb488461dd1372c00182a0edf1b"
+        },
+        {
+          "path": "references/llmo-aio-evidence.md",
+          "sha256": "cea8642ab722d123e20d0ecf7b41ef13de942a2f1da5dfb2160a2cbe9e330d56"
+        },
+        {
+          "path": "references/reference-site-teardowns.md",
+          "sha256": "4273dea046f3804a020189023959656fa5094429b0c7b45de3b7d0d4389164e6"
+        }
+      ],
       "source_binding": {
         "path": "skills/design-taste/SKILL.md",
         "skill_sha256": "9dbdd83666215f9b679f2ee4eb90f1b59e92f4fe3edcd70f77225417d7683a9c",
