@@ -32,5 +32,5 @@
   "name": "orch-next-hermes-harness",
   "repository": "https://github.com/NousResearch/hermes-agent",
   "skills": "./skills/",
-  "version": "0.1.47"
+  "version": "0.1.48"
 }

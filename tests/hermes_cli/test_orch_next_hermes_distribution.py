@@ -1384,7 +1384,7 @@ def test_mk733j_successor_closure_is_pinned_to_integrated_maestro_source() -> No
         "scripts/ops/mk747_fable5_cognitive_core.py",
     }
 
-    assert distribution.PLUGIN_VERSION == "0.1.47"
+    assert distribution.PLUGIN_VERSION == "0.1.48"
     assert distribution.SDO_PRODUCER_SOURCE_REVISION == (
         "c25555b54315b8dc868d12b8699b500b9aab8094"
     )
@@ -1711,7 +1711,7 @@ def test_checked_in_bundle_is_exact_dual_channel_source() -> None:
     assert source_manifest["mcp"]["locator"]["mode"] == (
         distribution.RUNTIME_LOCATOR_MODE_PORTABLE
     )
-    assert source_manifest["version"] == "0.1.47"
+    assert source_manifest["version"] == "0.1.48"
     assert source_manifest["maestro_skill_source"] == (
         distribution._maestro_skill_source_binding()
     )
@@ -2747,7 +2747,7 @@ def test_0116_install_preserves_019_rollback_directory(tmp_path: Path) -> None:
         current,
     )
 
-    assert distribution.PLUGIN_VERSION == "0.1.47"
+    assert distribution.PLUGIN_VERSION == "0.1.48"
     assert rollback_marker.read_text(encoding="utf-8") == "0.1.9-prior\n"
     assert current.is_dir()
 

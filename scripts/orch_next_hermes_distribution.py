@@ -38,7 +38,7 @@ from agent.skill_materializer import (  # noqa: E402
 )
 
 PLUGIN_ID = "orch-next-hermes-harness"
-PLUGIN_VERSION = "0.1.47"
+PLUGIN_VERSION = "0.1.48"
 MARKETPLACE_ID = "orch-next-hermes-local"
 LEGACY_PLUGIN_ID = "orch-next-codex-harness"
 SOURCE_SCHEMA = "orch-next-hermes-harness-distribution.v1"
@@ -117,7 +117,13 @@ SDO_PRODUCER_SOURCE_REVISION = "c25555b54315b8dc868d12b8699b500b9aab8094"
 SDO_PRODUCER_SOURCE_TREE = "ba7e28fef29e9a28c93ff9226f260e74bc061e3c"
 ROLLBACK_VERSION = "0.1.42"
 ROLLBACK_IDENTITY = f"installed:{PLUGIN_ID}@{ROLLBACK_VERSION}"
-PREDECESSOR_SOURCE_ONLY_VERSIONS = ("0.1.43", "0.1.44", "0.1.45", "0.1.46")
+PREDECESSOR_SOURCE_ONLY_VERSIONS = (
+    "0.1.43",
+    "0.1.44",
+    "0.1.45",
+    "0.1.46",
+    "0.1.47",
+)
 SDO_PRODUCER_MIRROR_FILES = (
     "scripts/ops/issue_inc178_current_transition.py",
     "scripts/ops/mk_whole_goal_control.py",
