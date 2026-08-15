@@ -27,7 +27,7 @@
     "profile": "skills/heartbeat-cmd-control-guard/OPERATIONAL_PROFILE.md",
     "profile_sha256": "a57c57fc6cbe65c5657324ebbc737a370c7ef24ea6ae5cc2f0305ec94607c0be",
     "source": "scripts/ops/mk_whole_goal_control.py",
-    "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+    "source_revision": "af162d0576abf1c243afc53a6f2deaa669e0417f",
     "source_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
   },
   "hermes_agent_runtime": {
@@ -97,7 +97,7 @@
     "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
     "locator": {
       "binding": "runtime/RUNTIME_BINDING.json",
-      "binding_sha256": "3c9a37fa17fb425110185f54aa0577f96169b9a64dd749f37cac58923cbc87ef",
+      "binding_sha256": "3b418c8efb2a95313134d3c7667c1ccab266ae36b0cf2d65d7b082d0e8bfe4a1",
       "mode": "manifest_relative",
       "rollback_identity": "installed:orch-next-hermes-harness@0.1.42"
     },
@@ -143,7 +143,7 @@
         "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
       }
     },
-    "profile_digest": "7c7a50035c74a05ef4e6edafb80130605642fea6fa44e127f41771828a7ec777",
+    "profile_digest": "87a4c916db5722cfe5eac5f76a7b08c355643c0effe5f778fad4f1214ac5414b",
     "prompt_materialization": "metadata_index_then_selected_skill_on_demand",
     "runtime_baseline": {
       "commit": "f80f453ae0679347e38abc917c7f94f717bf96c5",
@@ -157,7 +157,7 @@
       "profile": "skills/heartbeat-cmd-control-guard/OPERATIONAL_PROFILE.md",
       "profile_sha256": "a57c57fc6cbe65c5657324ebbc737a370c7ef24ea6ae5cc2f0305ec94607c0be",
       "source": "scripts/ops/mk_whole_goal_control.py",
-      "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+      "source_revision": "af162d0576abf1c243afc53a6f2deaa669e0417f",
       "source_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
     }
   },
@@ -175,7 +175,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "8e8627aa923bb7ea3cae1a3f1813380731009c6e90f561bfaa2c8c42ef785403",
+      "digest": "4b44120e5cf9e94b75a299a0f421c7c368741f6c2fbd35ce2dcfddbd3884e729",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"
