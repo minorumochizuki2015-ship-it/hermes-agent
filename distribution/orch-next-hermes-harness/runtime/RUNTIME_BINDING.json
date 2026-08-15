@@ -229,8 +229,8 @@
   "runtime_files_digest": "17b6e7b8bac2b68dc7fcf85f50bf35af3ae714ccbf0ee865871db31796ea455e",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
-  "runtime_python_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a",
-  "runtime_python_size": 52448,
+  "runtime_python_sha256": "4c78423e7d5986362ac04df40edb18cdd1174f9818d653402e3abbd2a5bbf793",
+  "runtime_python_size": 49968,
   "schema": "orch-next-hermes-runtime-locator.v1",
   "sdo_producer": {
     "consumer_path": "scripts/ops/issue_inc178_current_transition.py",
