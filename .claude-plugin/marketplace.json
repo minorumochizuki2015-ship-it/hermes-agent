@@ -1,0 +1,15 @@
+{
+  "description": "Local qualification marketplace for the exclusive ORCH-Next Hermes operational harness.",
+  "name": "orch-next-hermes-local",
+  "owner": {
+    "name": "ORCH-Next Hermes"
+  },
+  "plugins": [
+    {
+      "description": "Exclusive ORCH-Next operational skills and persistent session tools served by Hermes Agent.",
+      "name": "orch-next-hermes-harness",
+      "source": "./distribution/orch-next-hermes-harness",
+      "version": "0.1.47"
+    }
+  ]
+}

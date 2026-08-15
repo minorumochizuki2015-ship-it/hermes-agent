@@ -1,0 +1,20 @@
+{
+  "interface": {
+    "displayName": "ORCH-Next Hermes Local"
+  },
+  "name": "orch-next-hermes-local",
+  "plugins": [
+    {
+      "category": "Coding",
+      "name": "orch-next-hermes-harness",
+      "policy": {
+        "authentication": "ON_INSTALL",
+        "installation": "AVAILABLE"
+      },
+      "source": {
+        "path": "./distribution/orch-next-hermes-harness",
+        "source": "local"
+      }
+    }
+  ]
+}

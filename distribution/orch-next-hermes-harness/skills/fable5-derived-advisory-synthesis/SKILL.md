@@ -1,7 +1,7 @@
 ---
-name: skill-select
+name: fable5-derived-advisory-synthesis
 version: "1.0.0"
-description: Use when multiple skills could apply; not exact commands.
+description: Use for admitted Fable5 findings; not provider execution.
 author: ORCH-Next contributors and Hermes Agent
 license: MIT
 metadata:
@@ -11,59 +11,58 @@ metadata:
     ownership_manifest: "maestro-kernel:research/mk675/fable5_decision_os/mk737_p1a_skill_distribution_ownership.json"
 ---
 
-# Skill Select Skill
+# Fable5 Derived Advisory Synthesis Skill
 
-Match current user intent and repository scope to discoverable skills, prefer namespaced current sources, and avoid stale or overlapping identities.
+Map each allowed advisory finding to an existing phase, task, fixture, validator, patch, rollback, or concrete rejection reason.
 
-## Fable design-weakening root-cause reframe
+## INC-191 full-fidelity consumer adoption
 
 Marker: `INC191_FABLE5_FULL_FIDELITY_CONSUMER_ADOPTION_V1`.
 
-When the user reports that a complete causal design was narrowed before it was
-implemented or naturally measured, set:
-
-```text
-latest_context_pull_detected: true
-context_root_cause_reframe: the consumer replaced stable-ID content adoption
-  with projected-cost topology reduction before natural evidence
-non_fire_detection_path: reject incomplete stable-ID coverage, intake-only
-  consumption, controller-selected AG-03 suppression, cost-only narrowing,
-  and narrowing without an equivalent replacement
-```
-
-Select `fable5-derived-advisory-synthesis`, `incident-to-skill`,
-`codex-parallel-lanes`, and `orch-skill-ecosystem-improvement`, with the current
-Hermes controller owning `AG-01` and the serial integration responsibility in
-`AG-04`. Preserve a controller-independent `AG-03` for every repeated
-user-first-detection, critical shared-runtime, cross-repository, lifecycle, or
-first-natural-acceptance train, plus bounded `AG-02`, separate `AG-05`, and
-sanitized `AG-06`.
-
-The full contract is `AG-01` one controller/union synthesizer, `AG-02` bounded
-disjoint writers, `AG-03` an independent causal challenger, `AG-04` an always-
-owned serial integrator, `AG-05` acceptance separate from the writer, and
-`AG-06` sanitized train-close learning and comparable-case capture.
-
-Do not make Fable availability a runtime dependency. Internalize admitted
-stable IDs and decision primitives into existing Hermes skills, fixtures,
-validators, or implementation paths. Each stable ID receives exactly one of
+After an admitted MK734/MK735 multi-file return, consume every supplied
+implementation-card, checklist-predicate, negative-fixture, agent-role, and
+method stable ID. Each stable ID has exactly one disposition:
 `implemented`, `already_implemented_verified`, `active_owner`,
-`repo_fact_contradiction`, or `protected_authority_blocker`. Require at least
-one `content_implementation_return`; prompt, intake, ledger, report, status, or
-validator-only returns fail `BLOCKED_FOR_FABLE_CONTENT_RETURN_MISSING` and
-cannot close the recurrence.
+`repo_fact_contradiction`, or `protected_authority_blocker`. Cost-only,
+optional-advice, generic-defer, and silent-omission dispositions are invalid.
+An ID omitted by the source is a named `repo_fact_contradiction`, never an
+invented finding.
 
-Narrowing is allowed only for a repo-fact contradiction, protected boundary,
-verified duplicate, or concrete implementation hazard with an equivalent
-replacement. Cost may tune model, effort, and checkpoint, never delete
-architecture, challenge, integration, acceptance, or learning before natural
-evidence. Total cost includes tokens/context, wall clock, review, rework,
-coordination, recurrence, user correction, manual relay, capability delay, and
-discarded-provider work. Unknown cost is `UNKNOWN`, not zero.
-`support_work_progress_credit=0` cannot remove a causal prevention dependency,
-and
-`observed_effective_prevention=false` remains until a later comparable natural
-case prevents user-first detection.
+Intake, traceability, or ledger coverage is not content consumption. At least
+one admitted stable ID must produce a `content_implementation_return` that
+binds the stable ID, existing target path, implemented decision primitive or
+behavior, changed action or blocker, focused verification, rollback, and
+nonclaims. `already_implemented_verified` is content-bearing only when it names
+the exact existing path and verified behavior. An intake/ledger-only result
+returns `BLOCKED_FOR_FABLE_CONTENT_RETURN_MISSING` and cannot claim adoption.
+
+Narrow an `ADOPT` or `ADAPT` target only for one of four reasons: a concrete
+repo-fact contradiction, a protected boundary, a verified duplicate, or a
+concrete implementation hazard. Every narrowing binds evidence and an
+equivalent replacement that preserves the same goal. Estimated cost may tune
+model, effort, checkpoint, or deterministic-remainder routing; it cannot delete
+architecture, premise challenge, counterhypothesis search, independent
+challenge, integration ownership, acceptance separation, or learning before
+natural execution evidence.
+
+For repeated user-first detection, critical shared-runtime, cross-repository,
+lifecycle, and first-natural-acceptance trains, preserve the full role contract:
+
+- `AG-01`: exactly one operational controller and union synthesizer;
+- `AG-02`: bounded implementation writers with disjoint ownership;
+- `AG-03`: one train-level independent causal challenger that the controller
+  cannot suppress because the blind spot may belong to that controller;
+- `AG-04`: an always-owned serial integrator that consumes content returns;
+- `AG-05`: acceptance exercised separately from the implementation writer;
+- `AG-06`: sanitized train-close learning and comparable-case capture.
+
+`support_work_progress_credit=0` denies direct product-progress credit; it is
+not permission to remove a causal prevention dependency. Total cost includes
+tokens/context, wall clock, review, rework, coordination, recurrence, user
+correction, manual relay, capability delay, and discarded-provider work.
+Unknown or unexercised cost stays `UNKNOWN`, never measured zero. Keep
+`observed_effective_prevention=false` until a later comparable natural case
+changes action before user correction.
 
 This is a self-contained Hermes runtime contract. It does not create another
 plugin, installer, bundle, configuration, schema, queue, or control family.
@@ -115,7 +114,7 @@ that cannot change the current implementation or user outcome.
 
 1. Restate the normal-user capability this operation will make possible and
    the evidence layer it can actually establish.
-2. Selection drives Hermes execution only; authority-only skills supply typed decisions and are never treated as execution routes.
+2. Fable5 supplies design judgment only; it cannot establish repo truth, authority, provider execution, acceptance, or completion.
 3. Use native Hermes tools such as `read_file`, `search_files`, `terminal`,
    `patch`, `delegate_task`, `cronjob`, or `vision_analyze` only when
    they are available and necessary for this skill.
@@ -124,24 +123,6 @@ that cannot change the current implementation or user outcome.
    effectiveness, and final completion separate.
 5. Return the capability delta, blocker delta, exact owner and write set,
    checks run, rollback, next Hermes action, and precise non-claims.
-
-## Critical route and CMD surface selection
-
-For Codex-internal critical planning, integration, authority,
-approval-handoff, and final-audit work, select `agent-dispatch` and its
-`critical_thread_route.v1` executable consumer before thread creation. The
-critical route is Codex-internal only; planner, integrator, and audit classes
-must not include an app-bound CMD.
-
-CMD-class work is app-bound and never enters `critical_thread_route.v1`.
-Resolve `cmd_primary` or `cmd_alternate` from `controls/routing-table.json`:
-`cmd_primary` is the manual `fable5-ultra`/`ultra` Claude app route and
-`cmd_alternate` is the manual `gpt-5.6-sol`/`max` Codex app route with
-`auto_fallback=false`. A request carrying `surface_kind=app_bound_cmd` is
-rejected from the critical route with
-`BLOCKED_FOR_CRITICAL_ROUTE_APP_BOUND_CMD`, recorded as advisory, and replans
-through the routing-table CMD surface while preserving the current action and
-allowing the rest of the request to continue.
 
 ## Failure behavior
 

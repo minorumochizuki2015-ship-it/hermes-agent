@@ -1,0 +1,329 @@
+{
+  "authority_bundle_digest": "7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e",
+  "authority_source": "scripts/ops/mk_whole_goal_control.py",
+  "authority_source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+  "authority_source_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b",
+  "minimum_source_revision": "8585d5d9de143750e85629000e62576a1e082169",
+  "mode": "manifest_relative",
+  "plugin_id": "orch-next-hermes-harness",
+  "plugin_version": "0.1.47",
+  "rollback_identity": "installed:orch-next-hermes-harness@0.1.42",
+  "runtime_files": [
+    {
+      "path": "scripts/orch_next_hermes_mcp_launcher.py",
+      "sha256": "98085796d88a677b6e430a8395621924c109193fc437e2e05b1128e35250cd74"
+    },
+    {
+      "path": "agent/__init__.py",
+      "sha256": "99f85bec3844de2bfbd984d64768b22a3a4c5dba01375c6832b292d24e1617e4"
+    },
+    {
+      "path": "agent/skill_materializer.py",
+      "sha256": "ed788818637490d8407476dfcf7c8e046748097c80d3f2cdfc2ddca92a33046d"
+    },
+    {
+      "path": "agent/skill_utils.py",
+      "sha256": "0e3066a3609695ef020fb0a74ad7b22f6a4df5e035032845a859082d40f68e6d"
+    },
+    {
+      "path": "agent/jiter_preload.py",
+      "sha256": "1df1336c3c6bc67904dcc13572c159d169afa71ad94494dc7ddebe8843337536"
+    },
+    {
+      "path": "agent/secret_sources/__init__.py",
+      "sha256": "b7dab98c318aa0b1c7c2a6abb0a2ea79928cacc91f500fd5028c887feb665c11"
+    },
+    {
+      "path": "agent/secret_sources/_cache.py",
+      "sha256": "0a71226a53073d77dbcff7bb4d8a3e4d30eed4d242f3471945bf5a067df16677"
+    },
+    {
+      "path": "agent/secret_sources/base.py",
+      "sha256": "f970ca6a2774e515963a40e32d968dcf1e28202755365614aa363ee669058577"
+    },
+    {
+      "path": "agent/secret_sources/bitwarden.py",
+      "sha256": "64654db0ca3ff8f6e69479786a7d1e202291f657414cc06608f3e0e5e234c6d5"
+    },
+    {
+      "path": "agent/secret_sources/command.py",
+      "sha256": "3d694a486f0bbbcbb2e4c15a97d2358c47345a8ddc6460ef516a2e3671005a61"
+    },
+    {
+      "path": "agent/transports/hermes_orch_front_door.py",
+      "sha256": "95f69780213396ae7c80a843748d9f99afb53a71fcd68bc8e62424425345716e"
+    },
+    {
+      "path": "agent/transports/hermes_tools_mcp_server.py",
+      "sha256": "670965d5cae8f5ab273df43b880dff6036709369f5f14c043f531d48d8842146"
+    },
+    {
+      "path": "hermes_cli/__init__.py",
+      "sha256": "9f223ea0f880b49becda6bae90235afacf1fc63aa9d3940c642816cc557d2924"
+    },
+    {
+      "path": "hermes_cli/audit_firing_admission.py",
+      "sha256": "1049a3d415518a7e975193171ebaf9b1c4898d38686ecc95569f2f19f3e6993d"
+    },
+    {
+      "path": "hermes_cli/env_loader.py",
+      "sha256": "a9598030743443edf8b3342b5178f6415911b108acf483ab21c71b9424ffd6ec"
+    },
+    {
+      "path": "hermes_cli/main.py",
+      "sha256": "b3a2fee833b79c9c8bf4f028e185843a78d1cb1d89f06eee284da97c563e0544"
+    },
+    {
+      "path": "hermes_cli/subcommands/dashboard.py",
+      "sha256": "5200b56bd3f92054f02b179102547648dc41b28e791944e5dbd94f11930ed021"
+    },
+    {
+      "path": "hermes_cli/web_server.py",
+      "sha256": "9e4b1297830b7bc0477b49584ac2b498aae1f5e9223e7b25a8bda2634beb998c"
+    },
+    {
+      "path": "hermes_constants.py",
+      "sha256": "a6f2db76bb541140687864766aefbd88bdd3485b0e888306980d903b2391b8e2"
+    },
+    {
+      "path": "hermes_state.py",
+      "sha256": "5182718c0fab151d3dde1281c9fd4e88bbfd4a6a206a2b6ed30c41654071a568"
+    },
+    {
+      "path": "model_tools.py",
+      "sha256": "770e2bc1f7d4eda7e6a4f83b2079073a50b09a13c7166ce9ce9544e98a2cf8ed"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "aedcde1032cf2e00f8bff6352a87d2cb30812f6b1668a05b198454a1ec5cc92a"
+    },
+    {
+      "path": "scripts/__init__.py",
+      "sha256": "32468daca7d503e73a5c54602f3191328e0a3d4cbe5e56021c03af25654b9dbd"
+    },
+    {
+      "path": "scripts/orch_next_hermes_plugin_adoption.py",
+      "sha256": "d7722d7a58f5945f43b1887e33d70cf1cf8f40cec23aa0d9bea6aca84f686495"
+    },
+    {
+      "path": "scripts/orch_next_hermes_serve_service.py",
+      "sha256": "5d2ad6a9226782f9cf5d129426c393e95950fdf2dc836d5885b23d05d20691ae"
+    },
+    {
+      "path": "scripts/orch_next_hermes_serve_service_launcher.sh",
+      "sha256": "edb9a58987218c025c2cca87beae496b9d0042b2ba7bcdd6ded18f93b25bd775"
+    },
+    {
+      "path": "scripts/orch_next_hermes_session_token_source.py",
+      "sha256": "7671904f1ebd93b5d36a0482f1c86d1e212faa8ede45dc7106ffc078c7eba282"
+    },
+    {
+      "path": "tui_gateway/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tui_gateway/maestro_authority.py",
+      "sha256": "182f1895a61a4cde2b2002b0f31f0087ac2a2de2f33698afc7c9f062c48532ab"
+    },
+    {
+      "path": "tui_gateway/maestro_authority_allowed_signers",
+      "sha256": "218086ae46c18210e169300f346f6a596a133fdb3d9be5923e19662588b6874f"
+    },
+    {
+      "path": "tui_gateway/maestro_plugin_adoption_authority.py",
+      "sha256": "317f5e8c1ef776cbf5f0539aac8a209930292ee8d74d50a96532ce4dd64b1391"
+    },
+    {
+      "path": "tui_gateway/sdo_adapter.py",
+      "sha256": "22f16a4a6e565bb1eaf2b45016698a5f38a0aa016ef2a54096f57d83c278a3ac"
+    },
+    {
+      "path": "tui_gateway/server.py",
+      "sha256": "ec0b4ac386d785678633ec6881f6830aa433c6df250db5bb99bf9839a3b2f109"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/issue_inc178_current_transition.py",
+      "sha256": "3e64f8ff5a86ed455311512cc4708ff12691ba7aa48616e0d22725bec31be91f"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk_whole_goal_control.py",
+      "sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/resolve_mk94_priority_action_queue.py",
+      "sha256": "dceb9fbdc2213328ecd5f2e6764507752af777d02b22921fc0cfc44e28316201"
+    },
+    {
+      "path": "runtime/sdo_producer/research/mk675/fable5_derived/synthesis_records.json",
+      "sha256": "a44c3e620f6abfdce8011f25a51f1b2114401a362f34a164fbe9e49ff7f0fc5c"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_activation.py",
+      "sha256": "d41908bb9fa5383af63b04fc8913395bcac0c287a96a293b328361e2d27baa70"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_decision_os.py",
+      "sha256": "cab8203aa0ded50090180802e11620c944d22c0a602325a936d1de744965209b"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_hook_contract_self_test.py",
+      "sha256": "c31ebce2459a9afbe7957f615ea57f4c0bb76e4ecffacffb2d5e3ca9435c570f"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/verify_mk733j_n_implementation.py",
+      "sha256": "21ae47eb1d290757018ac1c44e6e53f9d6f88cc50edac2ba5f73bd39e83871ec"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/critical_thread_route.py",
+      "sha256": "b36c23bac978c685c929f421c7d68aedf20d044917b6c6f6f3567b77a9440519"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk_decision_preflight.py",
+      "sha256": "022e62cd08d4b1647483e9729149c78177ac661a884b96c7a3506adabacaa3c1"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_qualification.py",
+      "sha256": "5ea2453c1be243959be38f3ce0e0a4a423488f89685e7669c066653f073769e7"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_capability_bundles.py",
+      "sha256": "b4aa76823d3b531ef2d0dd043319ebb26e43f82c2c2fa649644b471cd31d1fbd"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_context_compiler.py",
+      "sha256": "d16b80f71f0ffd1b1c2850a0b7cd71ecd4c8b4472014e83966a39382ff6dc8e6"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/requirement_anchor_semantic.py",
+      "sha256": "fc0692e21cd4cd739bb0482c00ea80e767921d5f5afeb740a8f9715420394b13"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk_adaptive_work_pace.py",
+      "sha256": "429d3c9d2414ba611b695e28565db4fe1cc00aa488e2792def8c9104a899c40a"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk_fable5_execution_authority.py",
+      "sha256": "754f13330e34e8f341d3b1856347b0dfe250178b59b1d5ecde8c8ff1fb8db697"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk733j_schema_safety.py",
+      "sha256": "9b00438889ee2b24eef5e9a572433d29677b49555f5fb54adc18fe4b77e3a9b0"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/verify_task_ledger_v1.py",
+      "sha256": "ed4f401acc8ee253e9a3bab98ee661ac1987384fdf7d488c2a34104ee674de49"
+    },
+    {
+      "path": "runtime/sdo_producer/scripts/ops/mk747_fable5_cognitive_core.py",
+      "sha256": "9cc031ec45e9aa74b83cddbf6c6dad39408a238832ab0384f48907cc48d40460"
+    },
+    {
+      "path": "tools/skills_tool.py",
+      "sha256": "67dd32a49ceadf558b5df90263a1b6e36a105c4e829518f6e431e221fe4c53e6"
+    },
+    {
+      "path": "skills/orch-next/heartbeat-cmd-control-guard/scripts/heartbeat_control.py",
+      "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
+    }
+  ],
+  "runtime_files_digest": "403f6e3b19ac5556b8a4ae021e652454025abf05f8c9158d7d5626e8d1998742",
+  "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
+  "runtime_python": ".venv/bin/python",
+  "runtime_python_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a",
+  "runtime_python_size": 52448,
+  "schema": "orch-next-hermes-runtime-locator.v1",
+  "sdo_producer": {
+    "consumer_path": "scripts/ops/issue_inc178_current_transition.py",
+    "consumer_sha256": "3e64f8ff5a86ed455311512cc4708ff12691ba7aa48616e0d22725bec31be91f",
+    "control_path": "scripts/ops/mk_whole_goal_control.py",
+    "control_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b",
+    "fable_records_path": "research/mk675/fable5_derived/synthesis_records.json",
+    "fable_records_sha256": "a44c3e620f6abfdce8011f25a51f1b2114401a362f34a164fbe9e49ff7f0fc5c",
+    "files": [
+      {
+        "path": "scripts/ops/issue_inc178_current_transition.py",
+        "sha256": "3e64f8ff5a86ed455311512cc4708ff12691ba7aa48616e0d22725bec31be91f"
+      },
+      {
+        "path": "scripts/ops/mk_whole_goal_control.py",
+        "sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
+      },
+      {
+        "path": "scripts/ops/resolve_mk94_priority_action_queue.py",
+        "sha256": "dceb9fbdc2213328ecd5f2e6764507752af777d02b22921fc0cfc44e28316201"
+      },
+      {
+        "path": "research/mk675/fable5_derived/synthesis_records.json",
+        "sha256": "a44c3e620f6abfdce8011f25a51f1b2114401a362f34a164fbe9e49ff7f0fc5c"
+      },
+      {
+        "path": "scripts/ops/mk733j_activation.py",
+        "sha256": "d41908bb9fa5383af63b04fc8913395bcac0c287a96a293b328361e2d27baa70"
+      },
+      {
+        "path": "scripts/ops/mk733j_decision_os.py",
+        "sha256": "cab8203aa0ded50090180802e11620c944d22c0a602325a936d1de744965209b"
+      },
+      {
+        "path": "scripts/ops/mk733j_hook_contract_self_test.py",
+        "sha256": "c31ebce2459a9afbe7957f615ea57f4c0bb76e4ecffacffb2d5e3ca9435c570f"
+      },
+      {
+        "path": "scripts/ops/verify_mk733j_n_implementation.py",
+        "sha256": "21ae47eb1d290757018ac1c44e6e53f9d6f88cc50edac2ba5f73bd39e83871ec"
+      },
+      {
+        "path": "scripts/ops/critical_thread_route.py",
+        "sha256": "b36c23bac978c685c929f421c7d68aedf20d044917b6c6f6f3567b77a9440519"
+      },
+      {
+        "path": "scripts/ops/mk_decision_preflight.py",
+        "sha256": "022e62cd08d4b1647483e9729149c78177ac661a884b96c7a3506adabacaa3c1"
+      },
+      {
+        "path": "scripts/ops/mk733j_qualification.py",
+        "sha256": "5ea2453c1be243959be38f3ce0e0a4a423488f89685e7669c066653f073769e7"
+      },
+      {
+        "path": "scripts/ops/mk733j_capability_bundles.py",
+        "sha256": "b4aa76823d3b531ef2d0dd043319ebb26e43f82c2c2fa649644b471cd31d1fbd"
+      },
+      {
+        "path": "scripts/ops/mk733j_context_compiler.py",
+        "sha256": "d16b80f71f0ffd1b1c2850a0b7cd71ecd4c8b4472014e83966a39382ff6dc8e6"
+      },
+      {
+        "path": "scripts/ops/requirement_anchor_semantic.py",
+        "sha256": "fc0692e21cd4cd739bb0482c00ea80e767921d5f5afeb740a8f9715420394b13"
+      },
+      {
+        "path": "scripts/ops/mk_adaptive_work_pace.py",
+        "sha256": "429d3c9d2414ba611b695e28565db4fe1cc00aa488e2792def8c9104a899c40a"
+      },
+      {
+        "path": "scripts/ops/mk_fable5_execution_authority.py",
+        "sha256": "754f13330e34e8f341d3b1856347b0dfe250178b59b1d5ecde8c8ff1fb8db697"
+      },
+      {
+        "path": "scripts/ops/mk733j_schema_safety.py",
+        "sha256": "9b00438889ee2b24eef5e9a572433d29677b49555f5fb54adc18fe4b77e3a9b0"
+      },
+      {
+        "path": "scripts/ops/verify_task_ledger_v1.py",
+        "sha256": "ed4f401acc8ee253e9a3bab98ee661ac1987384fdf7d488c2a34104ee674de49"
+      },
+      {
+        "path": "scripts/ops/mk747_fable5_cognitive_core.py",
+        "sha256": "9cc031ec45e9aa74b83cddbf6c6dad39408a238832ab0384f48907cc48d40460"
+      }
+    ],
+    "root": "runtime/sdo_producer",
+    "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+    "source_tree": "ba7e28fef29e9a28c93ff9226f260e74bc061e3c"
+  },
+  "skill_closure_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+  "source_root": "../../..",
+  "upstream_commit": "f80f453ae0679347e38abc917c7f94f717bf96c5",
+  "upstream_tag": "v2026.8.13",
+  "upstream_version": "0.20.1"
+}

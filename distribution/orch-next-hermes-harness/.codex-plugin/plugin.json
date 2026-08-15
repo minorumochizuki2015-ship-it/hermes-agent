@@ -1,0 +1,36 @@
+{
+  "author": {
+    "name": "MOC",
+    "url": "https://github.com/NousResearch/hermes-agent"
+  },
+  "description": "Exclusive ORCH-Next operational skills and persistent session tools served by Hermes Agent.",
+  "homepage": "https://github.com/NousResearch/hermes-agent",
+  "interface": {
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "category": "Developer Tools",
+    "defaultPrompt": [
+      "Continue this ORCH-Next project through the persistent operational harness."
+    ],
+    "developerName": "MOC",
+    "displayName": "ORCH-Next Hermes Harness",
+    "longDescription": "Routes ORCH-Next operational session lifecycle and worker workflows through Hermes while Maestro remains the authority kernel.",
+    "shortDescription": "One persistent ORCH-Next operational front door"
+  },
+  "keywords": [
+    "orch-next",
+    "hermes",
+    "sessions",
+    "workers",
+    "audit"
+  ],
+  "license": "MIT",
+  "mcpServers": "./.mcp.json",
+  "name": "orch-next-hermes-harness",
+  "repository": "https://github.com/NousResearch/hermes-agent",
+  "skills": "./skills/",
+  "version": "0.1.47"
+}

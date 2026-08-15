@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Taste"
+  short_description: "Design plan + craft rules before coding UI"
+  default_prompt: "Use $design-taste to write the design plan (palette, type pairing, layout, signature element), self-critique it against the anti-generic rules, then implement and hand off to $design-eye-review."

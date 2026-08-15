@@ -1,7 +1,7 @@
 ---
-name: skill-select
+name: incident-to-skill
 version: "1.0.0"
-description: Use when multiple skills could apply; not exact commands.
+description: Use for recurring incident patterns; not one event.
 author: ORCH-Next contributors and Hermes Agent
 license: MIT
 metadata:
@@ -11,59 +11,45 @@ metadata:
     ownership_manifest: "maestro-kernel:research/mk675/fable5_decision_os/mk737_p1a_skill_distribution_ownership.json"
 ---
 
-# Skill Select Skill
+# Incident To Skill Skill
 
-Match current user intent and repository scope to discoverable skills, prefer namespaced current sources, and avoid stale or overlapping identities.
+Use repeated evidence to identify the missing trigger, instruction, fixture, or lifecycle behavior and implement the smallest reusable correction.
 
-## Fable design-weakening root-cause reframe
+## INC-191 design-weakening recurrence
 
 Marker: `INC191_FABLE5_FULL_FIDELITY_CONSUMER_ADOPTION_V1`.
 
-When the user reports that a complete causal design was narrowed before it was
-implemented or naturally measured, set:
+If an admitted MK734/MK735 program is narrowed for projected cost before
+content implementation or natural measurement, update the existing INC-191
+operational skill surfaces. Do not create a new incident, control, schema,
+validator, telemetry, queue, or skill family. Protected policy, lifecycle
+promotion, validator verdicts, and acceptance remain Maestro authority inputs;
+Hermes does not recreate or execute that authority.
 
-```text
-latest_context_pull_detected: true
-context_root_cause_reframe: the consumer replaced stable-ID content adoption
-  with projected-cost topology reduction before natural evidence
-non_fire_detection_path: reject incomplete stable-ID coverage, intake-only
-  consumption, controller-selected AG-03 suppression, cost-only narrowing,
-  and narrowing without an equivalent replacement
-```
-
-Select `fable5-derived-advisory-synthesis`, `incident-to-skill`,
-`codex-parallel-lanes`, and `orch-skill-ecosystem-improvement`, with the current
-Hermes controller owning `AG-01` and the serial integration responsibility in
-`AG-04`. Preserve a controller-independent `AG-03` for every repeated
-user-first-detection, critical shared-runtime, cross-repository, lifecycle, or
-first-natural-acceptance train, plus bounded `AG-02`, separate `AG-05`, and
-sanitized `AG-06`.
+The countermeasure binds the complete stable-ID set to exactly one disposition
+per ID: `implemented`, `already_implemented_verified`, `active_owner`,
+`repo_fact_contradiction`, or `protected_authority_blocker`. It also requires
+at least one `content_implementation_return`, the full `AG-01` through `AG-06`
+critical-train contract, a controller-independent `AG-03`, an
+equivalent-replacement rule, total-cost comparison, executable negative
+fixtures, rollback, and a later comparable observed-effectiveness condition.
+An intake or ledger without changed or verified content fails
+`BLOCKED_FOR_FABLE_CONTENT_RETURN_MISSING`.
 
 The full contract is `AG-01` one controller/union synthesizer, `AG-02` bounded
 disjoint writers, `AG-03` an independent causal challenger, `AG-04` an always-
 owned serial integrator, `AG-05` acceptance separate from the writer, and
 `AG-06` sanitized train-close learning and comparable-case capture.
 
-Do not make Fable availability a runtime dependency. Internalize admitted
-stable IDs and decision primitives into existing Hermes skills, fixtures,
-validators, or implementation paths. Each stable ID receives exactly one of
-`implemented`, `already_implemented_verified`, `active_owner`,
-`repo_fact_contradiction`, or `protected_authority_blocker`. Require at least
-one `content_implementation_return`; prompt, intake, ledger, report, status, or
-validator-only returns fail `BLOCKED_FOR_FABLE_CONTENT_RETURN_MISSING` and
-cannot close the recurrence.
-
-Narrowing is allowed only for a repo-fact contradiction, protected boundary,
-verified duplicate, or concrete implementation hazard with an equivalent
-replacement. Cost may tune model, effort, and checkpoint, never delete
-architecture, challenge, integration, acceptance, or learning before natural
-evidence. Total cost includes tokens/context, wall clock, review, rework,
-coordination, recurrence, user correction, manual relay, capability delay, and
-discarded-provider work. Unknown cost is `UNKNOWN`, not zero.
-`support_work_progress_credit=0` cannot remove a causal prevention dependency,
-and
-`observed_effective_prevention=false` remains until a later comparable natural
-case prevents user-first detection.
+Keep the incident open when the user was again the first detector, when the
+controller can suppress `AG-03`, when stable-ID coverage has no content return,
+or when cost omits tokens/context, wall clock, review, rework, coordination,
+recurrence, user correction, manual relay, capability delay, or
+discarded-provider work. Unknown remains `UNKNOWN`, not zero.
+`support_work_progress_credit=0` is not removal authority for causal
+prevention. Source or fixture PASS is only a structural prevention candidate;
+installed firing stays separate and `observed_effective_prevention=false`
+until a later comparable natural case changes action before user correction.
 
 This is a self-contained Hermes runtime contract. It does not create another
 plugin, installer, bundle, configuration, schema, queue, or control family.
@@ -115,7 +101,7 @@ that cannot change the current implementation or user outcome.
 
 1. Restate the normal-user capability this operation will make possible and
    the evidence layer it can actually establish.
-2. Selection drives Hermes execution only; authority-only skills supply typed decisions and are never treated as execution routes.
+2. Require concrete recurrence value and rollback; one event alone does not qualify observed effectiveness.
 3. Use native Hermes tools such as `read_file`, `search_files`, `terminal`,
    `patch`, `delegate_task`, `cronjob`, or `vision_analyze` only when
    they are available and necessary for this skill.
@@ -125,23 +111,27 @@ that cannot change the current implementation or user outcome.
 5. Return the capability delta, blocker delta, exact owner and write set,
    checks run, rollback, next Hermes action, and precise non-claims.
 
-## Critical route and CMD surface selection
+## Existing INC-191 recurrence conversion
 
-For Codex-internal critical planning, integration, authority,
-approval-handoff, and final-audit work, select `agent-dispatch` and its
-`critical_thread_route.v1` executable consumer before thread creation. The
-critical route is Codex-internal only; planner, integrator, and audit classes
-must not include an app-bound CMD.
+The already-registered `INC-178`/`INC-191` recurrence uses the existing skill
+families and the existing incident marker
+`SYSTEMIC_JOURNEY_PREMISE_AND_ACCEPTANCE_NONFIRE`. It does not create a new
+skill, gate, schema, control, incident, validator, or family. When one first
+normal-user seam survives a cause-changing repair or two user corrections and
+the recurrence spans product-causal, user-recovery, and CMD-control/authority
+domains, operationalize the recurrence by updating the smallest existing
+family set and selecting bounded distinct axes.
 
-CMD-class work is app-bound and never enters `critical_thread_route.v1`.
-Resolve `cmd_primary` or `cmd_alternate` from `controls/routing-table.json`:
-`cmd_primary` is the manual `fable5-ultra`/`ultra` Claude app route and
-`cmd_alternate` is the manual `gpt-5.6-sol`/`max` Codex app route with
-`auto_fallback=false`. A request carrying `surface_kind=app_bound_cmd` is
-rejected from the critical route with
-`BLOCKED_FOR_CRITICAL_ROUTE_APP_BOUND_CMD`, recorded as advisory, and replans
-through the routing-table CMD surface while preserving the current action and
-allowing the rest of the request to continue.
+The conversion return must bind the current trigger, one cause-changing owner
+and exact write set, live current recipients, the existing negative fixture,
+and the existing verifier. Keep `support_work_progress_credit=0` and preserve
+the distinction between source, plugin, installed, fresh, natural,
+action-changed, runtime, user accepted, and observed-effective states. A
+canonical/plugin or validator PASS is not a natural firing or prevention
+claim. This existing-family conversion is complete only as a documented,
+detectable, or operationalized support/control change; observed-effective
+prevention remains false until a later matching natural event stops before user
+correction.
 
 ## Failure behavior
 

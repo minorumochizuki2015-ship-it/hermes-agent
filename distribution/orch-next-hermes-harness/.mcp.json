@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "orch-next-hermes-harness": {
+      "args": [],
+      "command": "./runtime/orch_next_hermes_mcp_launcher.py",
+      "cwd": ".",
+      "env": {
+        "HERMES_HOME": "/Users/moc/.hermes/profiles/orch",
+        "HERMES_QUIET": "1",
+        "HERMES_REDACT_SECRETS": "true"
+      },
+      "type": "stdio"
+    }
+  }
+}

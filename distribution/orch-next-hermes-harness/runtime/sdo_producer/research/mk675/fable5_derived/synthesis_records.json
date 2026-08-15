@@ -1,0 +1,1470 @@
+{
+  "created_at": "2026-07-08",
+  "grand_goal": "GG-MK670-MAESTRO-HARNESS-CONTINUOUS-IMPROVEMENT-GUIDEBOOK",
+  "non_claims": [
+    "fable5_is_not_authority",
+    "no_implementation_readiness",
+    "no_runtime_readiness",
+    "no_product_user_final_acceptance",
+    "no_same_suite_or_equal_or_better",
+    "no_adoption_public_operator_readiness",
+    "no_current_latest_truth",
+    "no_pricing_billing_truth",
+    "no_sandbox_effectiveness",
+    "fable5_is_not_authority"
+  ],
+  "os_id": "Fable5DerivedAdvisorySynthesisOS",
+  "records": [
+    {
+      "advisory_source": {
+        "path": "artifacts/MK675_MAESTRO_HARNESS_FABLE5_FINAL_GUIDEBOOK_PROMPT_20260707/MK675_FABLE5_FINAL_IMPLEMENTATION_GUIDEBOOK_RETURN.md",
+        "sha256": "5326b655a773d790d7f6ecbfd343f1535767d50665acdca4dbc89a1bcbc594f2"
+      },
+      "claim_boundary": {
+        "can_claim": [
+          "repo_local_contract_layer_created"
+        ],
+        "cannot_claim": [
+          "implementation_readiness",
+          "runtime_readiness",
+          "product_acceptance"
+        ]
+      },
+      "disposition": "adopted",
+      "fixture_delta": [
+        "fixtures/mk675/delta_passport/*"
+      ],
+      "gate_class": "Evidence Check",
+      "maestro_change": "schemas/mk675 pack + fixtures + fail-closed validators + registers implemented in this MK679 slice set",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_implementation_readiness",
+        "no_runtime_readiness",
+        "no_product_user_final_acceptance",
+        "no_same_suite_or_equal_or_better",
+        "no_adoption_public_operator_readiness",
+        "no_current_latest_truth",
+        "no_pricing_billing_truth",
+        "no_sandbox_effectiveness",
+        "fable5_is_not_authority"
+      ],
+      "product_operation_covered": false,
+      "recheck_date": "2026-10-06",
+      "record_id": "f5d-001",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-001", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-10-06", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "reference_mechanism": "Delta-Governed Work OS: Delta Passport binds user delta, claim boundary, mode, cost, evidence, recovery, rollback per slice",
+      "task_delta": [
+        "mk679-dp-01",
+        "mk679-dp-02",
+        "mk679-dp-03",
+        "mk679-pack-01"
+      ],
+      "user_intent": "complete the Maestro Harness structural reform as an implementable repo-local system",
+      "validator_delta": [
+        "scripts/ops/verify_delta_passport_semantics.py"
+      ]
+    },
+    {
+      "advisory_source": {
+        "path": "artifacts/MK676_MAESTRO_HARNESS_FABLE5_RETURN_INTAKE_20260708/MK676_FABLE5_FILE12_CONTINUATION_RETURN.md",
+        "sha256": "5514b1176f3b7bd02a0da165d3f9e89b2d3dbe388a6f56dde1bcce3f3f649e15"
+      },
+      "claim_boundary": {
+        "can_claim": [
+          "pack_registry_and_self_test_created"
+        ],
+        "cannot_claim": [
+          "implementation_readiness",
+          "final_acceptance"
+        ]
+      },
+      "disposition": "adopted",
+      "fixture_delta": [
+        "fixtures/mk675/pack/*"
+      ],
+      "gate_class": "Evidence Check",
+      "maestro_change": "task register rows PACK-01..SUITE-01; KO-1 inversion engine in mk675_lib; suite runner",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_implementation_readiness",
+        "no_runtime_readiness",
+        "no_product_user_final_acceptance",
+        "no_same_suite_or_equal_or_better",
+        "no_adoption_public_operator_readiness",
+        "no_current_latest_truth",
+        "no_pricing_billing_truth",
+        "no_sandbox_effectiveness",
+        "fable5_is_not_authority"
+      ],
+      "product_operation_covered": false,
+      "recheck_date": "2026-10-06",
+      "record_id": "f5d-002",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-002", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-10-06", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "reference_mechanism": "PACK/VAL/KO/SUITE item table with per-validator pass/fail-closed conditions and KO-1 key-only rejection",
+      "task_delta": [
+        "mk679-pack-01",
+        "mk679-pack-02",
+        "mk679-ko-01",
+        "mk679-suite-01"
+      ],
+      "user_intent": "make File 12 deterministically implementable with item-level work rows",
+      "validator_delta": [
+        "scripts/ops/verify_fixture_semantics_not_keys_only.py",
+        "scripts/ops/run_mk675_contract_suite.py"
+      ]
+    },
+    {
+      "advisory_source": {
+        "path": "artifacts/MK675_MAESTRO_HARNESS_FABLE5_FINAL_GUIDEBOOK_PROMPT_20260707/MK675_FABLE5_FINAL_IMPLEMENTATION_GUIDEBOOK_RETURN.md#11_COMPETITOR_DELTA_WATCH_OS_SPEC",
+        "sha256": "5326b655a773d790d7f6ecbfd343f1535767d50665acdca4dbc89a1bcbc594f2"
+      },
+      "claim_boundary": {
+        "can_claim": [
+          "watch_and_backlog_layer_created"
+        ],
+        "cannot_claim": [
+          "current_latest_truth",
+          "adoption"
+        ]
+      },
+      "disposition": "adapted",
+      "fixture_delta": [
+        "fixtures/mk675/delta_watch/*"
+      ],
+      "gate_class": "Evidence Check",
+      "maestro_change": "delta watch records + TOP mechanism backlog with mechanism-to-task mapping",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_implementation_readiness",
+        "no_runtime_readiness",
+        "no_product_user_final_acceptance",
+        "no_same_suite_or_equal_or_better",
+        "no_adoption_public_operator_readiness",
+        "no_current_latest_truth",
+        "no_pricing_billing_truth",
+        "no_sandbox_effectiveness",
+        "fable5_is_not_authority"
+      ],
+      "product_operation_covered": false,
+      "recheck_date": "2026-08-07",
+      "record_id": "f5d-003",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-003", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-08-07", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "reference_mechanism": "delta watch with severity/TTL/owner + adopt/adapt/reject/defer matrix and anti-inflation rules",
+      "task_delta": [
+        "mk679-dw-01",
+        "mk679-dw-02",
+        "mk679-dw-03",
+        "mk679-topb-01"
+      ],
+      "user_intent": "track TOP competitor mechanisms as a minimum baseline without blocking work",
+      "validator_delta": [
+        "scripts/ops/verify_competitor_delta_watch_taxonomy.py",
+        "scripts/ops/verify_top_mechanism_backlog.py"
+      ]
+    },
+    {
+      "advisory_source": {
+        "path": "/Users/moc/ORCH-Next/projects/CMS-maestro/.claude/worktrees/cms-competitive-strategy-081da8/docs/strategy/fable5-review/09-model-comparative-analysis.md",
+        "sha256": "d22b17053a86ed9ee0bd0a0db3b197764030241e81dd9839950a6f3b89abff47"
+      },
+      "claim_boundary": {
+        "can_claim": [
+          "cross_product_judgment_cases_added",
+          "compact_context_policy_calibrated"
+        ],
+        "cannot_claim": [
+          "blanket_fable5_or_model_superiority",
+          "profile_qualification",
+          "runtime_readiness",
+          "observed_effectiveness"
+        ]
+      },
+      "disposition": "adapted",
+      "fixture_delta": [
+        "research/mk675/fable5_decision_os/mk733j_n_public_observable_qualification_corpus.json"
+      ],
+      "gate_class": "Claim Check",
+      "maestro_change": "Added real-target binding, proposal self-check, comparison-bias, and anti-overgate cases to the existing model-neutral evaluator; updated the compact policy brief without adding a global gate.",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "fable5_is_not_unbounded_authority",
+        "no_global_countercritic_gate",
+        "no_block_on_supervised_local_work",
+        "no_profile_qualification",
+        "no_runtime_product_user_final_acceptance",
+        "no_observed_effective_prevention"
+      ],
+      "product_operation_covered": false,
+      "recheck_date": "2026-10-09",
+      "record_id": "f5d-004",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-004", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-10-09", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "reference_mechanism": "Bind designs to the actual consumer and complete operational path; separately countercheck only high-impact proposals; disclose order, access, evaluator, attribution, sample, and domain bias in model comparisons.",
+      "task_delta": [
+        "mk733j-n-gpt56-model-neutral-decision-os"
+      ],
+      "user_intent": "Use cross-product Fable5 performance analysis to raise Decision OS precision without slowing ordinary supervised implementation or creating another evidence loop.",
+      "validator_delta": [
+        "scripts/ops/mk733j_qualification.py",
+        "scripts/ops/mk733j_context_compiler.py"
+      ]
+    },
+    {
+      "record_id": "f5d-005",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-005", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-08-06", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "/Users/moc/ORCH-Next/projects/Orch-decision-graph/docs/research/odg000an/ODG000AN_FABLE5_FINAL_SPEC_REVIEW_AFTER_ABCD.md",
+        "sha256": "c978f6d09b987457ecde1aebc65cbd9ebedc2fd05b9b6b3f4effeccb3e47897f"
+      },
+      "disposition": "held",
+      "reference_mechanism": "Exact acceptance binding plus persistent same-surface Decision Workbench progression.",
+      "user_intent": "Consume the ODG000AN Fable5 correction without re-dispatching already-implemented downstream work or overwriting the CMS f5d-004 record.",
+      "maestro_change": "MK746 records a forward correction: the preserved dirty ODG handoff is superseded by ODG000AN/AO/AP/AQ/AR current state and merged MK738; invented ODG-R1..R5 refs and missing paths are not admitted.",
+      "task_delta": [
+        "mk738-odg-generic-decision-projection-contract",
+        "mk746-fable5-cross-surface-intake"
+      ],
+      "fixture_delta": [
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_record_id_collision.json",
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_stale_selected_without_revalidation.json"
+      ],
+      "validator_delta": [
+        "scripts/ops/verify_mk738_odg_generic_decision_projection.py",
+        "scripts/ops/verify_mk746_fable5_cross_surface_intake.py"
+      ],
+      "claim_boundary": {
+        "can_claim": [
+          "stale_duplicate_prevented",
+          "forward_correction_recorded"
+        ],
+        "cannot_claim": [
+          "new_ODG_product_progress",
+          "R10_audit_pass",
+          "runtime_readiness",
+          "final_acceptance"
+        ]
+      },
+      "gate_class": "Claim Check",
+      "product_operation_covered": false,
+      "recheck_date": "2026-08-06",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_product_progress_from_inventory",
+        "no_runtime_readiness",
+        "no_observed_effective_prevention",
+        "no_product_user_final_acceptance"
+      ]
+    },
+    {
+      "record_id": "f5d-006",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-006", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-08-06", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "research/mk675/fable5_derived/mk746_sanitized_source_snapshot_20260723.json",
+        "sha256": "5269a235fceddb609dcde7205cc6089cc2a463910e529246442532f32678bc16"
+      },
+      "disposition": "adapted",
+      "reference_mechanism": "Prove durable firing as one search-to-next-session-ranking loop with receipts and rollback, while selecting one same-surface visible request/result loop above infrastructure evidence.",
+      "user_intent": "Absorb accumulated Fable5 findings into durable future behavior and direct user value without requiring the user to relay them between PMS, Claude, and project sessions.",
+      "maestro_change": "MK746 creates a deduplicated cross-surface intake, selects the MCP-tool-contract durable shadow loop and remote-ops LLM-gated visible loop, and keeps inventory/support credit at zero.",
+      "task_delta": [
+        "mk746-fable5-cross-surface-intake"
+      ],
+      "fixture_delta": [
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_inventory_as_product_progress.json",
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_denominator_false_complete.json",
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_pointer_only_source_promoted.json"
+      ],
+      "validator_delta": [
+        "scripts/ops/verify_mk746_fable5_cross_surface_intake.py"
+      ],
+      "claim_boundary": {
+        "can_claim": [
+          "cross_surface_intake_created",
+          "duplicate_groups_resolved",
+          "next_content_slices_selected"
+        ],
+        "cannot_claim": [
+          "durable_firing",
+          "fresh_session_effect",
+          "model_backed_user_loop",
+          "runtime_readiness",
+          "final_acceptance"
+        ]
+      },
+      "gate_class": "Claim Check",
+      "product_operation_covered": false,
+      "recheck_date": "2026-08-06",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_product_progress_from_inventory",
+        "no_runtime_readiness",
+        "no_observed_effective_prevention",
+        "no_product_user_final_acceptance"
+      ]
+    },
+    {
+      "record_id": "f5d-007",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-007", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-08-06", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "research/mk675/fable5_derived/mk746_sanitized_source_snapshot_20260723.json",
+        "sha256": "5269a235fceddb609dcde7205cc6089cc2a463910e529246442532f32678bc16"
+      },
+      "disposition": "adapted",
+      "reference_mechanism": "Bind concrete route, worktree, HEAD, source component, served bundle, baseline, and preserved UX before visible UI patching; require skill and incident fire witnesses.",
+      "user_intent": "Prevent same-surface from being mistaken for the wrong current UI and stop target-identity failures before the user has to correct the lane.",
+      "maestro_change": "MK746 selects an exact delta to existing MK725 rather than creating another gate or reusing the colliding INC-172 identifier; unresolved target identity pauses visible integration only.",
+      "task_delta": [
+        "mk746-fable5-cross-surface-intake"
+      ],
+      "fixture_delta": [
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_foreign_dirty_owner_overwrite.json",
+        "fixtures/maestro-kernel/mk746-fable5-cross-surface-intake/negative_unresolved_exact_duplicate.json"
+      ],
+      "validator_delta": [
+        "scripts/ops/verify_mk746_fable5_cross_surface_intake.py"
+      ],
+      "claim_boundary": {
+        "can_claim": [
+          "existing_MK725_delta_selected",
+          "incident_id_collision_prevented"
+        ],
+        "cannot_claim": [
+          "observed_effective_prevention",
+          "remote_ops_UI_fixed",
+          "visual_acceptance",
+          "runtime_readiness"
+        ]
+      },
+      "gate_class": "Claim Check",
+      "product_operation_covered": false,
+      "recheck_date": "2026-08-06",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_product_progress_from_inventory",
+        "no_runtime_readiness",
+        "no_observed_effective_prevention",
+        "no_product_user_final_acceptance"
+      ]
+    },
+    {
+      "record_id": "f5d-008",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-008", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-08-08", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "/Users/moc/ORCH-Next/worktrees/remote-ops/a30-p2-seam-20260725/docs/handoffs/A30-R21-20260725/audits/INC-174-SKILL-STRUCTURE-PROPOSAL.txt",
+        "sha256": "41001e76ebee4f1b99608e6edc0ed5985f0b34c159fdc9a3efb2a2de50aaa447"
+      },
+      "disposition": "adapted",
+      "reference_mechanism": "Use one pre-emission ConclusionAdmission.v1 claim check plus an append-only claim ledger so unsupported completion, certainty, and PASS-grade statements are downgraded and overturned digests cannot silently recur.",
+      "user_intent": "Implement AUTH-009 batch item 2 in maestro-kernel while preserving downgrade-to-hypothesis-not-block, enforcing rather than duplicating the nine already-covered rules, and keeping firing, observed-effective prevention, and INC-174 closure as non-claims.",
+      "maestro_change": "Added a stdlib ConclusionAdmission.v1 validator, claim-ledger.v1 schema and procedure, deterministic INC_CONCLUSION_OVERTURNED records, contradicted-digest reassertion detection, nine mutation-sensitive fixtures, MK675 registration, and bounded current-main adaptations to codex-parallel-lanes and orch-independent-audit-packet.",
+      "task_delta": [
+        "DISP-K2-CONCLUSION-ADMISSION"
+      ],
+      "fixture_delta": [
+        "fixtures/maestro-kernel/conclusion-admission/negative_no_evidence_conclusion.json",
+        "fixtures/maestro-kernel/conclusion-admission/positive_already_downgraded_hypothesis.json",
+        "fixtures/maestro-kernel/conclusion-admission/negative_contradiction_transition.json",
+        "fixtures/maestro-kernel/conclusion-admission/negative_digest_reassertion.json",
+        "fixtures/maestro-kernel/conclusion-admission/negative_missing_evidence_path.json",
+        "fixtures/maestro-kernel/conclusion-admission/positive_path_evidence.json",
+        "fixtures/maestro-kernel/conclusion-admission/positive_command_evidence.json",
+        "fixtures/maestro-kernel/conclusion-admission/negative_evidence_digest_mismatch.json",
+        "fixtures/maestro-kernel/conclusion-admission/negative_append_only_rewrite.json"
+      ],
+      "validator_delta": [
+        "scripts/ops/verify_conclusion_admission.py",
+        "scripts/ops/run_mk675_contract_suite.py"
+      ],
+      "claim_boundary": {
+        "can_claim": [
+          "unsupported conclusion downgrade contract implemented in repository source",
+          "claim-ledger contradiction and reassertion checks implemented in repository source",
+          "canonical and plugin skill mirrors synchronized when verifier passes"
+        ],
+        "cannot_claim": [
+          "runtime or fresh-session firing",
+          "installed-cache freshness",
+          "observed-effective prevention",
+          "INC-174 closure",
+          "product, user, or final acceptance"
+        ]
+      },
+      "gate_class": "Claim Check",
+      "product_operation_covered": false,
+      "recheck_date": "2026-08-08",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_runtime_or_fresh_session_firing",
+        "no_installed_cache_freshness",
+        "no_observed_effective_prevention",
+        "no_INC_174_closure",
+        "no_product_user_final_acceptance"
+      ]
+    },
+    {
+      "record_id": "f5d-009",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-009", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-08-09", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "/Users/moc/Library/Application Support/Claude/fable5-recovery-v4-20260724/mission-output/ultra/returns/RT-RECUR-ROOT.json",
+        "sha256": "49288efcad2a64f2b613618f2c4a3084f4b536895f7c7ea35f42f9c511787053"
+      },
+      "disposition": "adopted",
+      "reference_mechanism": "Derive exactly seven material transition kinds from the canonical ledger, project one idempotent event to PMS, Obsidian, bridge status, and generated handoff, append nonblocking RecordingDebt on target failure, forward-resolve debt on retry, and generate a sanitized one-read WORK_INDEX from bridge registry v1.1.",
+      "user_intent": "Implement RT-RECUR steps 2 through 4 and 6 in maestro-kernel under AUTH-010, including deterministic schemas, one projector, bridge WORK_INDEX, at least six negative paths, mutation sensitivity, clean-checkout validation, PR, CI-green squash merge, and explicit non-claims for hook connection, fresh firing, and observed prevention.",
+      "maestro_change": "Added MaterialWorkEvent.v1, RecordingDebt.v1, and ProjectionReceipt.v1 contracts; one stdlib projector with PMS payload, Obsidian redacted Markdown, bridge status, handoff generation, atomic writes, freshness check, append-only debt and resolution; bridge registry v1.1 status fields; deterministic sanitized WORK_INDEX generation; ten fixture paths and ten bound mutations; MK675 registration.",
+      "task_delta": [
+        "DISP-RECUR-IMPL-KERNEL"
+      ],
+      "fixture_delta": [
+        "fixtures/maestro-kernel/material-work-projection/negative_pms_unavailable.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_obsidian_unavailable.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_project_unregistered.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_partial_success.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_duplicate_replay.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_stale_handoff.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_bridge_unavailable.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_handoff_unavailable.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_private_payload_work_index.json",
+        "fixtures/maestro-kernel/material-work-projection/negative_non_material_noise.json"
+      ],
+      "validator_delta": [
+        "scripts/ops/verify_material_work_projection.py",
+        "scripts/ops/verify_bridge_registry_projection.py",
+        "scripts/ops/run_mk675_contract_suite.py"
+      ],
+      "claim_boundary": {
+        "can_claim": [
+          "deterministic repo-local material-event identity and target payload generation",
+          "adapter failure creates append-only debt while ordinary work continues",
+          "fixture retry creates a linked resolution receipt",
+          "generated handoff and WORK_INDEX have deterministic local freshness checks",
+          "private payload fixture is rejected before WORK_INDEX generation"
+        ],
+        "cannot_claim": [
+          "SessionStart, turn, return-consumption, or Stop hook connection",
+          "installed-cache or fresh-session selection and invocation",
+          "live PMS or Obsidian target availability",
+          "controller receipt integration",
+          "observed-effective prevention",
+          "product, user, or final acceptance"
+        ]
+      },
+      "gate_class": "Claim Check",
+      "product_operation_covered": false,
+      "recheck_date": "2026-08-09",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_hook_connection_step_5",
+        "no_fresh_firing",
+        "no_live_target_delivery",
+        "no_observed_effective_prevention",
+        "no_product_user_final_acceptance"
+      ]
+    },
+    {
+      "record_id": "f5d-010",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-010", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-09-01", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "/Users/moc/ORCH-Next/projects/MCP-tool-contract/.claude/worktrees/implementation-guide-version-mgmt-32cea8/docs/pms-observability-dna/10_FABLE5_METHOD_KNOWLEDGE.md",
+        "sha256": "7e7a1ffc8c30098e37b34044da33bc03970c50aa1a6bbe18a250450ea078f661"
+      },
+      "advisory_packet_identity": {
+        "commit": "338ec1394e04ab0adb79577adbed34eae190aba9",
+        "tree": "851f69c7201fc4d7e7fe9633cbacbe4b218ad8e0",
+        "sources": [
+          {
+            "path": "docs/pms-observability-dna/00_INDEX_AND_TRACEABILITY.md",
+            "sha256": "63511ee3857bc1d8cad235543a0a405fc750b659130211bc2b14547295a4c91e"
+          },
+          {
+            "path": "docs/pms-observability-dna/07_DECISION_CIRCUIT.json",
+            "sha256": "9fbdd8121e546bd95ae7bf01614d2a4b8fa244dc7253a1abe9d8400fa4a9909c"
+          },
+          {
+            "path": "docs/pms-observability-dna/08_INTAKE_MAPPING.json",
+            "sha256": "e546f9d5c20af0bffb8388525c72f4280381c8ac9cf3124e34ebf6dbc0f2e400"
+          }
+        ]
+      },
+      "disposition": "adapted",
+      "reference_mechanism": "Evaluate TH-OBS-1..10 as structured optional observations at the existing receipt-bound material Stop selector, preserve explicit unknown and not-exercised states, hold only the exact unsupported claim or transition, and keep ordinary bounded work moving. For TH-OBS-5, consume only caller-established exact-surface decisions in this fixed order: deterministic invariant, learned low-risk decision backed by actual observations and an already-established Wilson lower-bound policy result, cooling plus veto, independent reversible system decision, then an unresolved true user or external-consent residual.",
+      "user_intent": "Implement the observability-DNA threshold findings in the existing Maestro/Hermes material Stop decision path without touching active PMS product work, adding a runtime family, or claiming product progress, adoption, natural firing, or observed effectiveness.",
+      "maestro_change": "Extended the pure shared live-material selector with deterministic TH-OBS-1..10 evaluation and exact-scope holds, then extended the actual Stop-consumer verifier with positive, negative, provenance, unexercised, affected-only, and bounded unknown-metadata cases. TH-OBS-5 was forward-corrected to evaluate the existing five-step human-decision automation ladder without computing qualification: deterministic invariant, actual-observation plus established-Wilson learned policy, cooling plus veto, independent reversible accept or reject or defer system decision, and finally true user or external consent. The existing Stop hook remains unchanged and consumes the selector once.",
+      "task_delta": [
+        "PMS_CMD_HERMES_OBSERVABILITY_THRESHOLDS_ADOPTION_V1"
+      ],
+      "fixture_delta": [
+        ".codex/hooks/verify-recur-projector-hook.py#TH-OBS-1..10-actual-stop-consumer-cases"
+      ],
+      "validator_delta": [
+        ".codex/hooks/verify-recur-projector-hook.py"
+      ],
+      "threshold_dispositions": [
+        {
+          "threshold_id": "TH-OBS-1",
+          "disposition": "adapt",
+          "current_repo_fact_reason": "The existing selector already owns one material Stop next action; the finding count is telemetry and three distinct round identifiers change only that next action to a different-property design re-evaluation.",
+          "measurable_future_target": "A future natural run supplies three independently identified rounds for one finding and the selector changes the action without adding a work hold."
+        },
+        {
+          "threshold_id": "TH-OBS-2",
+          "disposition": "adapt",
+          "current_repo_fact_reason": "Active policy forbids broad work stops from a Claim Check, so measured HEAD, branch, or count drift holds only the named affected transition and emits an allowlisted bounded diff.",
+          "measurable_future_target": "Every exercised drift case reports only head, branch, and count differences, retains a disjoint continuation when supplied, and holds no unrelated operation."
+        },
+        {
+          "threshold_id": "TH-OBS-3",
+          "disposition": "adapt",
+          "current_repo_fact_reason": "The security boundary prohibits raw command persistence, so acceptance requires a sanitized identifier-shaped producer, source-command, or data-origin reference rather than raw command text.",
+          "measurable_future_target": "Decision-relevant metrics without a sanitized provenance reference are excluded from acceptance while implementation remains allowed."
+        },
+        {
+          "threshold_id": "TH-OBS-4",
+          "disposition": "adopt",
+          "current_repo_fact_reason": "Untracked primary evidence can be lost by destructive work; the selector therefore prioritizes a sanitized snapshot rescue and assigns it zero product progress credit.",
+          "measurable_future_target": "Every exercised untracked-evidence cleanup case selects snapshot rescue before the destructive operation."
+        },
+        {
+          "threshold_id": "TH-OBS-5",
+          "disposition": "adapt",
+          "current_repo_fact_reason": "User-supplied current MCP-tool-contract@5f40fd9 source truth identifies KL-7 and KL-8 plus scripts/kl_batch_review.py as one existing five-step human-decision ladder, but the host LaunchAgent is not installed, natural firing count is zero, canonical vault content is unconnected, and the current 15 items have no proposer identity. The Hermes selector therefore consumes only caller-established exact-surface route and policy facts, never calculates Wilson or Tier qualification, requires a distinct proposer and reviewer with authority and reversible semantics, and does not copy edge automation into content or vault authority.",
+          "measurable_future_target": "Actual Stop-consumer cases prove deterministic, established observed-Wilson, cooling-veto, independent accept or reject or defer system review, and true consent residual precedence; missing observation or Wilson references fall onward without inferred qualification, and a 15-item batch with no proposer identity cannot auto-accept or create a false user queue while disjoint work remains available."
+        },
+        {
+          "threshold_id": "TH-OBS-6",
+          "disposition": "adopt",
+          "current_repo_fact_reason": "The active control-family budget and anti-overgate policy require reuse comparison before another monitor, gate, validator, or control is eligible.",
+          "measurable_future_target": "New-control creation remains held until one sanitized existing-connection comparison is present, with ordinary work unaffected."
+        },
+        {
+          "threshold_id": "TH-OBS-7",
+          "disposition": "adapt",
+          "current_repo_fact_reason": "Raw unknown content cannot enter the selector result. A caller-supplied store-salted digest is mandatory; long unknowns expose sanitized shape and length, while short unknowns expose the digest only.",
+          "measurable_future_target": "Closed other classifications and raw-bearing observations are rejected; valid short and long open degradations expose exactly their bounded metadata."
+        },
+        {
+          "threshold_id": "TH-OBS-8",
+          "disposition": "adopt",
+          "current_repo_fact_reason": "Destructive cleanup is a protected exact operation when it touches evidence; capsule sealing failure therefore holds deletion only.",
+          "measurable_future_target": "Every exercised evidence deletion has capsule_sealed true before deletion eligibility, with sealing failure leaving all non-deletion work available."
+        },
+        {
+          "threshold_id": "TH-OBS-9",
+          "disposition": "adapt",
+          "current_repo_fact_reason": "Parallel reconnaissance is accepted only when lanes have distinct fact authorities, independently verified premises, and an explicit not_found list; safe reading remains allowed on failure.",
+          "measurable_future_target": "Every accepted parallel recon has at least two distinct authority lanes, premise verification on every lane, and explicit not_found arrays."
+        },
+        {
+          "threshold_id": "TH-OBS-10",
+          "disposition": "adopt",
+          "current_repo_fact_reason": "The bounded design-judgment rule preserves explicit contradiction and loss disclosure without granting Fable5 authority over the chosen compromise.",
+          "measurable_future_target": "No compromise for incompatible constraints is selected without a bounded irreducible-loss statement."
+        }
+      ],
+      "genome_mappings": [
+        {
+          "gene_ids": [
+            "GENE-PRIM-001",
+            "GENE-PRIM-002"
+          ],
+          "threshold_ids": [
+            "TH-OBS-1",
+            "TH-OBS-2",
+            "TH-OBS-8",
+            "TH-OBS-10"
+          ],
+          "mapping_scope": "contradiction and fake-pass prevention citation material only"
+        },
+        {
+          "gene_ids": [
+            "GENE-PRIM-007",
+            "GENE-PRIM-009"
+          ],
+          "threshold_ids": [
+            "TH-OBS-3",
+            "TH-OBS-4",
+            "TH-OBS-5",
+            "TH-OBS-6",
+            "TH-OBS-7",
+            "TH-OBS-9"
+          ],
+          "mapping_scope": "cost-loop and reproducible structured-decision citation material only"
+        },
+        {
+          "gene_ids": [
+            "GENE-PRIM-011",
+            "GENE-PRIM-013"
+          ],
+          "threshold_ids": [
+            "TH-OBS-1",
+            "TH-OBS-3",
+            "TH-OBS-7"
+          ],
+          "mapping_scope": "fitness-field and observed-effective-boundary citation material only"
+        }
+      ],
+      "write_set": [
+        ".codex/hooks/verify-recur-projector-hook.py",
+        "research/mk675/fable5_decision_os/genome_register.json",
+        "research/mk675/fable5_derived/synthesis_records.json",
+        "scripts/ops/mk_whole_goal_control.py"
+      ],
+      "authority_and_goal_boundary": {
+        "authority_owner": "maestro-kernel",
+        "grand_goal": "HERMES_GENERAL_HARNESS_MIGRATION",
+        "hermes_role": "staged primary candidate for general harness behavior without authority or adoption",
+        "product_owner": "PMS product CMD thread 019fa83b-95c1-7871-b63b-395e6c7b0e06",
+        "user_capability_delta": 0,
+        "support_work_progress_credit": 0
+      },
+      "pr_602_serial_dependency": "PR #602 is a stale unmerged writer-idle candidate that overlaps selector and verifier paths. Current origin/main at 80f57b3814605c64e49e0e91a1076a9ca2284fe8 is source authority; this change must integrate first and any later PR #602 work must rebase serially.",
+      "claim_boundary": {
+        "can_claim": [
+          "repo-local deterministic TH-OBS-1..10 selector behavior",
+          "actual existing Stop-consumer invocation in focused local tests",
+          "exact-scope holds with ordinary continuation allowed",
+          "sanitized optional observation input and bounded unknown metadata"
+        ],
+        "cannot_claim": [
+          "installed-cache freshness or fresh-session natural firing",
+          "runtime reachability or Hermes/PMS adoption",
+          "observed-effective prevention or gene promotion",
+          "product progress, cost superiority, user acceptance, or final completion"
+        ]
+      },
+      "gate_class": "Claim Check",
+      "product_operation_covered": false,
+      "recheck_date": "2026-09-01",
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_installed_cache_freshness",
+        "no_fresh_session_natural_firing",
+        "no_runtime_reachability",
+        "no_Hermes_or_PMS_adoption",
+        "no_observed_effective_prevention",
+        "no_gene_promotion_from_citation_or_fitness_telemetry",
+        "no_host_LaunchAgent_installation",
+        "natural_firing_count_zero_is_not_observed_effectiveness",
+        "no_canonical_vault_content_connection_or_authority",
+        "no_15_item_auto_accept_without_proposer_identity",
+        "no_product_progress_or_cost_superiority",
+        "no_product_user_or_final_acceptance"
+      ]
+    },
+    {
+      "record_id": "f5d-011",
+      "sdo_advisory": {"project_scope": "UNKNOWN", "disposition": "deferred", "source_ref": "fable5:research/mk675/fable5_derived/synthesis_records.json#f5d-011", "action_id": "UNKNOWN", "applicability": "historical advisory record; no current SDO action admitted", "selected_alternative_summary": "UNKNOWN", "rejected_alternative_summary": "UNKNOWN", "user_capability_delta": "UNKNOWN", "blocker_delta": "UNKNOWN", "threshold_provenance": "UNKNOWN", "expires_at": "UNKNOWN", "recheck_at": "2026-09-02", "rollback": "UNKNOWN", "retirement": "UNKNOWN", "operation_outcome": "UNKNOWN"},
+      "advisory_source": {
+        "path": "research/mk675/fable5_decision_os/mk733f_llm_reproducibility_contract_enforcement.json",
+        "sha256": "9bdf0a881fbaa2a591e2e737864a7bf1cdf19bca27e0b48222759cc19b302124"
+      },
+      "user_intent": "Apply existing Fable5 and Decision OS findings to the current INC-191 process and cost recurrence so producer-consumer contradictions are found before user correction, without blocking the active remote-ops physical journey or creating another control family.",
+      "reference_mechanism": "Convert contradiction and impossibility checks, fake-pass and evidence-game prediction, counterhypotheses, evidence-progress separation, accepted-task cost, and split-pipeline rollback into an operational dispatch envelope that separates exact mutation authority from immutable read-only causal search, requires one conditional A/B/C union, and self-demotes status-only returns.",
+      "maestro_change": "Extended the existing MK749 operational envelope and INC-191 fixture/verifier family with separate mutation_scope and causal_search_scope, exclusive reasoning questions and typed decision returns, deterministic no-model routing, first-material-delta admission, report-sync nonblocking semantics, and explicit installed-root parity checks. Preserved token_ceiling_executable=false and product continuation.",
+      "disposition": "adapted",
+      "task_delta": [
+        "INC-191_EXISTING_PROCESS_COST_AND_NATURAL_SELECTION_EXPANSION"
+      ],
+      "fixture_delta": [
+        "fixtures/maestro-kernel/skills/invalid_mk749_dispatch_envelope_bypass_matrix.json#operational-admission-cases",
+        "fixtures/maestro-kernel/skills/quality_cost_improvement_ecosystem_cases.json#INC-191-natural-selection-cases",
+        "fixtures/mk675/skill_distribution/positive_mk728_skill_plugin_distribution.json#installed-root-parity-cases"
+      ],
+      "validator_delta": [
+        "skills/codex-parallel-lanes/scripts/validate_dispatch_envelope.py",
+        "scripts/ops/verify_mk749_model_routing_cost_control.py",
+        "scripts/ops/verify_quality_cost_improvement_ecosystem.py",
+        "scripts/ops/verify_mk728_skill_plugin_distribution_health_check.py"
+      ],
+      "gate_class": "Claim Check",
+      "claim_boundary": {
+        "can_claim": [
+          "repo-local prelaunch rejection of missing panoramic lens union",
+          "repo-local separation of mutation scope and immutable read-only causal search scope",
+          "repo-local deterministic no-model selection for named remainders, pins, and unchanged waits",
+          "explicit read-only detection of stale same-name installed skill candidates"
+        ],
+        "cannot_claim": [
+          "installed-cache adoption or fresh-session skill selection",
+          "natural runtime firing or return consumption",
+          "live cumulative-token interruption",
+          "observed-effective prevention or product progress"
+        ]
+      },
+      "recheck_date": "2026-09-02",
+      "product_operation_covered": false,
+      "non_claims": [
+        "fable5_is_not_authority",
+        "no_external_or_paid_Fable5_operation",
+        "no_remote_ops_product_runtime_or_device_mutation",
+        "no_installed_cache_freshness_or_fresh_session_firing",
+        "no_executable_token_hard_stop",
+        "no_observed_effective_prevention",
+        "no_product_user_or_final_acceptance"
+      ]
+    }
+  ],
+  "operation_activity": [
+    {
+      "operation_id": "f5-activity-20260725-synthesis-recording-contract-r1",
+      "timestamp_utc": "2026-07-25T05:24:21Z",
+      "user_intent": "Preserve detailed Fable5-OS work records in the mandatory synthesis database without turning recording into an execution gate.",
+      "instructions": {
+        "summary": "Record touched files, changes, subagent activity, work instructions, decisions, validation, blockers, and next owner for explicit Fable5/Fable5-OS work.",
+        "authority_scope": "Repo-local contract repair only; no provider, credential, runtime, public, or destructive operation."
+      },
+      "source_identity": {
+        "base_head": "9e0db3c83d2de5b914a9518da6467deed51e2273",
+        "worktree": "fable5-synthesis-recording-r1",
+        "branch": "codex/fable5-synthesis-recording-r1"
+      },
+      "files": {
+        "read": [
+          "AGENTS.md",
+          "skills/fable5-derived-advisory-synthesis/SKILL.md",
+          "scripts/ops/mk675_lib.py",
+          "scripts/ops/verify_fable5_derived_synthesis.py",
+          "schemas/mk675/fable5_synthesis_record.v1.schema.json",
+          "research/mk675/fable5_derived/synthesis_records.json",
+          "scripts/ops/generate_plugin_skill_mirror.py"
+        ],
+        "changed": [
+          "AGENTS.md",
+          "skills/fable5-derived-advisory-synthesis/SKILL.md",
+          "plugins/orch-next-codex-harness/skills/fable5-derived-advisory-synthesis/SKILL.md",
+          "scripts/ops/mk675_lib.py",
+          "schemas/mk675/fable5_synthesis_record.v1.schema.json",
+          "research/mk675/fable5_derived/synthesis_records.json"
+        ],
+        "created": [],
+        "deleted": []
+      },
+      "subagents": [],
+      "work_summary": "Added a same-database operation_activity contract and validator coverage, documented the nonblocking recording boundary, and synchronized the canonical/plugin skill surfaces.",
+      "decisions": [
+        "Keep synthesis_records.json as the only mandatory Fable5 record database.",
+        "Store detailed operation activity separately from advisory conversion records in the same JSON document.",
+        "Make activity completeness a traceability claim boundary, not a blocker for safe work or a new Authority Gate."
+      ],
+      "rejected_alternatives": [
+        "A second append-only activity log outside the mandatory database.",
+        "A required recording step that stops implementation, validation, or protected work.",
+        "Persistence of raw prompts, terminal/argv logs, secrets, provider payloads, or hidden reasoning."
+      ],
+      "validation": {
+        "commands": [
+          "verify_fable5_derived_synthesis.py --json",
+          "verify_fable5_derived_synthesis.py --fixture positive_f5d_operation_activity.json",
+          "verify_fable5_derived_synthesis.py --fixture negative_f5d_activity_gate_escalation.json --expect-fail",
+          "verify_fable5_derived_synthesis.py --fixture negative_f5d_activity_private_content.json --expect-fail",
+          "generate_plugin_skill_mirror.py --check --json"
+        ],
+        "outcomes": [
+          "live records clean",
+          "2 positive and 5 negative synthesis fixtures passed",
+          "gate-escalation activity rejected",
+          "private-content activity rejected",
+          "canonical/plugin parity PASS"
+        ]
+      },
+      "external_operation": {
+        "status": "not_started",
+        "provider_or_paid_operation": false,
+        "runtime_or_public_mutation": false
+      },
+      "blockers": [],
+      "next_owner": "Maestro CMD",
+      "non_claims": [
+        "no_Fable5_provider_execution",
+        "no_runtime_or_product_acceptance",
+        "no_observed_effective_prevention",
+        "activity_record_is_not_implementation_or_validation_completion"
+      ],
+      "recording_policy": {
+        "database_path": "research/mk675/fable5_derived/synthesis_records.json",
+        "blocking_effect": false,
+        "safe_work_continues": true,
+        "raw_private_material_persisted": false
+      }
+    },
+    {
+      "operation_id": "f5-activity-20260725-k2-conclusion-admission",
+      "timestamp_utc": "2026-07-25T14:35:50Z",
+      "user_intent": "Implement the pinned INC-174 conclusion-admission proposal as AUTH-009 kernel batch item 2 with downgrade-to-hypothesis behavior, append-only claim history, mutation-sensitive fixtures, PR, CI-green squash merge, and explicit non-claims.",
+      "instructions": {
+        "summary": "Verify the pinned proposal, adapt ConclusionAdmission.v1 and claim-ledger behavior into current maestro-kernel source, update only the named existing skill surfaces, validate locally and in a clean checkout, then use the granted protected Git path.",
+        "authority_scope": "maestro-kernel implementation, PR creation, and CI-green squash merge; CI red or material proposal divergence stops the lane."
+      },
+      "source_identity": {
+        "base_head": "6cf4db0b3299f7648eee8badc2e06231ac6304e3",
+        "worktree": "k2-conclusion-admission-20260725",
+        "branch": "codex/k2-conclusion-admission"
+      },
+      "files": {
+        "read": [
+          "AGENTS.md",
+          "README.md",
+          "skills/skill-select/SKILL.md",
+          "skills/codex-parallel-lanes/SKILL.md",
+          "skills/orch-independent-audit-packet/SKILL.md",
+          "scripts/ops/run_mk675_contract_suite.py",
+          "scripts/ops/generate_plugin_skill_mirror.py",
+          "scripts/ops/generate_handoff_admission_anchor.py",
+          "research/mk675/fable5_derived/synthesis_records.json"
+        ],
+        "changed": [
+          "fixtures/maestro-kernel/handoff-admission/base_valid_handoff.md",
+          "fixtures/maestro-kernel/handoff-admission/cases.json",
+          "package.json",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/SKILL.md",
+          "plugins/orch-next-codex-harness/skills/orch-independent-audit-packet/SKILL.md",
+          "research/mk675/fable5_derived/synthesis_records.json",
+          "scripts/ops/run_mk675_contract_suite.py",
+          "skills/codex-parallel-lanes/SKILL.md",
+          "skills/orch-independent-audit-packet/SKILL.md"
+        ],
+        "created": [
+          "controls/claim-ledger.v1.json",
+          "docs/ops/CONCLUSION_ADMISSION_AND_CLAIM_LEDGER.md",
+          "fixtures/maestro-kernel/conclusion-admission/",
+          "plans/k2-conclusion-admission-plan.json",
+          "scripts/ops/verify_conclusion_admission.py"
+        ],
+        "deleted": []
+      },
+      "subagents": [],
+      "work_summary": "Converted the high-confidence proposal mechanism into one nonblocking report claim check, an append-only claim ledger, deterministic overturn incidents, reassertion detection, current-main skill adaptations, generated mirror/anchor updates, and MK675 registration.",
+      "decisions": [
+        "Semantic findings return UNVERIFIED_HYPOTHESIS instructions with work_blocked=false and exit zero.",
+        "Only CLI/input errors and self-test regressions return non-zero.",
+        "Keep the control inside the existing claim-classifier family instead of creating another active family or Authority Gate.",
+        "Adapt audit source-mode text after the current dispatcher properties because current main lacks the proposal's assumed source-fingerprint heading.",
+        "Regenerate canonical plugin mirrors and handoff-admission anchors through repository generators."
+      ],
+      "rejected_alternatives": [
+        "A fresh adversarial model review for every routine report.",
+        "A work-stopping conclusion gate.",
+        "Duplicating the nine already-covered rules as more prose.",
+        "Hand-editing the plugin mirror or governing-source anchor digests.",
+        "Claiming source validation as automatic firing or incident closure."
+      ],
+      "validation": {
+        "commands": [
+          "verify_conclusion_admission.py --base-dir . --self-test --json",
+          "verify_handoff_admission.py --fixtures fixtures/maestro-kernel/handoff-admission/cases.json --base-dir . --json",
+          "verify_fable5_derived_synthesis.py --base-dir . --json",
+          "generate_plugin_skill_mirror.py --base-dir . --check --json",
+          "generate_handoff_admission_anchor.py --base-dir . --check --json",
+          "run_mk675_contract_suite.py",
+          "git clone --no-local then checkout --detach e1d7f520acfb9f5324b3043ac254dff073000438",
+          "clean checkout: verify_conclusion_admission.py --base-dir . --self-test --json",
+          "clean checkout: run_mk675_contract_suite.py"
+        ],
+        "outcomes": [
+          "nine conclusion-admission fixtures passed and nine of nine mutations were caught",
+          "handoff-admission focused suite passed",
+          "Fable5 synthesis live records passed",
+          "canonical/plugin skill parity passed",
+          "generated governing-source anchors were current",
+          "MK675 suite returned failures=0",
+          "detached clean checkout at e1d7f520acfb9f5324b3043ac254dff073000438 had empty git status",
+          "clean checkout conclusion admission reported nine fixtures and mutation_caught=9",
+          "clean checkout MK675 suite returned failures=0"
+        ]
+      },
+      "external_operation": {
+        "status": "not_started_at_record_time",
+        "provider_or_paid_operation": false,
+        "runtime_or_public_mutation": false
+      },
+      "blockers": [],
+      "next_owner": "K2 Sol High writer for commit, clean-checkout verification, PR, CI poll, and AUTH-009 squash merge",
+      "non_claims": [
+        "no_Fable5_provider_execution",
+        "no_runtime_or_fresh_session_firing",
+        "no_installed_cache_freshness",
+        "no_observed_effective_prevention",
+        "no_INC_174_closure",
+        "no_product_user_final_acceptance"
+      ],
+      "recording_policy": {
+        "database_path": "research/mk675/fable5_derived/synthesis_records.json",
+        "blocking_effect": false,
+        "safe_work_continues": true,
+        "raw_private_material_persisted": false
+      }
+    },
+    {
+      "operation_id": "f5-activity-20260725-rt-recur-kernel-projection",
+      "timestamp_utc": "2026-07-25T16:23:12Z",
+      "user_intent": "Implement the adopted RT-RECUR permanent recording and projection design in maestro-kernel for steps 2 through 4 and 6, then merge only after focused, package, clean-checkout, review, and CI checks pass.",
+      "instructions": {
+        "summary": "Use RT-RECUR-ROOT permanent_design and implementation_spec_for_lane as the design source; keep exactly seven material event kinds, exclude noise and private payloads, add no authority store or gate, downgrade claims on projection debt, and keep hook connection and observed prevention outside this lane.",
+        "authority_scope": "AUTH-010 grants maestro-kernel implementation, PR, CI-green squash merge, and main SHA readback; remote-ops, ODG, user-global configuration, hook connection step 5, and shadow rollout step 8 are excluded."
+      },
+      "source_identity": {
+        "base_head": "80f13c03cef038f3115ae7cecf631035540eaba1",
+        "worktree": "recur-impl-kernel-20260726",
+        "branch": "codex/recur-material-projection-20260726"
+      },
+      "files": {
+        "read": [
+          "AGENTS.md",
+          "README.md",
+          "skills/skill-select/SKILL.md",
+          "skills/fable5-derived-advisory-synthesis/SKILL.md",
+          "controls/bridge-registry-contract.v1.json",
+          "scripts/ops/verify_bridge_registry_projection.py",
+          "scripts/ops/generate_handoff_admission_anchor.py",
+          "scripts/ops/mk733j_session_continuity.py",
+          "scripts/ops/run_mk675_contract_suite.py",
+          "research/mk675/fable5_derived/synthesis_records.json"
+        ],
+        "changed": [
+          "controls/bridge-registry-contract.v1.json",
+          "fixtures/maestro-kernel/bridge-registry/positive_registry_projection.json",
+          "package.json",
+          "research/mk675/fable5_derived/synthesis_records.json",
+          "scripts/ops/run_mk675_contract_suite.py",
+          "scripts/ops/verify_bridge_registry_projection.py"
+        ],
+        "created": [
+          "controls/material-work-event.v1.json",
+          "controls/recording-debt.v1.json",
+          "controls/projection-receipt.v1.json",
+          "fixtures/maestro-kernel/material-work-projection/",
+          "plans/recur-material-work-projection-20260726.json",
+          "scripts/ops/project_material_work.py",
+          "scripts/ops/generate_work_index.py",
+          "scripts/ops/verify_material_work_projection.py"
+        ],
+        "deleted": []
+      },
+      "subagents": [],
+      "work_summary": "Converted the adopted recurrence design into the smallest kernel source surface: deterministic event identity, four target adapters, append-only debt and resolution, atomic generated handoff views, registry v1.1 status fields, sanitized WORK_INDEX, and mutation-sensitive operational fixtures.",
+      "decisions": [
+        "Canonical ledger source_delta bytes determine the event digest, event id, PMS request id, and target idempotency key.",
+        "Target failure never rolls back ordinary work; it opens local debt and downgrades only unsupported sync, handoff, or visibility claims.",
+        "PMS has no implicit transport in the CLI; a connected step-5 harness supplies a sender while disconnected runs still generate the compatible sanitized payload and open debt.",
+        "Obsidian uses one deterministic Japanese redacted Markdown view per event.",
+        "HANDOFF_AUTHORITATIVE.json is the machine source and Markdown is a generated view; --check proves freshness only.",
+        "WORK_INDEX reads allowlisted registry status fields and never dereferences private project payloads."
+      ],
+      "rejected_alternatives": [
+        "A new cross-project authority database or durable service.",
+        "A work-blocking projection gate.",
+        "Separate projector scripts with divergent identity and retry semantics.",
+        "Silent success when PMS, Obsidian, bridge registration, or handoff output is unavailable.",
+        "Treating schema, fixture, validator, PR, or CI state as hook firing or observed prevention."
+      ],
+      "validation": {
+        "commands": [
+          "python3 scripts/ops/verify_material_work_projection.py --base-dir . --self-test --json",
+          "python3 scripts/ops/verify_bridge_registry_projection.py --base-dir . --self-test --json",
+          "python3 -m py_compile scripts/ops/project_material_work.py scripts/ops/generate_work_index.py scripts/ops/verify_material_work_projection.py scripts/ops/verify_bridge_registry_projection.py"
+        ],
+        "outcomes": [
+          "material-work focused verifier passed ten operational paths and caught ten of ten bound mutations",
+          "bridge registry v1.1 verifier passed one positive and seven semantic negatives with seven of seven mutations caught",
+          "all four changed Python entrypoints compiled successfully"
+        ]
+      },
+      "external_operation": {
+        "status": "not_started_at_record_time",
+        "provider_or_paid_operation": false,
+        "runtime_or_public_mutation": false
+      },
+      "blockers": [],
+      "next_owner": "Current Sol High kernel writer for synthesis validation, MK675 suite, clean-checkout validation, commit, AUTH-010 PR, review and CI inspection, squash merge, and main SHA readback.",
+      "non_claims": [
+        "no_Fable5_provider_execution",
+        "no_hook_connection_step_5",
+        "no_installed_cache_or_fresh_session_firing",
+        "no_live_PMS_or_Obsidian_delivery",
+        "no_controller_receipt_integration",
+        "no_observed_effective_prevention",
+        "no_product_user_final_acceptance"
+      ],
+      "recording_policy": {
+        "database_path": "research/mk675/fable5_derived/synthesis_records.json",
+        "blocking_effect": false,
+        "safe_work_continues": true,
+        "raw_private_material_persisted": false
+      }
+    },
+    {
+      "operation_id": "f5-activity-20260801-pms-hermes-observability-thresholds",
+      "timestamp_utc": "2026-07-31T18:27:32Z",
+      "user_intent": "Adopt TH-OBS-1..10 into the existing real Maestro material Stop selector while preserving exact-scope anti-overgate behavior and active PMS product ownership.",
+      "instructions": {
+        "summary": "Read current authority and executable consumer sources in order; verify the immutable four-file advisory identity; modify only the shared selector, actual Stop-consumer verifier, synthesis database, and updater-owned genome fitness fields; run only the focused checks; return without Git or runtime mutation.",
+        "authority_scope": "One gpt-5.6-sol high protected shared-core writer on base 80f57b3814605c64e49e0e91a1076a9ca2284fe8. No subagents, product writer, shared runtime, PR worktree, commit, push, merge, deploy, provider, credential, cleanup, deletion, or acceptance authority."
+      },
+      "source_identity": {
+        "base_head": "80f57b3814605c64e49e0e91a1076a9ca2284fe8",
+        "origin_main": "80f57b3814605c64e49e0e91a1076a9ca2284fe8",
+        "worktree": "pms-hermes-observability-thresholds-20260801",
+        "branch": "codex/pms-hermes-observability-thresholds-20260801",
+        "advisory_commit": "338ec1394e04ab0adb79577adbed34eae190aba9",
+        "advisory_tree": "851f69c7201fc4d7e7fe9633cbacbe4b218ad8e0"
+      },
+      "files": {
+        "read": [
+          "AGENTS.md",
+          "README.md",
+          "controls/active-policy-index.json",
+          "docs/ops/HERMES_GENERAL_HARNESS_MIGRATION_P0_AUTHORITY_20260730.md",
+          ".codex/hooks/mk733j-stop.py",
+          "scripts/ops/mk_whole_goal_control.py",
+          ".codex/hooks/verify-recur-projector-hook.py",
+          "scripts/ops/update_genome_fitness.py",
+          "research/mk675/fable5_decision_os/genome_register.json",
+          "research/mk675/fable5_derived/synthesis_records.json",
+          "scripts/ops/verify_fable5_derived_synthesis.py",
+          "MCP-tool-contract@338ec139:docs/pms-observability-dna/10_FABLE5_METHOD_KNOWLEDGE.md",
+          "MCP-tool-contract@338ec139:docs/pms-observability-dna/00_INDEX_AND_TRACEABILITY.md",
+          "MCP-tool-contract@338ec139:docs/pms-observability-dna/07_DECISION_CIRCUIT.json",
+          "MCP-tool-contract@338ec139:docs/pms-observability-dna/08_INTAKE_MAPPING.json"
+        ],
+        "changed": [
+          ".codex/hooks/verify-recur-projector-hook.py",
+          "research/mk675/fable5_decision_os/genome_register.json",
+          "research/mk675/fable5_derived/synthesis_records.json",
+          "scripts/ops/mk_whole_goal_control.py"
+        ],
+        "created": [],
+        "deleted": []
+      },
+      "subagents": [],
+      "work_summary": "Added one optional structured observation evaluation to the existing shared selector and exercised it through the unchanged real Stop consumer. All ten threshold IDs report deterministic nonnumeric states; holds remain exact, ordinary work remains allowed, and raw unknown content is rejected rather than persisted. Forward-corrected TH-OBS-5 to consume the existing five-step decision ladder in order without computing eligibility or claiming runtime firing: deterministic invariant, established observed-Wilson policy, cooling plus veto, independent reversible system decision, then true user or external consent.",
+      "decisions": [
+        "The registered mk733j Stop hook plus select_live_material_continuation is the actual consumer because one receipt-bound material Stop transition imports and invokes that selector exactly once; the verifier exercises this edge but is not itself a runtime surface.",
+        "Only unsupported acceptance or quiet claims, the named premise transition, destructive cleanup or deletion, protected transition, new-control creation, recon acceptance, unknown-classification acceptance, or compromise selection may be held. Read-only investigation, implementation, bounded repair, correct-worker continuation, and supplied disjoint continuation remain allowed.",
+        "Genome citation and fitness changes are updater-owned support telemetry. They do not change gene lifecycle status, meet an observable-outcome cohort, promote a gene, or establish observed effectiveness.",
+        "PR #602 is an integration dependency, not current source authority, because it is stale and unmerged while immutable origin/main is the bound implementation base; any later PR #602 integration must rebase after this serial change.",
+        "TH-OBS-7 accepts no raw content and computes no digest; only a caller-supplied store-salted SHA-256 digest can enter the bounded result.",
+        "TH-OBS-5 consumes explicit existing-route and exact-surface facts without inferring KL-7 tier qualification, acceptance rate, observation count, Wilson results, system-review authority, canonical content authority, LaunchAgent installation, natural firing, or observed success."
+      ],
+      "forward_corrections": [
+        {
+          "correction_id": "th-obs-5-existing-route-order-20260801",
+          "source_thread_id": "019fb338-cb6b-7363-8f7d-6328ab2aefd8",
+          "source": "user-provided current MCP-tool-contract source truth",
+          "current_source_identity": "MCP-tool-contract@5f40fd9; KL-7 docs/admin-console-redesign/10-knowledge-loop-evolution.md:133-167; KL-8 docs/admin-console-redesign/11-tier-d-efficient-gate.md:9-104; scripts/kl_batch_review.py",
+          "cause_changed": "A human review or acceptance wait is no longer treated as an automatic reason to queue a human gate. The selector evaluates an explicitly admitted established deterministic invariant first, a learned low-risk result only with actual-observation and already-established Wilson-policy references second, established cooling and veto third, an explicitly permitted independent reversible accept or reject or defer system decision fourth, and only then an explicit unresolved true user or external-consent residual.",
+          "preserved_boundaries": [
+            "true user and external-consent gates remain strict",
+            "proposer and reviewer identities must differ",
+            "decisions must be reversible",
+            "learned policy requires actual observations and an already-established Wilson result",
+            "ordinary and supplied disjoint product work remains allowed",
+            "user_capability_delta and support_work_progress_credit remain zero",
+            "observed_effective remains false"
+          ],
+          "deliberately_unimplemented": [
+            "KL-7 Tier A or Tier B qualification calculation",
+            "acceptance-rate or observation-count inference",
+            "Wilson lower-bound calculation or policy establishment",
+            "system-reviewer or canonical import and vault content authority",
+            "host LaunchAgent installation or natural-event firing",
+            "auto-accept for the current 15 items without proposer identity",
+            "MCP-tool-contract, PMS, remote-ops, runtime, schema, control, or review-family changes"
+          ],
+          "current_source_nonclaims": {
+            "host_launch_agent_installed": false,
+            "natural_firing_count": 0,
+            "natural_firing_is_observed_effectiveness": false,
+            "canonical_vault_content_connected": false,
+            "current_15_items_have_proposer_identity": false,
+            "current_15_items_immediate_auto_accept_eligible": false
+          },
+          "validation_status": "focused_recheck_passed_36_assertions"
+        },
+        {
+          "correction_id": "th-obs-goal-task-checklist-sync-20260801",
+          "source_thread_id": "019fb338-cb6b-7363-8f7d-6328ab2aefd8",
+          "source": "direct user request to define final goal, precision thresholds, complete implementation path, tasks, checklist, and Fable5-Ultra absorption state",
+          "cause_changed": "The initial four-path selector candidate now has a five-path existing-family Goal, task-register, checklist, implementation-document, and validator synchronization layer plus one required existing INC-178 entrypoint-digest refresh. The current candidate has ten changed paths while the original writer scope remains a preserved historical four-path record.",
+          "current_candidate_changed_paths": [
+            ".codex/hooks/verify-recur-projector-hook.py",
+            "docs/ops/CHECKLIST_MK737_FABLE5_OS_OPERATIONAL_ADOPTION_AND_VALUE_CALIBRATION_20260713.md",
+            "docs/ops/MK737_FABLE5_OS_OPERATIONAL_ADOPTION_AND_VALUE_CALIBRATION_20260713.md",
+            "research/mk675/fable5_decision_os/genome_register.json",
+            "research/mk675/fable5_decision_os/inc178_whole_goal_work_selection_control.json",
+            "research/mk675/fable5_decision_os/mk737_operational_adoption_plan.json",
+            "research/mk675/fable5_derived/synthesis_records.json",
+            "research/mk675/registers/task_register.json",
+            "scripts/ops/mk_whole_goal_control.py",
+            "scripts/ops/verify_mk737_fable5_os_operational_adoption_plan.py"
+          ],
+          "task_delta": ["MK737-TH-OBS-COMPLETION", "THOBS-T0", "THOBS-T1", "THOBS-T2", "THOBS-T3", "THOBS-T4", "THOBS-T5"],
+          "checklist_delta": "docs/ops/CHECKLIST_MK737_FABLE5_OS_OPERATIONAL_ADOPTION_AND_VALUE_CALIBRATION_20260713.md#th-obs-goal-reversed-completion",
+          "precision_boundary": "Safety invariants are all-or-nothing; 36/36 proves source semantics only; one event proves firing once; genome probation, learned low-risk automation, MK749 cost qualification, and final normal-user acceptance remain separate later thresholds.",
+          "validation_status": "MK737_live_and_negative_self_test_PASS_THOBS_36_assertions_PASS_fitness_fresh_synthesis_PASS_diff_check_PASS_independent_focused_recheck_PASS",
+          "preserved_boundaries": [
+            "no new schema, gate, monitor, skill, queue, reviewer, or evidence family",
+            "ordinary safe work remains fail-open",
+            "protected integration remains an Authority Gate",
+            "seven-lane fact-authority principle is adapted but lane count and 1.02M-token cost are not defaults",
+            "support_work_progress_credit remains zero"
+          ],
+          "non_claims": [
+            "no complete Fable5-Ultra absorption",
+            "no protected integration",
+            "no natural firing",
+            "no observed-effective prevention",
+            "no cost superiority",
+            "no Hermes or PMS product adoption",
+            "no product UX operation or user acceptance"
+          ]
+        },
+        {
+          "correction_id": "pms-final-learned-low-risk-threshold-20260801",
+          "source_thread_id": "019fa83b-95c1-7871-b63b-395e6c7b0e06",
+          "destination_thread_id": "019fb338-cb6b-7363-8f7d-6328ab2aefd8",
+          "source": "PMS_HERMES_TH_OBS_GOAL_IMPLEMENTATION_COORDINATION_V1_CONSUMED current-source threshold handoff",
+          "cause_changed": "Replaced the provisional 20-observation and Wilson lower-bound 0.90 learned-policy threshold with the PMS final action/version/scope-bound profile: at least 60 natural actions over at least four weeks, at least 15 natural actions per enabled class, and an already-established one-sided Wilson95 lower bound strictly greater than 0.95.",
+          "qualification_profile": "pms_learned_low_risk_n60_ge4w_min15_per_enabled_class_wilson95_lcb_gt_0_95.v1",
+          "consumer_behavior": [
+            "the existing TH-OBS-5 consumer requires caller-proved action, version, scope, cohort, qualification-result, Wilson-result, and reversible-decision references",
+            "Hermes never computes or infers the observation count, time window, enabled-class denominator, Wilson result, actor authority, or content authority",
+            "an insufficient denominator is preserved as NOT_MEASURABLE and falls through to the existing cooling-veto, independent system-review, or true residual-consent route",
+            "ordinary and disjoint authorized product work remains fail-open"
+          ],
+          "cross_repo_boundary": {
+            "PMS_repo": "MCP-tool-contract",
+            "PMS_writer_count": 1,
+            "PMS_mutation_by_Hermes": false,
+            "maestro_only_write_set": true,
+            "PMS_product_progress_credit": 0
+          },
+          "integration_state": {
+            "commit": "1800fc4f8af5d88a196217baddbbe173e2296a1d",
+            "draft_pr": 606,
+            "protected_main_merged": false,
+            "natural_firing": false,
+            "observed_effective": false
+          },
+          "current_candidate_path_count": 10,
+          "required_digest_refresh_path": "research/mk675/fable5_decision_os/inc178_whole_goal_work_selection_control.json",
+          "validation_status": "THOBS_36_assertions_including_bound_profile_and_NOT_MEASURABLE_fallthrough_PASS_MK737_live_and_negative_self_test_PASS_synthesis_PASS_fitness_fresh_INC178_whole_goal_PASS_INC178_codex_security_self_test_PASS_diff_check_PASS",
+          "non_claims": [
+            "no protected integration",
+            "no natural firing",
+            "no installed-cache freshness",
+            "no observed-effective prevention",
+            "no PMS or Hermes product acceptance",
+            "no cost superiority"
+          ]
+        }
+      ],
+      "rejected_alternatives": [
+        "A standalone observability schema, monitor, validator family, gate family, runtime, receipt, ledger, or evidence packet.",
+        "Changing the registered Stop hook or material-event schemas instead of using its existing selector edge.",
+        "Reading or mutating PR #602, PR #605, active PMS product, remote-ops, shared runtime, private stores, or user configuration.",
+        "Encoding absent or insufficient threshold predicates as measured zero.",
+        "Treating a focused fixture result, synthesis citation, or genome fitness count as natural firing, adoption, promotion, product progress, or observed effectiveness.",
+        "Copying unconditional edge auto-accept into canonical import or vault content authority, calculating KL-7 qualification inside Hermes, or granting reviewer authority from an unsourced actor label."
+      ],
+      "validation": {
+        "checks": [
+          "focused actual Stop-consumer verifier",
+          "Fable5 synthesis contract verifier",
+          "genome fitness negative controls and freshness check",
+          "Python compilation, diff whitespace, and changed-path ceiling"
+        ],
+        "outcomes": [
+          "The actual Stop-consumer verifier passed 36 assertions, including all ten thresholds, false predicates, exact-scope holds, unexercised truthfulness, missing metric provenance, and short and long unknown handling.",
+          "Final TH-OBS-5 Stop-consumer cases passed for deterministic-invariant first precedence, established actual-observation and Wilson-policy second precedence, cooling-and-veto third precedence, independent reversible system decision fourth precedence, accept or reject or defer preservation, true user or external-consent residual fifth precedence, unadmitted content rejection, reversible-decision enforcement, the 15-item missing-proposer negative, and the unavailable source-route negative."
+        ]
+      },
+      "external_operation": {
+        "status": "not_performed",
+        "provider_or_paid_operation": false,
+        "runtime_or_public_mutation": false,
+        "git_protected_operation": false
+      },
+      "blockers": [],
+      "next_owner": "Hermes General Harness Migration CMD for independent acceptance and protected serial integration before any later PR #602 rebase.",
+      "non_claims": [
+        "no_Fable5_provider_execution",
+        "no_product_lane_touch_or_progress_credit",
+        "no_installed_cache_or_fresh_session_natural_firing",
+        "no_runtime_reachability_or_Hermes_PMS_adoption",
+        "no_host_LaunchAgent_installation_or_natural_firing",
+        "no_canonical_vault_content_connection_or_authority",
+        "no_15_item_auto_accept_without_proposer_identity",
+        "no_observed_effective_prevention_or_gene_promotion",
+        "no_cost_superiority",
+        "no_product_user_or_final_acceptance",
+        "no_commit_push_PR_merge_deploy_or_runtime_mutation"
+      ],
+      "recording_policy": {
+        "database_path": "research/mk675/fable5_derived/synthesis_records.json",
+        "blocking_effect": false,
+        "safe_work_continues": true,
+        "raw_private_material_persisted": false
+      }
+    },
+    {
+      "operation_id": "f5-activity-20260802-pms-g3-standing-cmd-task-authority",
+      "timestamp_utc": "2026-08-02T13:25:09Z",
+      "user_intent": "Correct the Fable5 durable-goal G3 authority boundary so bounded local non-UI Codex task and history creation uses current exact standing PMS-CMD delegation instead of per-task direct user reapproval, without weakening natural-verification thresholds or protected user gates.",
+      "instructions": {
+        "summary": "Refresh exact origin/main, isolate one clean shared-core writer, inspect current goal, skill, CMD authority, verifier, and negative fixture, change only the existing family, run focused checks, and stop without product/runtime/private-store, installed-cache, credential, destructive, or Git integration mutation.",
+        "authority_scope": "One GPT-5.6 Sol high shared-core writer with zero parallel writers; bounded maestro-kernel source edits only; TRS 10, PSS 7, controls-authority-Maestro hard override."
+      },
+      "files": {
+        "read": [
+          "AGENTS.md",
+          "controls/active-policy-index.json",
+          "controls/fable5-os-durable-user-value-goal.v1.json",
+          "skills/skill-select/SKILL.md",
+          "skills/cmd-delegation-orchestration/SKILL.md",
+          "skills/fable5-os-durable-user-value-goal/SKILL.md",
+          "plugins/orch-next-codex-harness/skills/fable5-os-durable-user-value-goal/SKILL.md",
+          "scripts/ops/verify_mk753_fable5_os_durable_user_value_goal.py",
+          "fixtures/mk675/fable5_os_durable_user_value_goal/negative_evidence_substitution_as_progress.json",
+          "research/mk675/fable5_derived/synthesis_records.json"
+        ],
+        "changed": [
+          "controls/fable5-os-durable-user-value-goal.v1.json",
+          "skills/fable5-os-durable-user-value-goal/SKILL.md",
+          "plugins/orch-next-codex-harness/skills/fable5-os-durable-user-value-goal/SKILL.md",
+          "scripts/ops/verify_mk753_fable5_os_durable_user_value_goal.py",
+          "fixtures/mk675/fable5_os_durable_user_value_goal/negative_evidence_substitution_as_progress.json",
+          "research/mk675/fable5_derived/synthesis_records.json"
+        ],
+        "created": [],
+        "deleted": []
+      },
+      "subagents": [],
+      "work_summary": "Replaced the stale G3 per-task direct-consent requirement with exact standing-CMD admission for at most one local non-UI task after each distinct cause-changing repair or admitted natural checkpoint. Preserved no concurrency, unchanged retry, synthetic denominator, manual hook/PMS/SQL fallback, duplicate import/proposal/review, truthful nondeleting history, 10/10 natural thresholds, quarantine and never-auto lifecycle, support credit zero, and protected user gates.",
+      "decisions": [
+        "The first failing seam was authority classification before local task and history creation; current cmd-delegation semantics already assign ordinary bounded reversible non-UI dispatch to standing delegation, so no CMD skill mutation was needed.",
+        "Task creation and truthful persistence prove only dispatch existence. They do not enter the natural accepted-influence denominator or prove G3 PASS.",
+        "UI use or change, visible design acceptance, public deploy or release, credential or secret mutation, destructive history or data action, authority transfer, and explicit final acceptance remain exact Authority Gates.",
+        "The canonical skill is the only hand-edited skill source; the repository plugin mirror was generated and byte parity checked."
+      ],
+      "forward_corrections": [
+        {
+          "correction_id": "pms-g3-canonical-producer-sessionstart-store-binding-20260802",
+          "source": "newer exact PMS checkpoint received before CMD integration",
+          "cause_changed": "The active G3 cause is A_ACCEPTED_ONLY_PROJECTION_STORE_BINDING_MISMATCH, not a generic project-manifest path or digest mismatch. SessionStart current-state and accepted-only owner-stdio bind a different owner-only store identity from the canonical runtime producer store; selector, release, and render source are current, and divergence precedes capture, App Server, and model.",
+          "checkpoint_truth": {
+            "accepted_supply_delta": 1,
+            "canonical_preview": {"status": "PASS", "applied_count": 1, "accepted_sources": 2, "sole_influence": true, "exclusions": 0},
+            "latest_standing_authorized_task_denominator_increment": 0,
+            "accepted_content_applicability_influence": "0/10"
+          },
+          "next_cause_changing_action": "Bind SessionStart current-state and accepted-only owner-stdio to the canonical runtime producer store identity before PMS-CMD admits another task.",
+          "preserved_boundaries": [
+            "standing task authority unchanged",
+            "delivery or typed unavailable remains 1/10",
+            "accepted content applicability influence remains 0/10",
+            "supply and preview facts do not count as natural G3 progress",
+            "all protected action gates remain exact",
+            "support_work_progress_credit remains zero"
+          ]
+        }
+      ],
+      "rejected_alternatives": [
+        "A new gate, schema, monitor, queue, incident, skill family, or sidecar.",
+        "Changing the existing CMD skill when its standing-delegation rule already covers the exact ordinary non-UI operation class.",
+        "Unlimited, concurrent, unchanged, synthetic, manual-hook, manual-PMS, manual-SQL, or duplicate import/proposal/review tasks.",
+        "Treating task existence, source parity, verifier PASS, or fixture PASS as natural firing, accepted influence, installed-cache freshness, runtime adoption, observed effectiveness, or final acceptance."
+      ],
+      "validation": {
+        "checks": [
+          "focused MK753 positive control verifier",
+          "focused existing-family negative fixture verifier",
+          "plugin mirror generation and check",
+          "canonical-plugin SHA-256 parity",
+          "JSON and Python parse checks",
+          "Git diff whitespace and exact-scope checks"
+        ],
+        "outcomes": [
+          "Focused control verification passed with 42 negative cases and 59 active mutants.",
+          "The adapted negatives reject reintroduced per-task reapproval, unlimited tasks, concurrency, unchanged retry, removed UI/credential/destructive/final-acceptance gates, and task-existence promotion.",
+          "Repository plugin mirror check and canonical-plugin byte parity passed; supply and canonical-preview support facts are rejected as natural G3 progress."
+        ]
+      },
+      "external_operation": {
+        "status": "not_performed",
+        "provider_or_paid_operation": false,
+        "runtime_or_public_mutation": false,
+        "git_protected_operation": false
+      },
+      "blockers": [
+        "candidate remains uncommitted and unintegrated by explicit instruction"
+      ],
+      "next_owner": "Canonical runtime producer and SessionStart store-binding owner for the cause-changing repair, then Maestro integration owner for independent diff review and separately authorized source integration; after that distinct repair or another admitted natural checkpoint, PMS-CMD may admit at most one exact local non-UI natural verification task under current standing delegation.",
+      "non_claims": [
+        "no_Fable5_provider_execution",
+        "no_PMS_product_repo_runtime_private_store_or_task_mutation",
+        "no_installed_cache_freshness_or_fresh_session_selection",
+        "no_natural_G3_task_execution_or_denominator_advance",
+        "no_G3_accepted_content_applicability_influence_PASS",
+        "no_observed_effective_prevention",
+        "no_UI_design_public_release_credential_destructive_authority_transfer_or_final_acceptance",
+        "no_commit_push_PR_merge_or_deploy"
+      ],
+      "recording_policy": {
+        "database_path": "research/mk675/fable5_derived/synthesis_records.json",
+        "blocking_effect": false,
+        "safe_work_continues": true,
+        "raw_private_material_persisted": false
+      }
+    },
+    {
+      "operation_id": "f5-activity-20260803-inc191-process-cost-structural-repair",
+      "timestamp_utc": "2026-08-03T00:00:00Z",
+      "user_intent": "Convert the existing Fable5 and Decision OS causal-audit and cost-control mechanisms into the current INC-191 executable selection and fixture surfaces while the remote-ops product journey continues independently.",
+      "instructions": {
+        "summary": "Reuse existing local advisory sources; separate mutation scope from causal search scope; require one decision-changing A/B/C lens union at the existing recurrence trigger; route deterministic remainders and waits without another model; preserve report and token non-claims; do not call an external provider or block product work.",
+        "authority_scope": "One protected Maestro Kernel writer in an isolated origin/main worktree, followed by CMD independent review and one deterministic correction; no product, installed-cache, deploy, credential, destructive, or protected Git integration authority."
+      },
+      "files": {
+        "read": [
+          "skills/fable5-derived-advisory-synthesis/SKILL.md",
+          "research/mk675/fable5_decision_os/mk733f_llm_reproducibility_contract_enforcement.json",
+          "skills/codex-parallel-lanes/SKILL.md",
+          "skills/codex-parallel-lanes/scripts/validate_dispatch_envelope.py",
+          "skills/report-guard/SKILL.md",
+          "scripts/ops/verify_mk749_model_routing_cost_control.py",
+          "scripts/ops/verify_mk728_skill_plugin_distribution_health_check.py",
+          "scripts/ops/verify_quality_cost_improvement_ecosystem.py",
+          "controls/mk675/incident_countermeasure_matrix.json"
+        ],
+        "changed": [
+          "controls/mk675/incident_countermeasure_matrix.json",
+          "fixtures/maestro-kernel/skills/invalid_mk749_dispatch_envelope_bypass_matrix.json",
+          "fixtures/maestro-kernel/skills/quality_cost_improvement_ecosystem_cases.json",
+          "fixtures/mk675/skill_distribution/positive_mk728_skill_plugin_distribution.json",
+          "research/mk675/fable5_derived/synthesis_records.json",
+          "research/mk675/skill_distribution/mk728_skill_plugin_distribution_health_check.json",
+          "scripts/ops/verify_mk728_skill_plugin_distribution_health_check.py",
+          "scripts/ops/verify_mk749_model_routing_cost_control.py",
+          "scripts/ops/verify_quality_cost_improvement_ecosystem.py",
+          "skills/codex-parallel-lanes/SKILL.md",
+          "skills/codex-parallel-lanes/references/six-block-template.md",
+          "skills/codex-parallel-lanes/scripts/build_operational_dispatch_envelope.py",
+          "skills/codex-parallel-lanes/scripts/dispatch_lane.sh",
+          "skills/codex-parallel-lanes/scripts/validate_dispatch_envelope.py",
+          "skills/report-guard/SKILL.md",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/SKILL.md",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/references/six-block-template.md",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/scripts/build_operational_dispatch_envelope.py",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/scripts/dispatch_lane.sh",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/scripts/validate_dispatch_envelope.py",
+          "plugins/orch-next-codex-harness/skills/report-guard/SKILL.md"
+        ],
+        "created": [
+          "fixtures/maestro-kernel/skills/positive_mk749_operational_envelope_producer_input.json",
+          "skills/codex-parallel-lanes/scripts/build_operational_dispatch_envelope.py",
+          "plugins/orch-next-codex-harness/skills/codex-parallel-lanes/scripts/build_operational_dispatch_envelope.py"
+        ],
+        "deleted": []
+      },
+      "subagents": [
+        {
+          "owner": "canonical codex-parallel-lanes Sol High writer",
+          "start": "accepted on immutable origin/main worktree",
+          "readback": "zero Git delta with rapid context growth",
+          "terminal_status": "interrupted by CMD; worktree preserved; slot released"
+        },
+        {
+          "owner": "/root/inc191_structural_repair",
+          "start": "fresh no-history Sol High protected writer in the preserved worktree",
+          "readback": "15 owned source, fixture, mirror, incident, distribution, and synthesis paths after CMD deterministic correction",
+          "terminal_status": "returned for CMD independent acceptance; no commit, push, PR, deploy, runtime, or device operation"
+        }
+      ],
+      "work_summary": "The first canonical launcher attempt itself reproduced the zero-delta context-cost nonfire and was stopped without product impact. A single fresh writer then implemented executable prelaunch admission and existing-family negative fixtures. CMD independently corrected incomplete installed-root coverage, then corrected the returned candidate's producer nonfire: the operational launcher now consumes compact input, invokes the deterministic producer before prompt/model/slot work, validates and preserves the derived envelope only for an admitted model route, and terminates typed no-model selections before writer creation.",
+      "decisions": [
+        "Narrow write ownership must not narrow the immutable read-only producer-consumer causal search required to answer one exclusive lens question.",
+        "A status or alignment-only audit changes no next action and must self-demote instead of consuming another lane.",
+        "A named literal, pin, deterministic one-point remainder, or unchanged external wait is not a reasoning-writer task.",
+        "A mandatory operational_admission validator without an executable producer reproduces manual envelope repair; the normal launcher must consume compact inputs and call the producer itself.",
+        "All-NO_ADDED_VALUE, mechanical pin, deterministic one-point remainder, and unchanged wait returns terminate before prompt, model, or writer-slot activity.",
+        "Missing report synchronization blocks only unsupported closeout, readiness, completion, or phase-advance wording; safe cause-changing work proceeds with a non-claim.",
+        "Live token hard-stop remains unavailable until live cumulative usage and a running-worker interrupt target are both supplied."
+      ],
+      "forward_corrections": [
+        {
+          "correction_id": "inc191-operational-envelope-producer-and-launcher-binding-20260803",
+          "source": "fourth-oversight integration hold and two executable nonfire follow-ups",
+          "cause_changed": "The first candidate required operational_admission but had no deterministic producer; the first producer draft also made all-NO_ADDED_VALUE unreachable and left direct launcher bypass open.",
+          "corrected_contract": "The existing codex-parallel-lanes operational launcher accepts compact producer input plus an explicit durable output path, invokes the producer before prompt/model/slot work, rejects caller-supplied full envelopes, derives all-NO_ADDED_VALUE before action selection, and consumes every no-model receipt without creating a writer.",
+          "focused_cases": [
+            "compact input to producer to validator to launcher prelaunch binding",
+            "caller-authored otherwise-valid full envelope bypass rejected",
+            "all lenses NO_ADDED_VALUE no-model return",
+            "mechanical pin no-model return",
+            "deterministic one-point remainder no-model return",
+            "unchanged external wait no-model return",
+            "incomplete compact input fail-closed"
+          ],
+          "preserved_boundaries": [
+            "no new schema, control, validator, monitor, queue, or skill family",
+            "deterministic fixture replay remains separate",
+            "token_ceiling_executable remains false",
+            "installed cache and user skill roots remain read-only",
+            "fresh-session selection, natural cross-session consumption, and observed-effective prevention remain unclaimed"
+          ]
+        }
+      ],
+      "rejected_alternatives": [
+        "Another external Fable5 call, new audit vote, second active writer, new control family, or product hold.",
+        "Treating two-file mutation authority as a two-file causal-read limit.",
+        "Mutating the user skill root or claiming installed-cache adoption from repo-source parity.",
+        "Aggregating the separately reported 373900 usage with the exact six-attempt 899022 total without uniqueness evidence."
+      ],
+      "validation": {
+        "checks": [
+          "MK749 operational envelope and adversarial matrix verifier",
+          "MK749 deterministic producer and executable launcher round-trip",
+          "INC-191 quality-cost fixture verifier",
+          "MK727 report claim guard verifier",
+          "MK728 source, fixture, and explicit installed-root verifier",
+          "canonical-plugin mirror parity and Git diff whitespace check"
+        ],
+        "outcomes": [
+          "Focused repo-source verifiers and plugin mirror parity passed.",
+          "Compact triggered input reached the existing operational validator and fake-model prelaunch path; caller-authored full-envelope bypass failed before model or slot.",
+          "All-NO_ADDED_VALUE, pin, deterministic remainder, and unchanged wait returned exact no-model receipts with no output envelope or fake writer invocation.",
+          "Explicit read-only installed-root validation failed as expected for stale orch-skill-ecosystem-improvement, priority-action-router, and report-guard copies.",
+          "No product source, runtime, device, user cache, or external provider was mutated."
+        ]
+      },
+      "external_operation": {
+        "status": "not_performed",
+        "provider_or_paid_operation": false,
+        "runtime_or_public_mutation": false,
+        "git_protected_operation": false
+      },
+      "blockers": [
+        "the structural candidate remains locally committed only and unintegrated; no push, PR, merge, deploy, installed-cache adoption, or natural firing has occurred",
+        "installed unprefixed skills remain stale and fresh-session selection is unverified",
+        "remote-ops AGENTS routing pointer remains a separate writer-zero checkpoint",
+        "live cumulative usage and running-worker interrupt binding are absent"
+      ],
+      "next_owner": "Maestro Kernel integration owner for independent final diff acceptance and separately authorized Git integration; installed-skill adoption owner later for readback, cache parity, fresh-session selection, natural return consumption, and two comparable observed-effective prevention phases.",
+      "non_claims": [
+        "no_Fable5_provider_execution_or_runtime_authority",
+        "no_product_progress_or_product_hold",
+        "no_installed_cache_adoption_or_fresh_session_firing",
+        "no_executable_token_hard_stop",
+        "no_observed_effective_prevention",
+        "no_P2P_P23_V5_release_user_or_final_acceptance",
+        "no_commit_push_PR_merge_or_deploy"
+      ],
+      "recording_policy": {
+        "database_path": "research/mk675/fable5_derived/synthesis_records.json",
+        "blocking_effect": false,
+        "safe_work_continues": true,
+        "raw_private_material_persisted": false
+      }
+    }
+  ],
+  "role": "repo-local support-only conversion layer; preserves advisory source identity; never a reviewer, dependency, or gate"
+}

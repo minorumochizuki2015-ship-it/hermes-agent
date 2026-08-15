@@ -1,0 +1,584 @@
+{
+  "authority_policy_reference": "maestro-kernel:research/mk675/fable5_decision_os/mk737_p1a_skill_distribution_ownership.json",
+  "authority_policy_source": "maestro_kernel_active_policy_and_routing",
+  "channels": {
+    "claude": {
+      "manifest": ".claude-plugin/plugin.json",
+      "mcp": ".mcp.json",
+      "skills": "skills"
+    },
+    "codex": {
+      "manifest": ".codex-plugin/plugin.json",
+      "mcp": ".mcp.json",
+      "skills": "skills"
+    }
+  },
+  "claims": {
+    "cross_project_acceptance": false,
+    "exclusive_default": false,
+    "installed_adoption": false,
+    "persistent_runtime_acceptance": false,
+    "source_bundle": true
+  },
+  "execution_owner": "hermes",
+  "heartbeat_terminal_authority": {
+    "contract_id": "INC191_PRE_IDLE_SUCCESSOR_ADMISSION_V1",
+    "contract_version": "1.1.0",
+    "profile": "skills/heartbeat-cmd-control-guard/OPERATIONAL_PROFILE.md",
+    "profile_sha256": "a57c57fc6cbe65c5657324ebbc737a370c7ef24ea6ae5cc2f0305ec94607c0be",
+    "source": "scripts/ops/mk_whole_goal_control.py",
+    "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+    "source_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
+  },
+  "hermes_agent_runtime": {
+    "upstream_commit": "f80f453ae0679347e38abc917c7f94f717bf96c5",
+    "upstream_tag": "v2026.8.13",
+    "version": "0.20.1"
+  },
+  "identity": "orch-next-hermes-harness",
+  "legacy_maestro_compatibility": {
+    "canonical_skill_root": "skills",
+    "classification": "legacy_non_authoritative_compatibility_material",
+    "plugin_distribution_is_mirror": false,
+    "plugin_skill_root": "plugins/orch-next-codex-harness/skills",
+    "retirement_claimed": false,
+    "same_name_bytes_authoritative": false,
+    "status": "pending_zero_consumer_proof_and_retirement",
+    "zero_consumer_proof": false
+  },
+  "maestro_skill_source": {
+    "adaptation": "existing_hermes_operational_skill_tree",
+    "files": [
+      {
+        "path": "skills/agent-dispatch/SKILL.md",
+        "sha256": "1457df77ca0b2498fcacc267583216718e5d0b0f1ddbdd5143f7d2c4abe6a370"
+      },
+      {
+        "path": "skills/cmd-delegation-orchestration/SKILL.md",
+        "sha256": "0ec019f584fd887e1e142b0651ad747e9b02f11cdc3fca9dd82c209ae9559572"
+      },
+      {
+        "path": "skills/codex-parallel-lanes/SKILL.md",
+        "sha256": "e33169b6edac1806a56ade0672a28c5c374b546f038144eb99d525263cb787f4"
+      },
+      {
+        "path": "skills/codex-parallel-lanes/scripts/setup_lane.sh",
+        "sha256": "4c6d4551c8efeace3d5591c477df6927c78e40c66c7a24b13bf462e84a386255"
+      },
+      {
+        "path": "skills/heartbeat-cmd-control-guard/SKILL.md",
+        "sha256": "b6fdd7dd5eb027d8a9a34de4b6ce8b72f59d05a7ad0f9c5f653c8bf8e8f4f085"
+      },
+      {
+        "path": "skills/skill-select/SKILL.md",
+        "sha256": "df75af7c330cd00b0b449e410284dcc9e67eab61747e660dbad3b8dca62bbb36"
+      }
+    ],
+    "revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+    "source": "maestro-kernel",
+    "tree": "ba7e28fef29e9a28c93ff9226f260e74bc061e3c",
+    "validation_files": [
+      {
+        "path": "scripts/ops/verify_critical_thread_route.py",
+        "sha256": "0e664f7b526b2642099227cef1cedda518c682d3f41744a86951b838de062cd1"
+      },
+      {
+        "path": "scripts/ops/verify_inc178_whole_goal_work_selection.py",
+        "sha256": "09b89c3b9a8a3d79cbeeb9a3db7957f786c36f6b35cfdca2e45c3e7d4e2d7667"
+      },
+      {
+        "path": "scripts/ops/verify_heartbeat_cmd_control_guard_skill.py",
+        "sha256": "bfb2617e1f53bf986a9229629ceffee70d09f7bba1a9ab62acbdc6d17eaf85b1"
+      }
+    ]
+  },
+  "mcp": {
+    "codex_execution_fallback_allowed": false,
+    "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
+    "locator": {
+      "binding": "runtime/RUNTIME_BINDING.json",
+      "binding_sha256": "d92aedb99e6c904b8b9b93e4dab7bda73946a5df9b4456e5a868b76b2817ecae",
+      "mode": "manifest_relative",
+      "rollback_identity": "installed:orch-next-hermes-harness@0.1.42"
+    },
+    "maestro_execution_fallback_allowed": false,
+    "module": "agent.transports.hermes_tools_mcp_server",
+    "python": "/usr/bin/python3",
+    "transport": "stdio"
+  },
+  "operational_adoption": "qualification_pending",
+  "operational_profile": {
+    "authority_bundle": {
+      "digest": "7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e",
+      "identity": "HERMES_MAESTRO_AUTHORITY_BUNDLE_V3",
+      "version": "hermes-maestro-authority-bundle.v3"
+    },
+    "authority_policy_reference": "maestro-kernel:research/mk675/fable5_decision_os/mk737_p1a_skill_distribution_ownership.json",
+    "authority_policy_source": "maestro_kernel_active_policy_and_routing",
+    "content": {
+      "digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+      "recursive_file_count": 70,
+      "source_root": "skills/orch-next"
+    },
+    "full_skill_closure_injected_into_runtime_prompt": false,
+    "identity": "orch-next-hermes-compact-operational-profile.v1",
+    "legacy_maestro_compatibility": {
+      "canonical_skill_root": "skills",
+      "classification": "legacy_non_authoritative_compatibility_material",
+      "plugin_distribution_is_mirror": false,
+      "plugin_skill_root": "plugins/orch-next-codex-harness/skills",
+      "retirement_claimed": false,
+      "same_name_bytes_authoritative": false,
+      "status": "pending_zero_consumer_proof_and_retirement",
+      "zero_consumer_proof": false
+    },
+    "operational_source_authority": "hermes_agent_canonical_operational_skill_tree",
+    "operational_source_binding": {
+      "binding_kind": "immutable_SOURCE_MANIFEST",
+      "binding_present": true,
+      "binding_required_at": "source_verification",
+      "manifest_path": "SOURCE_MANIFEST.json",
+      "self_content_binding": {
+        "algorithm": "sha256",
+        "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
+      }
+    },
+    "profile_digest": "7c7a50035c74a05ef4e6edafb80130605642fea6fa44e127f41771828a7ec777",
+    "prompt_materialization": "metadata_index_then_selected_skill_on_demand",
+    "runtime_baseline": {
+      "commit": "f80f453ae0679347e38abc917c7f94f717bf96c5",
+      "tag": "v2026.8.13",
+      "version": "0.20.1"
+    },
+    "source_root": "skills/orch-next",
+    "terminal_authority": {
+      "contract_id": "INC191_PRE_IDLE_SUCCESSOR_ADMISSION_V1",
+      "contract_version": "1.1.0",
+      "profile": "skills/heartbeat-cmd-control-guard/OPERATIONAL_PROFILE.md",
+      "profile_sha256": "a57c57fc6cbe65c5657324ebbc737a370c7ef24ea6ae5cc2f0305ec94607c0be",
+      "source": "scripts/ops/mk_whole_goal_control.py",
+      "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+      "source_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
+    }
+  },
+  "operational_profile_index": {
+    "digest": "6665027e6fdf8730e388b9d3d7d8700b9fffa59a59507dc8e3063e1438ad8e49",
+    "identity": "orch-next-hermes-compact-operational-profile.v1",
+    "path": "OPERATIONAL_PROFILE_INDEX.json",
+    "schema": "orch-next-hermes-operational-profile-index.v1"
+  },
+  "operational_source_authority": "hermes_agent_canonical_operational_skill_tree",
+  "operational_source_binding": {
+    "binding_kind": "immutable_SOURCE_MANIFEST",
+    "binding_present": true,
+    "binding_required_at": "source_verification",
+    "manifest_path": "SOURCE_MANIFEST.json",
+    "self_content_binding": {
+      "algorithm": "sha256",
+      "digest": "8c4d5528221a3a980821a4fb39f448712c5a313104a3ce08aa8616c1f182f120",
+      "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
+    },
+    "source_root": "skills/orch-next"
+  },
+  "operational_source_root": "skills/orch-next",
+  "predecessor_journal": {
+    "status": "source_only",
+    "versions": [
+      "0.1.43",
+      "0.1.44",
+      "0.1.45",
+      "0.1.46"
+    ]
+  },
+  "quarantined_exclusions": [
+    "fable5-os-durable-user-value-goal"
+  ],
+  "required_admitted_skills": [
+    "fable5-derived-advisory-synthesis"
+  ],
+  "rollback": {
+    "identity": "installed:orch-next-hermes-harness@0.1.42",
+    "installed_version": "0.1.42"
+  },
+  "schema": "orch-next-hermes-harness-distribution.v1",
+  "sdo_producer": {
+    "consumer_path": "scripts/ops/issue_inc178_current_transition.py",
+    "consumer_sha256": "3e64f8ff5a86ed455311512cc4708ff12691ba7aa48616e0d22725bec31be91f",
+    "control_path": "scripts/ops/mk_whole_goal_control.py",
+    "control_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b",
+    "fable_records_path": "research/mk675/fable5_derived/synthesis_records.json",
+    "fable_records_sha256": "a44c3e620f6abfdce8011f25a51f1b2114401a362f34a164fbe9e49ff7f0fc5c",
+    "files": [
+      {
+        "path": "scripts/ops/issue_inc178_current_transition.py",
+        "sha256": "3e64f8ff5a86ed455311512cc4708ff12691ba7aa48616e0d22725bec31be91f"
+      },
+      {
+        "path": "scripts/ops/mk_whole_goal_control.py",
+        "sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b"
+      },
+      {
+        "path": "scripts/ops/resolve_mk94_priority_action_queue.py",
+        "sha256": "dceb9fbdc2213328ecd5f2e6764507752af777d02b22921fc0cfc44e28316201"
+      },
+      {
+        "path": "research/mk675/fable5_derived/synthesis_records.json",
+        "sha256": "a44c3e620f6abfdce8011f25a51f1b2114401a362f34a164fbe9e49ff7f0fc5c"
+      },
+      {
+        "path": "scripts/ops/mk733j_activation.py",
+        "sha256": "d41908bb9fa5383af63b04fc8913395bcac0c287a96a293b328361e2d27baa70"
+      },
+      {
+        "path": "scripts/ops/mk733j_decision_os.py",
+        "sha256": "cab8203aa0ded50090180802e11620c944d22c0a602325a936d1de744965209b"
+      },
+      {
+        "path": "scripts/ops/mk733j_hook_contract_self_test.py",
+        "sha256": "c31ebce2459a9afbe7957f615ea57f4c0bb76e4ecffacffb2d5e3ca9435c570f"
+      },
+      {
+        "path": "scripts/ops/verify_mk733j_n_implementation.py",
+        "sha256": "21ae47eb1d290757018ac1c44e6e53f9d6f88cc50edac2ba5f73bd39e83871ec"
+      },
+      {
+        "path": "scripts/ops/critical_thread_route.py",
+        "sha256": "b36c23bac978c685c929f421c7d68aedf20d044917b6c6f6f3567b77a9440519"
+      },
+      {
+        "path": "scripts/ops/mk_decision_preflight.py",
+        "sha256": "022e62cd08d4b1647483e9729149c78177ac661a884b96c7a3506adabacaa3c1"
+      },
+      {
+        "path": "scripts/ops/mk733j_qualification.py",
+        "sha256": "5ea2453c1be243959be38f3ce0e0a4a423488f89685e7669c066653f073769e7"
+      },
+      {
+        "path": "scripts/ops/mk733j_capability_bundles.py",
+        "sha256": "b4aa76823d3b531ef2d0dd043319ebb26e43f82c2c2fa649644b471cd31d1fbd"
+      },
+      {
+        "path": "scripts/ops/mk733j_context_compiler.py",
+        "sha256": "d16b80f71f0ffd1b1c2850a0b7cd71ecd4c8b4472014e83966a39382ff6dc8e6"
+      },
+      {
+        "path": "scripts/ops/requirement_anchor_semantic.py",
+        "sha256": "fc0692e21cd4cd739bb0482c00ea80e767921d5f5afeb740a8f9715420394b13"
+      },
+      {
+        "path": "scripts/ops/mk_adaptive_work_pace.py",
+        "sha256": "429d3c9d2414ba611b695e28565db4fe1cc00aa488e2792def8c9104a899c40a"
+      },
+      {
+        "path": "scripts/ops/mk_fable5_execution_authority.py",
+        "sha256": "754f13330e34e8f341d3b1856347b0dfe250178b59b1d5ecde8c8ff1fb8db697"
+      },
+      {
+        "path": "scripts/ops/mk733j_schema_safety.py",
+        "sha256": "9b00438889ee2b24eef5e9a572433d29677b49555f5fb54adc18fe4b77e3a9b0"
+      },
+      {
+        "path": "scripts/ops/verify_task_ledger_v1.py",
+        "sha256": "ed4f401acc8ee253e9a3bab98ee661ac1987384fdf7d488c2a34104ee674de49"
+      },
+      {
+        "path": "scripts/ops/mk747_fable5_cognitive_core.py",
+        "sha256": "9cc031ec45e9aa74b83cddbf6c6dad39408a238832ab0384f48907cc48d40460"
+      }
+    ],
+    "root": "runtime/sdo_producer",
+    "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+    "source_tree": "ba7e28fef29e9a28c93ff9226f260e74bc061e3c"
+  },
+  "skills": {
+    "files": [
+      {
+        "path": "action-first-operator-communication/SKILL.md",
+        "sha256": "06ba0001f7fafb0dc4ee17b823337202169a431b653b649baae9eebcaf41622b"
+      },
+      {
+        "path": "action-first-operator-communication/agents/openai.yaml",
+        "sha256": "08037473cf7547262b8ff65d6c22b53b7c1cb82eee6a413e55af4794ff6b1f25"
+      },
+      {
+        "path": "action-first-operator-communication/references/UPSTREAM_NOTICE.md",
+        "sha256": "073fc44f8c8776ac86e34be79f4dfda72840679153aa1cefa11f0804fd5ff905"
+      },
+      {
+        "path": "agent-dispatch/SKILL.md",
+        "sha256": "b7ca70a911bc166b69f6bf5a7cfcf31e308d91d3bb5fb42b024c3af22abbaec8"
+      },
+      {
+        "path": "autonomous-implementation-team/SKILL.md",
+        "sha256": "684ab3056b5bdbe6841bcfbeabe2c3d364a94f65e9ad6623f0461c0e9d1a3f77"
+      },
+      {
+        "path": "best-evaluate/SKILL.md",
+        "sha256": "796366865079e0b07e66a42d7a9927acf5049a187ed2677ec29b26cc817b7b52"
+      },
+      {
+        "path": "cmd-delegation-orchestration/SKILL.md",
+        "sha256": "01ee148c4d85ed1aaa426e754dfed7a48155d4b161fb61c909bf4d4b3227143f"
+      },
+      {
+        "path": "codex-parallel-lanes/SKILL.md",
+        "sha256": "20c7991b1268c22be0eae701922dd5184b667eae8f8f7cdebd68173d4bc51372"
+      },
+      {
+        "path": "codex-parallel-lanes/references/delegate-task-contract.json",
+        "sha256": "0bf1dd870a94b3ce44c285670472b33f4b28b8e63df1133c0485fdb5f7a2001e"
+      },
+      {
+        "path": "codex-parallel-lanes/scripts/dispatch_provider.py",
+        "sha256": "9f2bf71a815180fdcf3a1ffc1b230ad8aed69e7fe0a791ab550e840b85d29853"
+      },
+      {
+        "path": "codex-parallel-lanes/scripts/setup_lane.sh",
+        "sha256": "4c6d4551c8efeace3d5591c477df6927c78e40c66c7a24b13bf462e84a386255"
+      },
+      {
+        "path": "codex-parallel-lanes/scripts/setup_lane_failure_injection_test.sh",
+        "sha256": "20cce2ab821ae0125e28c302a2eb150f1d6a48154be604da68ca6c475a04c647"
+      },
+      {
+        "path": "cross-research-admission-loop/SKILL.md",
+        "sha256": "5b4fc264a2de3f9c5c5db434f96e380240a76b2dc11ee54a77381a1fddb8cd36"
+      },
+      {
+        "path": "cross-research-workflow/SKILL.md",
+        "sha256": "40d2d98f6f48296eb272354ee1466c62dac27810fe80482e3737f5f9b029a3ae"
+      },
+      {
+        "path": "cross-session-audit-coordination/SKILL.md",
+        "sha256": "8b7c23ad34a88b49b03b8115ff9c512c8e8dab3a70688c9d1534bb1bec18d815"
+      },
+      {
+        "path": "decomposition/SKILL.md",
+        "sha256": "27d72f3d3d4ba2464468c7d5ba4c77aece5a9619ee93fc4d837d611f1c570d45"
+      },
+      {
+        "path": "demo-video-production/SKILL.md",
+        "sha256": "65ccdf45c67466d52db9932be35402e11d19255494a31b981aa388a65ffb0426"
+      },
+      {
+        "path": "demo-video-production/scripts/assemble_demo.py",
+        "sha256": "66f07f1ea45e26eef0622d9af1e8a134661981d3d798628bb0ca452960f19b2f"
+      },
+      {
+        "path": "design-eye-review/SKILL.md",
+        "sha256": "6dd7ec09b52cd95dbdb58c1b8f17604139c8851b2dbb9c5065dc2d4e2a3c3245"
+      },
+      {
+        "path": "design-eye-review/agents/openai.yaml",
+        "sha256": "3e59b72342c9a26ec090d99780f13b0f1242d9f552dbce733378512f9c835647"
+      },
+      {
+        "path": "design-eye-review/references/craft-rubric.md",
+        "sha256": "36392a32c6c0da6e146a2db35629c5986e608d4003e126224d9a145fa116a660"
+      },
+      {
+        "path": "design-eye-review/references/obvious-miss-checklist.md",
+        "sha256": "07fecf6873e2dd238b57f8af2b4c7b83f2c37a3d01d2c7b259375645bccc57dc"
+      },
+      {
+        "path": "design-eye-review/scripts/capture.mjs",
+        "sha256": "4619bfcec695fe908ff2db32a7d39e1cc4df1358e1c2934a5a5e1154a4d2161f"
+      },
+      {
+        "path": "design-taste/SKILL.md",
+        "sha256": "9dbdd83666215f9b679f2ee4eb90f1b59e92f4fe3edcd70f77225417d7683a9c"
+      },
+      {
+        "path": "design-taste/agents/openai.yaml",
+        "sha256": "79a233bddc1db5a3add5a2bc97eeb684e8f0ddb35c0fce01400f6ec9278d321b"
+      },
+      {
+        "path": "design-taste/references/anti-generic-rules.md",
+        "sha256": "c6e11d852a86ca474a7ec4658bf01b6a6cdc22ab0a153387024e03d9145abe34"
+      },
+      {
+        "path": "design-taste/references/japanese-typography.md",
+        "sha256": "8a3d8e169d4641b71db380600febec9b5c81aeb488461dd1372c00182a0edf1b"
+      },
+      {
+        "path": "design-taste/references/llmo-aio-evidence.md",
+        "sha256": "cea8642ab722d123e20d0ecf7b41ef13de942a2f1da5dfb2160a2cbe9e330d56"
+      },
+      {
+        "path": "design-taste/references/reference-site-teardowns.md",
+        "sha256": "4273dea046f3804a020189023959656fa5094429b0c7b45de3b7d0d4389164e6"
+      },
+      {
+        "path": "design-taste/scripts/verify_canonical_binding.py",
+        "sha256": "55a523a2c940c5f44125567e8ae29db71c5d2d28ad1e02e4caf9744599ad70c5"
+      },
+      {
+        "path": "dynamic-requirements-planning/SKILL.md",
+        "sha256": "2adf80b69b38241a00f520778f2db992f9d2f9d1e3ecbeaa90762eedb102d695"
+      },
+      {
+        "path": "environment-ground-truth/SKILL.md",
+        "sha256": "e0d612f2459ae84028007c8ebf3546e162e8f829b17f31a3c25f4953a2442d41"
+      },
+      {
+        "path": "fable5-derived-advisory-synthesis/SKILL.md",
+        "sha256": "6a9c8f1b00f2edf6bf72c6d69c1e2d97a90d84876b3dbfd1008a1bef0c9aded2"
+      },
+      {
+        "path": "fg000o-goal-audit-phase-orchestrator/SKILL.md",
+        "sha256": "65961780235674d1bc813cc0ea4e491283c3a39be5603f25a333a72733761c3c"
+      },
+      {
+        "path": "github-merge-readiness/SKILL.md",
+        "sha256": "4fc91886f1e90529fb2d599459ea7ae975ff71c0882a5e83f88d270ebeb2e9df"
+      },
+      {
+        "path": "goal-audit-checklist/SKILL.md",
+        "sha256": "aa9ff762f35635b16773b34252d9f99ea1602227fdb2d741301c18b650f9f10c"
+      },
+      {
+        "path": "grand-goal-implementation-orchestrator/SKILL.md",
+        "sha256": "c49ee7e34bb1419b31e6a1276deb291f9030c306df645033cc7bd358e51e0087"
+      },
+      {
+        "path": "grand-goal-native-goal-formulation/SKILL.md",
+        "sha256": "61a9286ed64c0f9ce631b141aa3612c92eda7f54932c80c9812779617386b309"
+      },
+      {
+        "path": "grand-goal-orchestrator/SKILL.md",
+        "sha256": "516911b326cd2c6fd73172d2d139620c317e3b6b31469699d20eaf00f43d8ae3"
+      },
+      {
+        "path": "heartbeat-cmd-control-guard/SKILL.md",
+        "sha256": "23e8d269b6ad0edf8115d0dcc4e32e0353193282fdaccb01ae3fcc31622249df"
+      },
+      {
+        "path": "heartbeat-cmd-control-guard/scripts/heartbeat_control.py",
+        "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
+      },
+      {
+        "path": "heartbeat-cmd-control-guard/scripts/verify_heartbeat_cmd_control_guard.py",
+        "sha256": "fda44aaea88b1b9c81570eaf10ac9132afb459f1b13e19fa91cd1d58a9759a78"
+      },
+      {
+        "path": "image-gen-lane-dispatch/SKILL.md",
+        "sha256": "a99559b330bcb610bd9f19150e44a62ac7bb734c9ade656c9d2065ae047aa72d"
+      },
+      {
+        "path": "image-gen-lane-dispatch/agents/openai.yaml",
+        "sha256": "8dca7f74d0ee4c62e55f819442bebc9da4d367cacf408bc12e650a7f4e33f11c"
+      },
+      {
+        "path": "image-gen-lane-dispatch/references/six-block-image-gen-template.md",
+        "sha256": "cca6dd74b67c9cbdb5f1429bc971c3d576b8e742213b972395da46f8916864b9"
+      },
+      {
+        "path": "implementation-audit-dispatch/SKILL.md",
+        "sha256": "763162f5cbb22c54fd4790c840c31c60bfd53a93c161a3db7b63877a504a72d0"
+      },
+      {
+        "path": "incident-response/SKILL.md",
+        "sha256": "a75e303f69ceaa47bade06498d56d63ec4e1dd077d719bc831f7c09e4769753b"
+      },
+      {
+        "path": "incident-to-skill/SKILL.md",
+        "sha256": "d3584c344edaab5df801b6c987db3733bcefbecf680d50f79858f931ad583f46"
+      },
+      {
+        "path": "mobile-harness/SKILL.md",
+        "sha256": "40684afaacc376c383a7be7db3c862265cb081b6915627ac0c8e2a453093b768"
+      },
+      {
+        "path": "mobile-harness/scripts/mobile_harness_contract.py",
+        "sha256": "ac2fb4f05df6f61bfa74054432ec75f5af979f96475a99398b28611e8b008fac"
+      },
+      {
+        "path": "orch-independent-audit-packet/SKILL.md",
+        "sha256": "c5ea8705ee7ea3a2dd27c45d083d4e4218647b790af20b8c89954f03373edbfa"
+      },
+      {
+        "path": "orch-independent-audit-packet/references/delegate-task-contract.json",
+        "sha256": "8e9fb36761860b8c5d7057bb2d433faec7c47f5fbbd9e3595e62914a6834c69f"
+      },
+      {
+        "path": "orch-next-recovery/SKILL.md",
+        "sha256": "94125cb510946439f624c823e3d5fc73d44f5fc6890a733b90874389430c9e99"
+      },
+      {
+        "path": "orch-skill-ecosystem-improvement/SKILL.md",
+        "sha256": "c77e5336d87df40532ad51e5ab250aac7c7e373aca590ebe891acf037807710d"
+      },
+      {
+        "path": "pms-private-knowledge-vault-grand-goal/SKILL.md",
+        "sha256": "a5f3ed758ea71d5d1a1b43f638aeb75acb15c4cc492190500cd6fec12c518388"
+      },
+      {
+        "path": "priority-action-router/SKILL.md",
+        "sha256": "e2882b9f6efa7d5e6bfdea4cb6380afeb5973d37a07dec7971e67672be734f97"
+      },
+      {
+        "path": "product-build-fast-lane/SKILL.md",
+        "sha256": "4b4b55829288e09b17421557454c2e9709f3e697292be874f0fb88792b624ef2"
+      },
+      {
+        "path": "product-work-os-closeout/SKILL.md",
+        "sha256": "afba10ecc2925f831cd2c2263512a48bdd4f8ff67ce15f63fe26cab1b3917e78"
+      },
+      {
+        "path": "repo-entrypoints-and-rules/SKILL.md",
+        "sha256": "af59e25ad538db05f36be70ba0e1f08240a38432ad317d6afdd031e8fb897de8"
+      },
+      {
+        "path": "requirement-to-implementation-operationalization/SKILL.md",
+        "sha256": "60d6ea76dcdf2bf6b0c8ea6753fc7889468b0c4944f4f0c01253364758c690bf"
+      },
+      {
+        "path": "research-intake/SKILL.md",
+        "sha256": "16d437a0a230173fec8087cd356fcfb97bb4e6b3c0b8f3375ab2ac3e53bbf0f5"
+      },
+      {
+        "path": "rolling-goal-eternal-context-link/SKILL.md",
+        "sha256": "970781a46cc7e25573ad061aaa473effe7e50fb9376239e16f1d191b24c3a22e"
+      },
+      {
+        "path": "skill-authoring/SKILL.md",
+        "sha256": "f9543803ad47c576c9218d2a53700fecec142007d0e5d48a4ca714140d1197c2"
+      },
+      {
+        "path": "skill-health-monitor/SKILL.md",
+        "sha256": "e796bcdcab9691d7c75f01967319d024b323baecc2095aa3596891aa7c2ab488"
+      },
+      {
+        "path": "skill-lifecycle/SKILL.md",
+        "sha256": "f95a958c2859dae977519536da7f6cac11a39d62d550830233eafe5bc0ee6377"
+      },
+      {
+        "path": "skill-select/SKILL.md",
+        "sha256": "31d220d13397127fa113087f6666959fc2bfcfec594ab4aeea2c18bc08f4f5f8"
+      },
+      {
+        "path": "task-tracker/SKILL.md",
+        "sha256": "75ab7fc336ff767b828c5d42a3ba6acf2bf31dab23a9ca2da25976318d0609a9"
+      },
+      {
+        "path": "terminal-deep-security-scan-gate/SKILL.md",
+        "sha256": "f2dbc9279f847e07cbe95e20731b66fad17858efe1eb97b21a353524445bf289"
+      },
+      {
+        "path": "ui-design-direction-approval-pipeline/SKILL.md",
+        "sha256": "2108be1e316753e7c8c9d9dbfbfa1cdc39adc4475282522e0aa11992e6ad4333"
+      },
+      {
+        "path": "workflow-plan-test-patch/SKILL.md",
+        "sha256": "9cc5ac1526f41174c032a984c410a95867415e10db76182dd89c0dc87c23dc99"
+      }
+    ],
+    "recursive_file_count": 70,
+    "skill_count": 47,
+    "sorted_recursive_file_sha256_stream_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+    "source_root": "skills/orch-next",
+    "stream_format": "lowercase_sha256_two_spaces_repo_relative_path_lf"
+  },
+  "upstream_base": "f80f453ae0679347e38abc917c7f94f717bf96c5",
+  "version": "0.1.47"
+}
