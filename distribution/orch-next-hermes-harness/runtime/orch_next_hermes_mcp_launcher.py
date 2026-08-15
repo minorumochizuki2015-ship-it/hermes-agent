@@ -619,6 +619,9 @@ def verified_startup() -> None:
     verified_origin()
     exact_modules = {
         MCP_MODULE: EXPECTED_ORIGIN,
+        "agent.transports.hermes_orch_front_door": (
+            REPO_ROOT / "agent" / "transports" / "hermes_orch_front_door.py"
+        ),
         "hermes_cli.env_loader": REPO_ROOT / "hermes_cli" / "env_loader.py",
         "hermes_constants": REPO_ROOT / "hermes_constants.py",
     }
@@ -635,18 +638,33 @@ def verified_startup() -> None:
     # Tool availability discovery may probe optional paid/network providers.
     # The current upstream builder accepts an explicit catalog, so the origin
     # check can construct the real FastMCP surface without importing
-    # model_tools or discovering any optional provider tools.
+    # model_tools or discovering any optional provider tools. The fixed ORCH
+    # front door remains registered on this path and is the only startup tool
+    # surface admitted here.
     try:
         server = build_server(tool_definitions=[])
     except TypeError as exc:
         _fail(f"Hermes MCP startup surface has no verification catalog: {exc}")
     manager = getattr(server, "_tool_manager", None)
     observed_tools = getattr(manager, "_tools", None)
+    front_door_specs = getattr(
+        loaded["agent.transports.hermes_orch_front_door"],
+        "ORCH_FRONT_DOOR_TOOLS",
+        None,
+    )
+    expected_front_door_names = {
+        spec.get("name")
+        for spec in front_door_specs
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str)
+    } if isinstance(front_door_specs, tuple) else set()
     if (
         type(observed_tools) is not dict
-        or observed_tools
+        or type(front_door_specs) is not tuple
+        or len(front_door_specs) != 7
+        or len(expected_front_door_names) != 7
+        or set(observed_tools) != expected_front_door_names
     ):
-        _fail("Hermes MCP dry-run optional tool surface drift")
+        _fail("Hermes MCP dry-run front-door surface drift")
 
 
 def _runtime_head() -> str:

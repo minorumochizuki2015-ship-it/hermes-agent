@@ -97,7 +97,7 @@
     "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
     "locator": {
       "binding": "runtime/RUNTIME_BINDING.json",
-      "binding_sha256": "ce321bd243d394b67be5d68cc7261154b6a69f92294948ae0ba5a57875f1ba8f",
+      "binding_sha256": "d89b98c45070cf96fc8c22455520c927a7f5577cc7b00862a473ab68bc1f806f",
       "mode": "manifest_relative",
       "rollback_identity": "installed:orch-next-hermes-harness@0.1.42"
     },
@@ -162,7 +162,7 @@
     }
   },
   "operational_profile_index": {
-    "digest": "6665027e6fdf8730e388b9d3d7d8700b9fffa59a59507dc8e3063e1438ad8e49",
+    "digest": "aee21154ff76f87174122c0e7bb8cd207b2522a6e338ee6b0802d67de2bedbd6",
     "identity": "orch-next-hermes-compact-operational-profile.v1",
     "path": "OPERATIONAL_PROFILE_INDEX.json",
     "schema": "orch-next-hermes-operational-profile-index.v1"
@@ -175,7 +175,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "43b24b220470decd6af9e4baf5ae8e0a730e42c36f8ebcc147158bf035623728",
+      "digest": "f194a1946d066df4621601c162cfa653fab2588c644c545123dcbf072f14030f",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"

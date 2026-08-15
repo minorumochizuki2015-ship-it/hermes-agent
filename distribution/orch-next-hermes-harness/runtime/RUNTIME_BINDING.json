@@ -11,7 +11,7 @@
   "runtime_files": [
     {
       "path": "scripts/orch_next_hermes_mcp_launcher.py",
-      "sha256": "ff68c69545f93b954cb6896b2855d6977a873bb2b77e865a7338c3e75effc034"
+      "sha256": "bde2b801050e0de18e8e94bd5ac781bcfc11f5d218c55b36cadefe5d7079e09b"
     },
     {
       "path": "agent/__init__.py",
@@ -55,7 +55,7 @@
     },
     {
       "path": "agent/transports/hermes_tools_mcp_server.py",
-      "sha256": "7468f52f1b21f6a7b26d6c1b6f385d7ebc301b39a2c287e1f32dc28154c5ddec"
+      "sha256": "71b851f4540fc5ba314915a8aa80f095563f0de40e6defc67eb8934182a24768"
     },
     {
       "path": "hermes_cli/__init__.py",
@@ -226,7 +226,7 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "97ce55c1bced6a31eb55b211bdc706957fefdf7d8b2131937dacd94aad9ae24e",
+  "runtime_files_digest": "d1c2dea56ed3fec38b981acb7a4c8249413f526f3d7b8d8118a244b1fb5e75aa",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
   "runtime_python_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a",

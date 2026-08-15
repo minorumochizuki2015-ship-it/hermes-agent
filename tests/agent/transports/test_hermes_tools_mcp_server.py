@@ -9,6 +9,8 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import sys
+import types
 from typing import get_args
 
 from agent.transports.hermes_tools_mcp_server import (
@@ -90,6 +92,51 @@ class TestModuleSurface:
         assert callable(m._build_server)
         assert isinstance(m.EXPOSED_TOOLS, tuple)
         assert len(m.EXPOSED_TOOLS) > 0
+
+    def test_empty_catalog_registers_exact_orch_front_door(self, monkeypatch):
+        """Verified startup keeps seven ORCH tools without optional discovery."""
+
+        class FakeToolManager:
+            def __init__(self):
+                self._tools = {}
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self._tool_manager = FakeToolManager()
+
+            def add_tool(self, handler, *, name, description):
+                self._tool_manager._tools[name] = handler
+
+            def tool(self, *, name, description):
+                def register(handler):
+                    self._tool_manager._tools[name] = handler
+                    return handler
+
+                return register
+
+        mcp_module = types.ModuleType("mcp")
+        server_module = types.ModuleType("mcp.server")
+        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = FakeFastMCP
+        monkeypatch.setitem(sys.modules, "mcp", mcp_module)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_module)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+
+        forbidden_model_tools = types.ModuleType("model_tools")
+
+        def forbidden_discovery(*args, **kwargs):
+            raise AssertionError("optional tool discovery must not run")
+
+        forbidden_model_tools.get_tool_definitions = forbidden_discovery
+        monkeypatch.setitem(sys.modules, "model_tools", forbidden_model_tools)
+
+        from agent.transports.hermes_orch_front_door import ORCH_FRONT_DOOR_TOOLS
+        from agent.transports.hermes_tools_mcp_server import _build_server
+
+        server = _build_server(tool_definitions=[])
+        expected = {spec["name"] for spec in ORCH_FRONT_DOOR_TOOLS}
+        assert len(expected) == 7
+        assert set(server._tool_manager._tools) == expected
 
     def test_exposed_tools_are_safe_subset(self):
         """We MUST NOT expose tools codex already has, because codex'

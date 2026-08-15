@@ -44,14 +44,55 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import inspect
 import json
 import logging
 import os
+import re
 import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_ORCH_SESSION_TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
+_ORCH_SESSION_TOKEN_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+def _load_external_orch_session_token() -> str | None:
+    """Consume one descriptor-bound token without accepting an env fallback.
+
+    Hermes' existing secret-source registry owns vault/command resolution and
+    provenance. A raw shell or ``.env`` value is deliberately insufficient:
+    persistent ORCH authentication must remain unavailable until an admitted
+    external source supplies the token to both the serve process and this MCP
+    process.
+    """
+
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_constants import get_hermes_home
+    from scripts import orch_next_hermes_session_token_source as source
+
+    try:
+        load_hermes_dotenv()
+        material = source.consume_configured_session_token(get_hermes_home())
+        observed = os.environ.pop(_ORCH_SESSION_TOKEN_ENV, None)
+        if observed is not None and (
+            type(observed) is not str
+            or not hmac.compare_digest(observed.encode(), material.value.encode())
+        ):
+            return None
+        expected_generation = hashlib.sha256(material.value.encode()).hexdigest()
+        if (
+            _ORCH_SESSION_TOKEN_PATTERN.fullmatch(material.value) is None
+            or not hmac.compare_digest(material.generation, expected_generation)
+        ):
+            return None
+        return material.value
+    except Exception:
+        os.environ.pop(_ORCH_SESSION_TOKEN_ENV, None)
+        return None
 
 # JSON Schema type -> Python type mapping for signature generation
 _JSON_TO_PY = {
@@ -242,10 +283,76 @@ def _build_server(*, tool_definitions: list[dict] | None = None) -> Any:
 
         exposed_count += 1
 
+    # The seven operational lifecycle tools are projections of methods already
+    # owned by tui_gateway. They deliberately bypass model_tools dispatch: the
+    # persistent gateway is the only session owner and authority consumer.
+    # Each handler makes one loopback JSON-RPC request with no retry and no
+    # Maestro/Codex execution fallback. They are registered even when the
+    # caller supplies an explicit empty Hermes catalog: verified startup must
+    # expose this fixed front door while discovering zero optional providers.
+    from agent.transports.hermes_orch_front_door import (
+        HERMES_FRONT_DOOR_UNAVAILABLE,
+        HermesOrchFrontDoor,
+        ORCH_FRONT_DOOR_TOOLS,
+        serialize_front_door_result,
+    )
+
+    front_door = HermesOrchFrontDoor(token_resolver=_load_external_orch_session_token)
+    front_door_count = 0
+
+    for tool_spec in ORCH_FRONT_DOOR_TOOLS:
+        name = tool_spec["name"]
+        method = tool_spec["method"]
+        description = tool_spec["description"]
+        params_schema = tool_spec["input_schema"]
+
+        def _make_front_door_handler(
+            tool_name: str,
+            gateway_method: str,
+            schema: dict | None,
+            tool_description: str,
+        ):
+            sig, annots = _signature_from_schema(schema)
+
+            def _dispatch(**kwargs: Any) -> str:
+                args = {k: v for k, v in kwargs.items() if v is not None}
+                try:
+                    result = front_door.request(gateway_method, args)
+                except Exception:
+                    logger.warning("Hermes front door tool unavailable")
+                    result = {
+                        "error": {
+                            "code": HERMES_FRONT_DOOR_UNAVAILABLE,
+                            "message": "Hermes front door unavailable",
+                        }
+                    }
+                return serialize_front_door_result(result)
+
+            _dispatch.__name__ = tool_name
+            _dispatch.__doc__ = tool_description
+            _dispatch.__signature__ = sig
+            _dispatch.__annotations__ = {**annots, "return": str}
+            return _dispatch
+
+        handler = _make_front_door_handler(
+            name,
+            method,
+            params_schema,
+            description,
+        )
+        try:
+            mcp.add_tool(handler, name=name, description=description)
+        except TypeError:
+            handler = mcp.tool(name=name, description=description)(handler)
+        front_door_count += 1
+
     logger.info(
-        "hermes-tools MCP server registered %d/%d tools",
+        "hermes-tools MCP server registered %d/%d Hermes tools and %d/%d "
+        "operational lifecycle tools",
         exposed_count,
         len(EXPOSED_TOOLS),
+        front_door_count,
+        len(ORCH_FRONT_DOOR_TOOLS),
     )
     return mcp
 
