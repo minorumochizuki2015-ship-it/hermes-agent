@@ -104,6 +104,7 @@ TARGET_CACHE_VERSIONS: Final = (
     "0.1.44",
     "0.1.45",
     "0.1.46",
+    "0.1.47",
 )
 TARGET_CACHE_HANDLES: Final = {
     PREDECESSOR_VERSION: "target-cache-v013",
@@ -138,6 +139,7 @@ TARGET_CACHE_HANDLES: Final = {
     "0.1.44": "target-cache-v044",
     "0.1.45": "target-cache-v045",
     "0.1.46": "target-cache-v046",
+    "0.1.47": "target-cache-v047",
 }
 PREDECESSOR_SOURCE_MANIFEST_DIGEST: Final = (
     "b91ad2dbd7143f40311d7d0e073ab830f0ea1052ced3b98f4ca133b1215cf4e9"
@@ -246,9 +248,9 @@ def _homebrew_directory(path: str, mode: int = 0o755) -> _FixedCliNode:
 _CODEX_CLI = _FixedCliSpec(
     name="codex",
     link=_CODEX_BIN,
-    target=Path("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex"),
-    link_target="/opt/homebrew/Caskroom/codex/0.146.0/bin/codex",
-    version_output=b"codex-cli 0.146.0\n",
+    target=Path("/opt/homebrew/Caskroom/codex/0.147.0/bin/codex"),
+    link_target="/opt/homebrew/Caskroom/codex/0.147.0/bin/codex",
+    version_output=b"codex-cli 0.147.0\n",
     nodes=(
         _FixedCliNode(Path("/opt"), "directory", 0, 0, 0o755),
         _homebrew_directory("/opt/homebrew"),
@@ -259,19 +261,19 @@ _CODEX_CLI = _FixedCliSpec(
             _HOMEBREW_OWNER_UID,
             _HOMEBREW_GROUP_GID,
             0o755,
-            link_target="/opt/homebrew/Caskroom/codex/0.146.0/bin/codex",
+            link_target="/opt/homebrew/Caskroom/codex/0.147.0/bin/codex",
         ),
         _homebrew_directory("/opt/homebrew/Caskroom", 0o775),
         _homebrew_directory("/opt/homebrew/Caskroom/codex"),
-        _homebrew_directory("/opt/homebrew/Caskroom/codex/0.146.0"),
-        _homebrew_directory("/opt/homebrew/Caskroom/codex/0.146.0/bin"),
+        _homebrew_directory("/opt/homebrew/Caskroom/codex/0.147.0"),
+        _homebrew_directory("/opt/homebrew/Caskroom/codex/0.147.0/bin"),
         _FixedCliNode(
-            Path("/opt/homebrew/Caskroom/codex/0.146.0/bin/codex"),
+            Path("/opt/homebrew/Caskroom/codex/0.147.0/bin/codex"),
             "regular",
             _HOMEBREW_OWNER_UID,
             _HOMEBREW_GROUP_GID,
             0o755,
-            size=271056976,
+            size=219997536,
         ),
     ),
 )

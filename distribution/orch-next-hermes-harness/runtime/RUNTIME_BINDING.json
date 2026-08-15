@@ -1,7 +1,7 @@
 {
   "authority_bundle_digest": "7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e",
   "authority_source": "scripts/ops/mk_whole_goal_control.py",
-  "authority_source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
+  "authority_source_revision": "af162d0576abf1c243afc53a6f2deaa669e0417f",
   "authority_source_sha256": "1183c28805e3a35033172505d9616ef247222d4e6cb5dd3425363c51b3d9615b",
   "minimum_source_revision": "8585d5d9de143750e85629000e62576a1e082169",
   "mode": "manifest_relative",
@@ -11,7 +11,7 @@
   "runtime_files": [
     {
       "path": "scripts/orch_next_hermes_mcp_launcher.py",
-      "sha256": "bde2b801050e0de18e8e94bd5ac781bcfc11f5d218c55b36cadefe5d7079e09b"
+      "sha256": "57a016fa737d6120f4ad871ddc77aa561c4d1c752e5948cee9c1094ad7b15267"
     },
     {
       "path": "agent/__init__.py",
@@ -103,7 +103,7 @@
     },
     {
       "path": "scripts/orch_next_hermes_plugin_adoption.py",
-      "sha256": "d7722d7a58f5945f43b1887e33d70cf1cf8f40cec23aa0d9bea6aca84f686495"
+      "sha256": "30f10d612da2916cad48d2f9382cb5e37434481b0fb8bc393f77f69f41e85af3"
     },
     {
       "path": "scripts/orch_next_hermes_serve_service.py",
@@ -226,11 +226,11 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "91671b47b31777e825e6ca6f07379bfb4aa4feaf1ce9222a6bc8138e76a1d594",
+  "runtime_files_digest": "ecca30b84982e5e1b75d868e817af89772142df7f3c20a24e070373d38c92f6a",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
-  "runtime_python_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a",
-  "runtime_python_size": 52448,
+  "runtime_python_sha256": "4c78423e7d5986362ac04df40edb18cdd1174f9818d653402e3abbd2a5bbf793",
+  "runtime_python_size": 49968,
   "schema": "orch-next-hermes-runtime-locator.v1",
   "sdo_producer": {
     "consumer_path": "scripts/ops/issue_inc178_current_transition.py",

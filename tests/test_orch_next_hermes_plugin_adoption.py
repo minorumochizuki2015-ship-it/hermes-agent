@@ -649,7 +649,7 @@ def _before(host: str) -> executor.HostState:
 def test_successor_cache_handle_and_previous_terminal_binding_are_fixed() -> None:
     assert authority.PLUGIN_VERSION == "0.1.47"
     assert authority.PREVIOUS_TERMINAL_PLUGIN_VERSION == "0.1.42"
-    assert executor.TARGET_CACHE_VERSIONS[-1] == "0.1.46"
+    assert executor.TARGET_CACHE_VERSIONS[-1] == "0.1.47"
     assert executor.TARGET_CACHE_HANDLES["0.1.26"] == "target-cache-v026"
     assert executor.TARGET_CACHE_HANDLES["0.1.35"] == "target-cache-v035"
     assert executor.TARGET_CACHE_HANDLES["0.1.36"] == "target-cache-v036"
@@ -663,6 +663,7 @@ def test_successor_cache_handle_and_previous_terminal_binding_are_fixed() -> Non
     assert executor.TARGET_CACHE_HANDLES["0.1.44"] == "target-cache-v044"
     assert executor.TARGET_CACHE_HANDLES["0.1.45"] == "target-cache-v045"
     assert executor.TARGET_CACHE_HANDLES["0.1.46"] == "target-cache-v046"
+    assert executor.TARGET_CACHE_HANDLES["0.1.47"] == "target-cache-v047"
 
 
 def _after(host: str) -> executor.HostState:
