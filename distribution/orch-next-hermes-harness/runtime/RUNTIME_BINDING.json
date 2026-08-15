@@ -23,7 +23,7 @@
     },
     {
       "path": "agent/skill_utils.py",
-      "sha256": "0e3066a3609695ef020fb0a74ad7b22f6a4df5e035032845a859082d40f68e6d"
+      "sha256": "02d2cbf70dc85565356554c32cc4a0d32bfa4b3f8baa7f7edb958d6c1ea811da"
     },
     {
       "path": "agent/jiter_preload.py",
@@ -226,7 +226,7 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "d1c2dea56ed3fec38b981acb7a4c8249413f526f3d7b8d8118a244b1fb5e75aa",
+  "runtime_files_digest": "91671b47b31777e825e6ca6f07379bfb4aa4feaf1ce9222a6bc8138e76a1d594",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
   "runtime_python_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a",

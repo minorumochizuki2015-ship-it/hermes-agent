@@ -283,6 +283,46 @@ class TestParseFrontmatterBOM:
         assert fm["platforms"] == ["macos"]
 
 
+def test_nested_frontmatter_does_not_import_optional_yaml(monkeypatch):
+    """Skill metadata must keep its shape when PyYAML is unavailable."""
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def reject_yaml(name, *args, **kwargs):
+        if name == "yaml":
+            raise AssertionError("frontmatter parser imported optional PyYAML")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_yaml)
+    content = (
+        "---\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    canonical_binding:\n"
+        "      required_references:\n"
+        '        - path: "references/anti-generic-rules.md"\n'
+        '          sha256: "abc123"\n'
+        "    tags: [orch-next, operations]\n"
+        "---\n"
+        "Body\n"
+    )
+
+    frontmatter, body = parse_frontmatter(content)
+
+    assert body == "Body\n"
+    assert frontmatter["metadata"]["hermes"]["canonical_binding"] == {
+        "required_references": [
+            {"path": "references/anti-generic-rules.md", "sha256": "abc123"}
+        ]
+    }
+    assert frontmatter["metadata"]["hermes"]["tags"] == [
+        "orch-next",
+        "operations",
+    ]
+
+
 class TestBOMToleranceSiblingSites:
     """The BOM fix must cover every independent frontmatter parser, not just
     the canonical ``parse_frontmatter`` — several modules reimplement the
@@ -307,4 +347,3 @@ class TestBOMToleranceSiblingSites:
         fm = _split_frontmatter("\ufeff---\nname: bp\n---\nbody")
         assert fm is not None
         assert fm.get("name") == "bp"
-

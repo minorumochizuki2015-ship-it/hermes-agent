@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import json
 import logging
 import os
 import re
@@ -154,7 +155,13 @@ _yaml_load_fn = None
 
 
 def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
+    """Parse user configuration YAML with a lazy PyYAML import.
+
+    Skill frontmatter must not use this helper: an optional PyYAML install
+    would otherwise change the metadata shape seen by skill discovery.  Keep
+    this loader for ``config.yaml`` compatibility, where the existing config
+    format is intentionally broader than the frontmatter subset.
+    """
     global _yaml_load_fn
     if _yaml_load_fn is None:
         import yaml
@@ -171,11 +178,444 @@ def yaml_load(content: str):
 # ── Frontmatter parsing ──────────────────────────────────────────────────
 
 
+class FrontmatterParseError(ValueError):
+    """A frontmatter document is outside the deterministic supported subset."""
+
+
+def _frontmatter_indent(line: str) -> int:
+    """Return a frontmatter line's space indentation, rejecting tabs."""
+
+    prefix = line[: len(line) - len(line.lstrip(" "))]
+    if "\t" in prefix:
+        raise FrontmatterParseError("tabs are not valid frontmatter indentation")
+    return len(prefix)
+
+
+def _frontmatter_next_content(lines: List[str], index: int) -> int:
+    """Skip blank and full-line comment entries."""
+
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped and not stripped.startswith("#"):
+            break
+        index += 1
+    return index
+
+
+def _frontmatter_strip_comment(value: str) -> str:
+    """Strip a YAML comment without touching quoted or embedded ``#`` data."""
+
+    quote: Optional[str] = None
+    escaped = False
+    for index, character in enumerate(value):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if quote == "'":
+            if character == quote:
+                # YAML escapes a single quote inside a single-quoted scalar
+                # by doubling it.  The second quote is data, not a terminator.
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    continue
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "#" and (
+            index == 0 or value[index - 1].isspace()
+        ):
+            return value[:index].rstrip()
+    return value.rstrip()
+
+
+def _frontmatter_split_mapping(value: str) -> Optional[Tuple[str, str]]:
+    """Split one mapping entry at its first top-level YAML colon."""
+
+    quote: Optional[str] = None
+    escaped = False
+    square_depth = 0
+    curly_depth = 0
+    for index, character in enumerate(value):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if quote == "'":
+            if character == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    continue
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "[":
+            square_depth += 1
+        elif character == "]":
+            square_depth -= 1
+        elif character == "{":
+            curly_depth += 1
+        elif character == "}":
+            curly_depth -= 1
+        elif (
+            character == ":"
+            and square_depth == 0
+            and curly_depth == 0
+            and (index + 1 == len(value) or value[index + 1].isspace())
+        ):
+            key = value[:index].strip()
+            if key:
+                return key, value[index + 1 :].strip()
+    return None
+
+
+def _frontmatter_split_flow(value: str) -> List[str]:
+    """Split a flow collection on commas outside nested/quoted values."""
+
+    parts: List[str] = []
+    start = 0
+    quote: Optional[str] = None
+    escaped = False
+    square_depth = 0
+    curly_depth = 0
+    for index, character in enumerate(value):
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if quote == "'":
+            if character == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    continue
+                quote = None
+            continue
+        if character in {'"', "'"}:
+            quote = character
+        elif character == "[":
+            square_depth += 1
+        elif character == "]":
+            square_depth -= 1
+        elif character == "{":
+            curly_depth += 1
+        elif character == "}":
+            curly_depth -= 1
+        elif character == "," and square_depth == 0 and curly_depth == 0:
+            parts.append(value[start:index].strip())
+            start = index + 1
+    parts.append(value[start:].strip())
+    return parts
+
+
+def _frontmatter_parse_quoted(value: str) -> str:
+    """Decode the quoted scalar forms used by skill metadata."""
+
+    if len(value) < 2 or value[-1] != value[0]:
+        raise FrontmatterParseError(f"unterminated quoted scalar: {value!r}")
+    if value[0] == "'":
+        return value[1:-1].replace("''", "'")
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise FrontmatterParseError(f"invalid double-quoted scalar: {value!r}") from exc
+    if not isinstance(parsed, str):
+        raise FrontmatterParseError(f"quoted scalar is not a string: {value!r}")
+    return parsed
+
+
+def _frontmatter_parse_scalar(value: str) -> Any:
+    """Parse the scalar and flow-collection subset used by skill metadata."""
+
+    value = _frontmatter_strip_comment(value).strip()
+    if not value:
+        return None
+    if value[0] in {'"', "'"}:
+        return _frontmatter_parse_quoted(value)
+    if value.startswith("["):
+        if not value.endswith("]"):
+            raise FrontmatterParseError(f"unterminated flow list: {value!r}")
+        inner = value[1:-1].strip()
+        return (
+            []
+            if not inner
+            else [_frontmatter_parse_scalar(item) for item in _frontmatter_split_flow(inner)]
+        )
+    if value.startswith("{"):
+        if not value.endswith("}"):
+            raise FrontmatterParseError(f"unterminated flow map: {value!r}")
+        inner = value[1:-1].strip()
+        result: Dict[str, Any] = {}
+        if not inner:
+            return result
+        for item in _frontmatter_split_flow(inner):
+            entry = _frontmatter_split_mapping(item)
+            if entry is None:
+                raise FrontmatterParseError(f"invalid flow map entry: {item!r}")
+            key, parsed_value = entry
+            parsed_key = _frontmatter_parse_scalar(key)
+            result[str(parsed_key)] = _frontmatter_parse_scalar(parsed_value)
+        return result
+
+    lowered = value.lower()
+    if lowered in {"null", "~"}:
+        return None
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    if re.fullmatch(r"[-+]?0|[-+]?[1-9][0-9_]*", value):
+        try:
+            return int(value.replace("_", ""), 10)
+        except ValueError:
+            pass
+    if re.fullmatch(r"[-+]?(?:[0-9][0-9_]*)?\.[0-9_]+", value):
+        try:
+            return float(value.replace("_", ""))
+        except ValueError:
+            pass
+    return value
+
+
+def _frontmatter_parse_block_scalar(
+    lines: List[str], index: int, parent_indent: int, marker: str
+) -> Tuple[str, int]:
+    """Parse the literal/folded block scalars allowed in skill metadata."""
+
+    style = marker[0]
+    chomping = marker[1:] if len(marker) > 1 else ""
+    if chomping not in {"", "+", "-"}:
+        raise FrontmatterParseError(f"unsupported block scalar marker: {marker!r}")
+
+    raw_lines: List[Tuple[str, Optional[int]]] = []
+    content_indent: Optional[int] = None
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            raw_lines.append(("", None))
+            index += 1
+            continue
+        line_indent = _frontmatter_indent(line)
+        if line_indent <= parent_indent:
+            break
+        if content_indent is None:
+            content_indent = line_indent
+        raw_lines.append((line[content_indent:], line_indent))
+        index += 1
+
+    if content_indent is None:
+        return "", index
+
+    content_lines = [line for line, _ in raw_lines]
+    if style == ">":
+        folded: List[str] = []
+        for position, line in enumerate(content_lines):
+            if position + 1 == len(content_lines):
+                folded.append(line)
+                continue
+            following = content_lines[position + 1]
+            folded.append(line)
+            if line and following:
+                folded.append(" ")
+            else:
+                folded.append("\n")
+        result = "".join(folded)
+    else:
+        result = "\n".join(content_lines)
+
+    if chomping == "-":
+        result = result.rstrip("\n")
+    elif chomping == "+":
+        result += "\n"
+    elif result:
+        result = result.rstrip("\n")
+        # A missing newline before the closing frontmatter fence is a real
+        # YAML distinction: PyYAML's clipped ``|`` scalar keeps it absent.
+        # Blank entries collected above represent the terminating newline.
+        if raw_lines and raw_lines[-1][1] is None:
+            result += "\n"
+    return result, index
+
+
+def _frontmatter_parse_value(
+    lines: List[str], index: int, raw_value: str, owner_indent: int
+) -> Tuple[Any, int]:
+    """Parse a mapping value and, for an empty value, its child block."""
+
+    raw_value = _frontmatter_strip_comment(raw_value).strip()
+    if raw_value and raw_value[0] in "|>":
+        return _frontmatter_parse_block_scalar(
+            lines, index, owner_indent, raw_value
+        )
+    if raw_value:
+        return _frontmatter_parse_scalar(raw_value), index
+
+    child = _frontmatter_next_content(lines, index)
+    if child < len(lines) and _frontmatter_indent(lines[child]) > owner_indent:
+        child_indent = _frontmatter_indent(lines[child])
+        return _frontmatter_parse_block(lines, child, child_indent)
+    return None, child
+
+
+def _frontmatter_parse_mapping(
+    lines: List[str], index: int, indent: int
+) -> Tuple[Dict[str, Any], int]:
+    result: Dict[str, Any] = {}
+    while True:
+        index = _frontmatter_next_content(lines, index)
+        if index >= len(lines):
+            return result, index
+        line_indent = _frontmatter_indent(lines[index])
+        if line_indent < indent:
+            return result, index
+        if line_indent > indent:
+            raise FrontmatterParseError("unexpected mapping indentation")
+        text = lines[index][indent:]
+        entry = _frontmatter_split_mapping(text)
+        if entry is None:
+            return result, index
+        key, raw_value = entry
+        parsed_key = _frontmatter_parse_scalar(key)
+        if isinstance(parsed_key, (dict, list)) or parsed_key is None:
+            raise FrontmatterParseError(f"invalid mapping key: {key!r}")
+        value, index = _frontmatter_parse_value(
+            lines, index + 1, raw_value, indent
+        )
+        result[str(parsed_key)] = value
+
+
+def _frontmatter_parse_list(
+    lines: List[str], index: int, indent: int
+) -> Tuple[List[Any], int]:
+    result: List[Any] = []
+    while True:
+        index = _frontmatter_next_content(lines, index)
+        if index >= len(lines):
+            return result, index
+        line_indent = _frontmatter_indent(lines[index])
+        if line_indent < indent:
+            return result, index
+        if line_indent > indent:
+            raise FrontmatterParseError("unexpected list indentation")
+        text = lines[index][indent:]
+        if text != "-" and not text.startswith("- "):
+            return result, index
+
+        item_text = text[1:].lstrip()
+        index += 1
+        if not item_text:
+            child = _frontmatter_next_content(lines, index)
+            if child < len(lines) and _frontmatter_indent(lines[child]) > indent:
+                child_indent = _frontmatter_indent(lines[child])
+                item, index = _frontmatter_parse_block(lines, child, child_indent)
+            else:
+                item = None
+            result.append(item)
+            continue
+
+        entry = _frontmatter_split_mapping(item_text)
+        if entry is None:
+            item = _frontmatter_parse_scalar(item_text)
+            child = _frontmatter_next_content(lines, index)
+            if child < len(lines) and _frontmatter_indent(lines[child]) > indent:
+                raise FrontmatterParseError("scalar list item has a child block")
+            result.append(item)
+            continue
+
+        item: Dict[str, Any] = {}
+        key, raw_value = entry
+        parsed_key = _frontmatter_parse_scalar(key)
+        if isinstance(parsed_key, (dict, list)) or parsed_key is None:
+            raise FrontmatterParseError(f"invalid list mapping key: {key!r}")
+        value, index = _frontmatter_parse_value(
+            lines, index, raw_value, indent
+        )
+        item[str(parsed_key)] = value
+
+        # A mapping list item may continue on the following indented lines,
+        # e.g. ``- path: ...`` followed by ``  sha256: ...``.  Nested values
+        # have already been consumed by _frontmatter_parse_value.
+        while True:
+            child = _frontmatter_next_content(lines, index)
+            if child >= len(lines) or _frontmatter_indent(lines[child]) <= indent:
+                index = child
+                break
+            continuation_indent = _frontmatter_indent(lines[child])
+            continuation = lines[child][continuation_indent:]
+            continuation_entry = _frontmatter_split_mapping(continuation)
+            if continuation_entry is None:
+                raise FrontmatterParseError("invalid mapping list continuation")
+            continuation_key, continuation_value = continuation_entry
+            parsed_key = _frontmatter_parse_scalar(continuation_key)
+            if isinstance(parsed_key, (dict, list)) or parsed_key is None:
+                raise FrontmatterParseError(
+                    f"invalid list mapping key: {continuation_key!r}"
+                )
+            value, index = _frontmatter_parse_value(
+                lines, child + 1, continuation_value, continuation_indent
+            )
+            item[str(parsed_key)] = value
+        result.append(item)
+
+
+def _frontmatter_parse_block(
+    lines: List[str], index: int, indent: int
+) -> Tuple[Any, int]:
+    """Parse one indentation-delimited mapping or list block."""
+
+    index = _frontmatter_next_content(lines, index)
+    if index >= len(lines):
+        return None, index
+    if _frontmatter_indent(lines[index]) != indent:
+        raise FrontmatterParseError("frontmatter block indentation drift")
+    text = lines[index][indent:]
+    if text == "-" or text.startswith("- "):
+        return _frontmatter_parse_list(lines, index, indent)
+    return _frontmatter_parse_mapping(lines, index, indent)
+
+
+def _parse_frontmatter_yaml(content: str) -> Dict[str, Any]:
+    """Parse skill frontmatter using only deterministic stdlib code.
+
+    This intentionally implements the metadata subset used by Hermes skills
+    rather than delegating to an optional YAML package.  That makes nested
+    profile metadata identical in the PyYAML and no-PyYAML environments and
+    gives malformed documents one typed, deterministic failure mode.
+    """
+
+    # Keep a terminal empty entry so YAML's default block-scalar chomping
+    # remains stable when the frontmatter fence follows immediately after a
+    # literal block.  ``str.splitlines()`` discards that distinction.
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    first = _frontmatter_next_content(lines, 0)
+    if first >= len(lines):
+        return {}
+    indent = _frontmatter_indent(lines[first])
+    parsed, next_index = _frontmatter_parse_block(lines, first, indent)
+    remaining = _frontmatter_next_content(lines, next_index)
+    if remaining < len(lines):
+        raise FrontmatterParseError("unparsed frontmatter content")
+    if not isinstance(parsed, dict):
+        raise FrontmatterParseError("frontmatter root must be a mapping")
+    return parsed
+
+
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """Parse YAML frontmatter from a markdown string.
 
-    Uses yaml with CSafeLoader for full YAML support (nested metadata, lists)
-    with a fallback to simple key:value splitting for robustness.
+    Uses the deterministic stdlib frontmatter parser.  It deliberately does
+    not consult the optional PyYAML loader: nested metadata must have one
+    meaning in every runtime environment.
 
     A single leading UTF-8 BOM (U+FEFF) is stripped before parsing. Windows
     GUI editors (Notepad, PowerShell ``>``) prepend one when saving a SKILL.md
@@ -206,16 +646,11 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     body = content[end_match.end() + 3 :]
 
     try:
-        parsed = yaml_load(yaml_content)
-        if isinstance(parsed, dict):
-            frontmatter = parsed
-    except Exception:
-        # Fallback: simple key:value parsing for malformed YAML
-        for line in yaml_content.strip().split("\n"):
-            if ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            frontmatter[key.strip()] = value.strip()
+        frontmatter = _parse_frontmatter_yaml(yaml_content)
+    except FrontmatterParseError as exc:
+        # Preserve the historical safe empty result for malformed skill files,
+        # but never substitute a different partial parse based on dependencies.
+        logger.debug("Could not parse skill frontmatter: %s", exc)
 
     return frontmatter, body
 
