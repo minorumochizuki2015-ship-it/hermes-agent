@@ -47,7 +47,7 @@
     },
     {
       "path": "agent/secret_sources/command.py",
-      "sha256": "3d694a486f0bbbcbb2e4c15a97d2358c47345a8ddc6460ef516a2e3671005a61"
+      "sha256": "4055ee7d121bbbfee9916a1d8e2a2eb7d25aff394176741055a2baecfb37719f"
     },
     {
       "path": "agent/transports/hermes_orch_front_door.py",
@@ -226,7 +226,7 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "17b6e7b8bac2b68dc7fcf85f50bf35af3ae714ccbf0ee865871db31796ea455e",
+  "runtime_files_digest": "10392d6d379223b3752210755dca6f280cdda3fc734d9127f3e1486d58ea98a9",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
   "runtime_python_sha256": "4c78423e7d5986362ac04df40edb18cdd1174f9818d653402e3abbd2a5bbf793",

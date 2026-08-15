@@ -41,11 +41,11 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-# Reuse the exact result shape the bitwarden source returns so
-# hermes_cli.env_loader can consume both providers identically.
-from agent.secret_sources.base import ErrorKind, SecretSource
+# Reuse the shared result shape so hermes_cli.env_loader can consume all
+# providers identically without importing an unrelated provider (and its
+# optional native dependencies) into command-only lifecycle processes.
+from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
 from agent.secret_sources.base import get_source_environment
-from agent.secret_sources.bitwarden import FetchResult
 
 __all__ = [
     "FetchResult",
