@@ -18,7 +18,7 @@ fi
 
 root_dir=${physical_dir%/*}
 controller_path="$root_dir/scripts/orch_next_hermes_mcp_launcher.py"
-controller_sha256="98085796d88a677b6e430a8395621924c109193fc437e2e05b1128e35250cd74"
+controller_sha256="57a016fa737d6120f4ad871ddc77aa561c4d1c752e5948cee9c1094ad7b15267"
 if [ ! -f "$controller_path" ] || [ -L "$controller_path" ]; then
     exit 69
 fi
