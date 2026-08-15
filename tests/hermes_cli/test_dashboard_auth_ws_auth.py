@@ -176,7 +176,13 @@ def insecure_explicit_host_app():
     web_server.app.state.auth_required = prev_required
 
 
-def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/pty"):
+def _fake_ws(
+    *,
+    query: dict,
+    headers: dict | None = None,
+    client_host: str = "127.0.0.1",
+    path: str = "/api/pty",
+):
     """Build a stand-in for starlette.WebSocket good enough for _ws_auth_ok."""
 
     class _QP:
@@ -188,6 +194,7 @@ def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/p
 
     return SimpleNamespace(
         query_params=_QP(query),
+        headers=headers or {},
         client=SimpleNamespace(host=client_host),
         url=SimpleNamespace(path=path),
     )
@@ -199,6 +206,46 @@ class TestWsAuthOkLoopback:
     def test_correct_token_accepted(self, loopback_app):
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert web_server._ws_auth_ok(ws) is True
+
+
+class TestWsAuthSessionHeaderContract:
+    """The ORCH front door's header credential is loopback-only."""
+
+    def test_loopback_valid_session_header_is_accepted(self, loopback_app):
+        ws = _fake_ws(
+            query={},
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        )
+        assert web_server._ws_auth_reason(ws) == (None, "header")
+
+    def test_loopback_wrong_session_header_is_a_typed_mismatch(self, loopback_app):
+        ws = _fake_ws(
+            query={},
+            headers={web_server._SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert web_server._ws_auth_reason(ws) == ("token_mismatch", "header")
+
+    def test_loopback_without_a_credential_is_unchanged(self, loopback_app):
+        assert web_server._ws_auth_reason(_fake_ws(query={})) == (
+            "no_credential",
+            "none",
+        )
+
+    def test_loopback_legacy_query_token_remains_accepted(self, loopback_app):
+        ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
+        assert web_server._ws_auth_reason(ws) == (None, "token")
+
+    def test_gated_mode_rejects_the_long_lived_session_header(self, gated_app):
+        ws = _fake_ws(
+            query={},
+            headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+        )
+        assert web_server._ws_auth_reason(ws) == ("no_credential", "none")
+
+    def test_front_door_and_server_use_the_same_session_header_name(self):
+        from agent.transports.hermes_orch_front_door import _SESSION_HEADER_NAME
+
+        assert _SESSION_HEADER_NAME == web_server._SESSION_HEADER_NAME
 
 
 class TestWsAuthOkGated:
@@ -426,4 +473,3 @@ class TestGatewayWsUrl:
         gw_cred = gw.split("internal=")[1].split("&")[0]
         sc_cred = sc.split("internal=")[1].split("&")[0]
         assert gw_cred == sc_cred
-

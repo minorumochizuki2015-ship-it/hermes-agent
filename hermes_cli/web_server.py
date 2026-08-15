@@ -15124,11 +15124,12 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     machine-parseable token explaining the rejection (``no_credential``,
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``).
     ``credential`` names which credential type was presented (``ticket``,
-    ``internal``, ``token``, or ``none``) so the accepted path can log *how*
-    a peer authed, not just that it did.
+    ``internal``, ``header``, ``token``, or ``none``) so the accepted path can
+    log *how* a peer authed, not just that it did.
 
-    Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
-    parameter, constant-time compared.
+    Loopback / ``--insecure``: the legacy ``?token=<_SESSION_TOKEN>`` query
+    parameter or the ``X-Hermes-Session-Token`` request header, each
+    constant-time compared.
 
     Gated (public bind, no ``--insecure``): one of two credentials —
 
@@ -15142,13 +15143,39 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
       injected into the SPA — see ``dashboard_auth.ws_tickets`` for the
       threat model.
 
-    The legacy ``?token=`` path is unconditionally rejected in gated mode
-    (the SPA bundle isn't carrying the token any longer, and a leaked
-    ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
+    The legacy ``?token=`` and ``X-Hermes-Session-Token`` paths are
+    unconditionally rejected in gated mode (the SPA bundle isn't carrying the
+    token any longer, and a leaked ``_SESSION_TOKEN`` must not grant WS access
+    once the gate is engaged).
 
     Audit-logs the rejection so operators can debug "WS keeps closing"
     issues from the log.
     """
+    def _credential_values(source: object, name: str) -> list[str]:
+        if source is None:
+            return []
+        getlist = getattr(source, "getlist", None)
+        if callable(getlist):
+            return [value for value in getlist(name) if value]
+        get = getattr(source, "get", None)
+        value = get(name, "") if callable(get) else ""
+        return [value] if value else []
+
+    query_params = getattr(ws, "query_params", None)
+    headers = getattr(ws, "headers", None)
+    presented = [
+        (credential, value)
+        for credential, values in (
+            ("internal", _credential_values(query_params, "internal")),
+            ("ticket", _credential_values(query_params, "ticket")),
+            ("token", _credential_values(query_params, "token")),
+            ("header", _credential_values(headers, _SESSION_HEADER_NAME)),
+        )
+        for value in values
+    ]
+    if len(presented) > 1:
+        return "ambiguous_credential", "ambiguous"
+
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
         # Lazy import — keeps this function importable in test harnesses
@@ -15163,8 +15190,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         # Server-spawned children (PTY child → /api/ws, /api/pub) present the
         # multi-use internal credential rather than a single-use ticket, so
         # they survive reconnects and slow cold boots.
-        internal = ws.query_params.get("internal", "")
-        if internal:
+        credential = presented[0][0] if presented else "none"
+        value = presented[0][1] if presented else ""
+        if credential == "internal":
+            internal = value
             try:
                 consume_internal_credential(internal)
                 return None, "internal"
@@ -15177,12 +15206,11 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                 )
                 return "internal_invalid", "internal"
 
-        ticket = ws.query_params.get("ticket", "")
-        if not ticket:
+        if credential != "ticket":
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            consume_ticket(value)
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -15193,12 +15221,14 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             )
             return "ticket_invalid", "ticket"
 
-    token = ws.query_params.get("token", "")
-    if not token:
+    if not presented:
         return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+    credential, value = presented[0]
+    if credential not in {"token", "header"}:
+        return "no_credential", "none"
+    if hmac.compare_digest(value.encode(), _SESSION_TOKEN.encode()):
+        return None, credential
+    return "token_mismatch", credential
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
