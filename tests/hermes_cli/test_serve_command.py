@@ -63,6 +63,15 @@ def test_serve_admits_the_fixed_orch_sidecar_role():
     assert args.port == 3518
 
 
+def test_serve_admits_a_non_live_loopback_dry_sidecar_port():
+    args = _parser().parse_args(
+        ["serve", "--orch-sidecar", "--host", "127.0.0.1", "--port", "3599"]
+    )
+
+    assert args.orch_sidecar is True
+    assert args.port == 3599
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

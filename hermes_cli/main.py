@@ -10364,11 +10364,18 @@ def cmd_dashboard(args):
     _headless_backend = getattr(args, "headless_backend", False)
     _orch_sidecar = bool(getattr(args, "orch_sidecar", False))
     if _orch_sidecar:
+        _launchd_sidecar = os.environ.get("HERMES_ORCH_SIDECAR") == "1"
+        _dry_sidecar_port = (
+            not _launchd_sidecar
+            and isinstance(args.port, int)
+            and 1024 <= args.port <= 65535
+            and args.port not in (3517, 3518)
+        )
         if any(
             (
                 not _headless_backend,
                 args.host != "127.0.0.1",
-                args.port != 3518,
+                args.port != 3518 and not _dry_sidecar_port,
                 getattr(args, "insecure", False),
                 getattr(args, "status", False),
                 getattr(args, "stop", False),
@@ -10378,10 +10385,9 @@ def cmd_dashboard(args):
             )
         ):
             raise SystemExit("orch sidecar identity rejected")
-        # The launchd plist supplies this before Python imports the gateway;
-        # retain it here for direct embedding/tests and downstream module
-        # suppression decisions.
-        os.environ["HERMES_ORCH_SIDECAR"] = "1"
+        # launchd supplies HERMES_ORCH_SIDECAR=1 before Python imports the
+        # gateway and is therefore pinned to 3518. Direct loopback checks may
+        # use a non-live port; start_server marks the process after validation.
 
     _token_file = getattr(args, "ssh_session_token_file", None)
     if _token_file and (

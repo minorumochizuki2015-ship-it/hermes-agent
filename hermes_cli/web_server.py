@@ -17979,14 +17979,22 @@ def start_server(
     ``ssh_session_token`` and ``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state. Neither is persisted or exported to child processes.
     """
-    orch_sidecar = bool(orch_sidecar or _is_orch_sidecar_process())
+    launchd_sidecar = _is_orch_sidecar_process()
+    orch_sidecar = bool(orch_sidecar or launchd_sidecar)
     if orch_sidecar:
-        if not _SESSION_TOKEN_FROM_PRIVATE_SOURCE:
+        dry_sidecar_port = (
+            not launchd_sidecar
+            and host == _ORCH_SIDECAR_HOST
+            and isinstance(port, int)
+            and 1024 <= port <= 65535
+            and port not in (3517, 3518)
+        )
+        if not _SESSION_TOKEN_FROM_PRIVATE_SOURCE and not dry_sidecar_port:
             raise SystemExit("orch sidecar session token source unavailable")
         if any(
             (
                 host != _ORCH_SIDECAR_HOST,
-                port != _ORCH_SIDECAR_PORT,
+                port != _ORCH_SIDECAR_PORT and not dry_sidecar_port,
                 not headless,
                 open_browser,
                 allow_public,
