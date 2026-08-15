@@ -619,10 +619,6 @@ def verified_startup() -> None:
     verified_origin()
     exact_modules = {
         MCP_MODULE: EXPECTED_ORIGIN,
-        "agent.transports.hermes_orch_front_door": (
-            REPO_ROOT / "agent" / "transports" / "hermes_orch_front_door.py"
-        ),
-        "model_tools": REPO_ROOT / "model_tools.py",
         "hermes_cli.env_loader": REPO_ROOT / "hermes_cli" / "env_loader.py",
         "hermes_constants": REPO_ROOT / "hermes_constants.py",
     }
@@ -637,38 +633,20 @@ def verified_startup() -> None:
     if not callable(build_server):
         _fail("Hermes MCP startup surface is unavailable")
     # Tool availability discovery may probe optional paid/network providers.
-    # The origin check instead initializes the real FastMCP/front-door surface
-    # with an empty optional-tool catalog. Operational lifecycle tools are
-    # still registered by the production builder, but no provider, credential,
-    # listener, or service operation is attempted.
-    model_tools = loaded["model_tools"]
-    original_definitions = getattr(model_tools, "get_tool_definitions", None)
-    if not callable(original_definitions):
-        _fail("Hermes tool definition surface is unavailable")
-    setattr(model_tools, "get_tool_definitions", lambda quiet_mode=True: [])
+    # The current upstream builder accepts an explicit catalog, so the origin
+    # check can construct the real FastMCP surface without importing
+    # model_tools or discovering any optional provider tools.
     try:
-        server = build_server()
-    finally:
-        setattr(model_tools, "get_tool_definitions", original_definitions)
+        server = build_server(tool_definitions=[])
+    except TypeError as exc:
+        _fail(f"Hermes MCP startup surface has no verification catalog: {exc}")
     manager = getattr(server, "_tool_manager", None)
     observed_tools = getattr(manager, "_tools", None)
-    lifecycle_specs = getattr(
-        loaded["agent.transports.hermes_orch_front_door"],
-        "ORCH_FRONT_DOOR_TOOLS",
-        None,
-    )
     if (
         type(observed_tools) is not dict
-        or type(lifecycle_specs) not in {list, tuple}
-        or set(observed_tools)
-        != {
-            spec.get("name")
-            for spec in lifecycle_specs
-            if type(spec) is dict and type(spec.get("name")) is str
-        }
-        or len(observed_tools) != 7
+        or observed_tools
     ):
-        _fail("Hermes MCP dry-run lifecycle surface drift")
+        _fail("Hermes MCP dry-run optional tool surface drift")
 
 
 def _runtime_head() -> str:

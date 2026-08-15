@@ -151,7 +151,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
-def _build_server() -> Any:
+def _build_server(*, tool_definitions: list[dict] | None = None) -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
     (we degrade to a clear error only when actually run)."""
@@ -161,12 +161,6 @@ def _build_server() -> Any:
         raise ImportError(
             f"hermes-tools MCP server requires the 'mcp' package: {exc}"
         ) from exc
-
-    # Discover Hermes tools so dispatch works.
-    from model_tools import (
-        get_tool_definitions,
-        handle_function_call,
-    )
 
     mcp = FastMCP(
         "hermes-tools",
@@ -180,10 +174,17 @@ def _build_server() -> Any:
     )
 
     # Pull authoritative Hermes tool schemas for the ones we expose, so
-    # MCP clients see the same parameter docs Hermes gives the model.
+    # MCP clients see the same parameter docs Hermes gives the model.  A
+    # caller that is only verifying the MCP origin can provide an explicit
+    # empty catalog; that path must not import model_tools because its import
+    # performs optional plugin/provider discovery.
+    if tool_definitions is None:
+        from model_tools import get_tool_definitions
+
+        tool_definitions = get_tool_definitions(quiet_mode=True) or []
     all_defs = {
         td["function"]["name"]: td["function"]
-        for td in (get_tool_definitions(quiet_mode=True) or [])
+        for td in tool_definitions
         if isinstance(td, dict) and td.get("type") == "function"
     }
 
@@ -210,6 +211,8 @@ def _build_server() -> Any:
 
             def _dispatch(**kwargs: Any) -> str:
                 try:
+                    from model_tools import handle_function_call
+
                     # Filter out None values before dispatch so unset optionals
                     # aren't forwarded to the handler.
                     args = {k: v for k, v in kwargs.items() if v is not None}
