@@ -5216,6 +5216,128 @@ def test_apply_archives_previous_signed_reverified_terminal_and_starts_new(
     assert executor._lock_root(root).is_dir()
 
 
+@pytest.mark.parametrize("substitution_window", ["before_rename", "after_failure"])
+def test_terminal_archive_marker_collision_never_deletes_substituted_peer(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+    substitution_window: str,
+) -> None:
+    root = tmp_path / f"archive-marker-{substitution_window}"
+    root.mkdir(mode=0o700)
+    _write_previous_terminal_journal(root)
+    record = executor._read_journal(root)
+    peer = tmp_path / f"peer-owned-{substitution_window}"
+    peer.write_bytes(b"peer-owned\n")
+    peer.chmod(0o600)
+    peer_identity = (peer.stat().st_dev, peer.stat().st_ino)
+    held = root / "expected-marker-held"
+    collision_bytes = b'{"collision":true}\n'
+    original_rename = executor._rename_directory_exclusive
+    observed: dict[str, object] = {}
+
+    def create_collision(parent_descriptor: int) -> None:
+        collision_descriptor = os.open(
+            "archive.json",
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            os.fchmod(collision_descriptor, 0o600)
+            assert os.write(collision_descriptor, collision_bytes) == len(
+                collision_bytes
+            )
+            os.fsync(collision_descriptor)
+            collision_info = os.fstat(collision_descriptor)
+            observed["collision_identity"] = (
+                collision_info.st_dev,
+                collision_info.st_ino,
+            )
+        finally:
+            os.close(collision_descriptor)
+
+    def collide_and_substitute(
+        parent_descriptor: int,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        assert destination_name == "archive.json"
+        observed["temporary"] = source_name
+        if substitution_window == "before_rename":
+            os.rename(
+                source_name,
+                held.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.rename(
+                peer,
+                source_name,
+                dst_dir_fd=parent_descriptor,
+            )
+            create_collision(parent_descriptor)
+            original_rename(
+                parent_descriptor,
+                source_name,
+                destination_name,
+            )
+            raise AssertionError("exclusive collision unexpectedly published")
+
+        create_collision(parent_descriptor)
+        try:
+            original_rename(
+                parent_descriptor,
+                source_name,
+                destination_name,
+            )
+        except OSError:
+            os.rename(
+                source_name,
+                held.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.rename(
+                peer,
+                source_name,
+                dst_dir_fd=parent_descriptor,
+            )
+            raise
+        raise AssertionError("exclusive collision unexpectedly published")
+
+    monkeypatch.setattr(
+        executor,
+        "_rename_directory_exclusive",
+        collide_and_substitute,
+    )
+    with pytest.raises(executor.AdoptionError, match="terminal_archive_drift"):
+        executor._archive_terminal_transaction(root, record)
+
+    peer_leaf = root / str(observed["temporary"])
+    assert peer_leaf.read_bytes() == b"peer-owned\n"
+    assert (peer_leaf.stat().st_dev, peer_leaf.stat().st_ino) == peer_identity
+    marker = json.loads(held.read_text(encoding="ascii"))
+    journal_digest = hashlib.sha256(
+        executor._journal_bytes(record)
+    ).hexdigest()
+    assert marker["phase"] == "ROLLED_BACK"
+    assert marker["transaction_id"] == record["transaction_id"]
+    assert marker["journal_digest"] == journal_digest
+    assert marker["artifacts"]["journal.json"] == journal_digest
+    collision = root / "archive.json"
+    assert collision.read_bytes() == collision_bytes
+    assert (collision.stat().st_dev, collision.stat().st_ino) == observed[
+        "collision_identity"
+    ]
+    assert not (
+        executor._history_root(root) / str(record["transaction_id"])
+    ).exists()
+
+
 @pytest.mark.parametrize("crash_phase", ["TERMINAL_ARCHIVE_READY", "TERMINAL_ARCHIVED"])
 def test_terminal_archive_crash_is_retryable_without_evidence_loss(
     tmp_path: Path, fixed_source, crash_phase: str

@@ -3480,29 +3480,77 @@ def _atomic_private_write_at(
         | getattr(os, "O_NOFOLLOW", 0)
     )
     descriptor = -1
-    published = False
     try:
         descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_descriptor)
         os.fchmod(descriptor, 0o600)
         offset = 0
         while offset < len(content):
-            offset += os.write(descriptor, content[offset:])
+            written = os.write(descriptor, content[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "archive marker write failed")
+            offset += written
         os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
+        written_info = os.fstat(descriptor)
+        written_identity = _archive_stat_identity(written_info)
+        path_identity = _archive_stat_identity(
+            os.stat(
+                temporary,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        )
+        if (
+            not stat.S_ISREG(written_info.st_mode)
+            or written_info.st_uid != os.getuid()
+            or stat.S_IMODE(written_info.st_mode) != 0o600
+            or written_info.st_nlink != 1
+            or written_info.st_size != len(content)
+            or written_identity != path_identity
+        ):
+            raise AdoptionError("terminal_archive_drift")
         _rename_directory_exclusive(parent_descriptor, temporary, name)
-        published = True
+        published_identity = _archive_stat_identity(
+            os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        )
+        held_identity = _archive_stat_identity(os.fstat(descriptor))
+        if (
+            not _terminal_rename_identity_matches(
+                written_identity,
+                published_identity,
+            )
+            or not _terminal_rename_identity_matches(
+                written_identity,
+                held_identity,
+            )
+        ):
+            raise AdoptionError("terminal_archive_drift")
         os.fsync(parent_descriptor)
+        published_content, observed_identity = _archive_private_file(
+            parent_descriptor,
+            name,
+        )
+        if (
+            published_content != content
+            or not _terminal_rename_identity_matches(
+                written_identity,
+                observed_identity,
+            )
+        ):
+            raise AdoptionError("terminal_archive_drift")
+    except AdoptionError:
+        raise
     except OSError as exc:
         raise AdoptionError("terminal_archive_drift") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if not published:
-            try:
-                os.unlink(temporary, dir_fd=parent_descriptor)
-            except FileNotFoundError:
-                pass
+        # The random leaf may have been exchanged by a same-UID peer.  Never
+        # unlink it by pathname: failed publications retain every ambiguous
+        # residue, while a successful rename leaves no temporary entry.
 
 
 def _archive_terminal_transaction(
