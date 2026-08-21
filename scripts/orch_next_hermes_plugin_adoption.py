@@ -42,6 +42,9 @@ from tui_gateway import maestro_plugin_adoption_authority as authority  # noqa: 
 
 JOURNAL_SCHEMA: Final = "orch-next-hermes-plugin-adoption-journal.v1"
 ROLLBACK_SCHEMA: Final = "orch-next-hermes-plugin-adoption-rollback.v1"
+TERMINAL_BRIDGE_SCHEMA: Final = (
+    "orch-next-hermes-terminal-observation-ordinary-apply-bridge.v1"
+)
 ARCHIVE_SCHEMA: Final = "orch-next-hermes-plugin-adoption-archive.v1"
 PHASES: Final = (
     "AUTHORIZED",
@@ -171,6 +174,9 @@ _MAX_COMMAND_OUTPUT = 4 * 1024 * 1024
 _MAX_VERSION_OUTPUT = 128
 _CHILD_TIMEOUT_SECONDS = 60.0
 _CHILD_TERM_GRACE_SECONDS = 1.0
+_MAX_ROLLBACK_SNAPSHOT_BYTES: Final = 512 * 1024 * 1024
+_MAX_ROLLBACK_SNAPSHOT_ENTRIES: Final = 20_000
+_MAX_ROLLBACK_SNAPSHOT_DEPTH: Final = 32
 _PROTECTED_PIN_SIGNALS = frozenset({
     signal.SIGHUP,
     signal.SIGINT,
@@ -217,6 +223,49 @@ _TERMINAL_STAGE_TEMP_LEAF: Final = ".terminal-journal.stage.tmp"
 _TERMINAL_OPERATIONAL_STATES = frozenset({"qualification_pending", "orphaned"})
 _TERMINAL_REGISTRY_STATES = frozenset({"active", "installed", "inactive", "orphaned"})
 _TERMINAL_ANCHOR = "fp1-canonical-recovery"
+_TERMINAL_BRIDGE_MANIFEST_LEAF: Final = "terminal-rollback-manifest.json"
+_ORDINARY_PREPARED_LEAF: Final = ".ordinary-request.prepared"
+_ORDINARY_CONSUMED_LEAF: Final = ".ordinary-request.consumed"
+_ORDINARY_PREPARED_KEYS: Final = frozenset({
+    "after_states",
+    "before_states",
+    "decision_id",
+    "manifest_digest",
+    "phase",
+    "request_b64",
+    "request_digest",
+    "schema",
+    "transaction_id",
+})
+_TERMINAL_BRIDGE_CAPTURE_KEYS: Final = frozenset({
+    "before_state_digest",
+    "cache_digest",
+    "cache_source_digest",
+    "host",
+    "install_projection_digest",
+    "marketplace_digest",
+    "orphan_marker_content_digest",
+    "source_digest",
+    "source_version",
+})
+_TERMINAL_BRIDGE_MANIFEST_KEYS: Final = frozenset({
+    "host_order",
+    "ordinary_plugin_version",
+    "policy",
+    "schema",
+    "sources",
+    "states",
+    "terminal_canonical_identity_digest",
+    "terminal_current_identity_digest",
+    "terminal_envelope_digest",
+    "terminal_journal_b64",
+    "terminal_journal_digest",
+    "terminal_plugin_version",
+    "terminal_request_digest",
+    "terminal_source_bundle_digest",
+    "terminal_source_revision",
+    "terminal_transaction_id",
+})
 
 
 class AdoptionError(RuntimeError):
@@ -501,7 +550,7 @@ def _pinned_cli_executable(
             copied = True
             destination = os.open(
                 pin,
-                os.O_WRONLY
+                os.O_RDWR
                 | os.O_CREAT
                 | os.O_EXCL
                 | getattr(os, "O_NOFOLLOW", 0),
@@ -1617,6 +1666,18 @@ def _fixed_terminal_state_root() -> Path:
     )
 
 
+def _fixed_terminal_source_root() -> Path:
+    """Return the immutable ordinary 0.1.48 marketplace transaction root."""
+
+    return (
+        _fixed_user_home()
+        / ".hermes"
+        / "profiles"
+        / "orch"
+        / "plugin-adoption-v048"
+    )
+
+
 def _fixed_canonical_recovery_root() -> Path:
     """Return the one fixed FP1 recovery checkout admitted by terminalize."""
 
@@ -1803,6 +1864,124 @@ def _rename_directory_between_exclusive(
         raise OSError(error, "exclusive rollback publish failed")
 
 
+def _rename_bound_directory_between_exclusive(
+    source_parent_descriptor: int,
+    source_name: str,
+    destination_parent_descriptor: int,
+    destination_name: str,
+    *,
+    failure: str,
+    expected_identity_digest: str | None = None,
+) -> None:
+    """Rename one held directory inode and evacuate a swapped destination."""
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    child_descriptor = -1
+    try:
+        child_descriptor = os.open(
+            source_name,
+            flags,
+            dir_fd=source_parent_descriptor,
+        )
+        bound_identity = _archive_stat_identity(os.fstat(child_descriptor))
+        if expected_identity_digest is not None and (
+            _safe_sha256(expected_identity_digest) is None
+            or _canonical_digest({
+                "device": bound_identity[0],
+                "group": bound_identity[4],
+                "inode": bound_identity[1],
+                "mode": stat.S_IMODE(bound_identity[2]),
+                "owner": bound_identity[3],
+            })
+            != expected_identity_digest
+        ):
+            raise AdoptionError(failure)
+        path_identity = _archive_stat_identity(
+            os.stat(
+                source_name,
+                dir_fd=source_parent_descriptor,
+                follow_symlinks=False,
+            )
+        )
+        if not _terminal_rename_identity_matches(
+            bound_identity, path_identity
+        ):
+            raise AdoptionError(failure)
+        _rename_directory_between_exclusive(
+            source_parent_descriptor,
+            source_name,
+            destination_parent_descriptor,
+            destination_name,
+        )
+        destination_identity = _archive_stat_identity(
+            os.stat(
+                destination_name,
+                dir_fd=destination_parent_descriptor,
+                follow_symlinks=False,
+            )
+        )
+        held_identity = _archive_stat_identity(os.fstat(child_descriptor))
+        if _terminal_rename_identity_matches(
+            bound_identity, destination_identity
+        ) and _terminal_rename_identity_matches(
+            bound_identity, held_identity
+        ):
+            return
+
+        # Keep a substituted inode out of the live destination before
+        # reporting the typed CAS failure.  Prefer the original source leaf;
+        # if it was repopulated, retain the displaced inode under a bounded
+        # content-derived residue rather than overwriting either entry.
+        try:
+            os.stat(
+                source_name,
+                dir_fd=source_parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            recovery_name = source_name
+        else:
+            recovery_name = (
+                ".rejected-"
+                + hashlib.sha256(
+                    (source_name + "\0" + destination_name).encode("utf-8")
+                    + repr(destination_identity).encode("ascii")
+                ).hexdigest()[:24]
+            )
+        try:
+            _rename_directory_between_exclusive(
+                destination_parent_descriptor,
+                destination_name,
+                source_parent_descriptor,
+                recovery_name,
+            )
+            recovered_identity = _archive_stat_identity(
+                os.stat(
+                    recovery_name,
+                    dir_fd=source_parent_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+        except (OSError, AdoptionError) as exc:
+            raise AdoptionError(f"{failure}_ambiguous") from exc
+        if not _terminal_rename_identity_matches(
+            destination_identity, recovered_identity
+        ):
+            raise AdoptionError(f"{failure}_ambiguous")
+        raise AdoptionError(failure)
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        raise AdoptionError(failure) from exc
+    finally:
+        if child_descriptor >= 0:
+            os.close(child_descriptor)
+
+
 def _rename_directory_exclusive(
     parent_descriptor: int,
     source_name: str,
@@ -1884,25 +2063,81 @@ def _atomic_private_write(path: Path, content: bytes) -> None:
 
 
 def _private_file_bytes(path: Path, *, maximum: int = 512 * 1024) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_descriptor = os.open(path.parent, directory_flags)
+    descriptor = -1
     try:
+        parent_before = os.fstat(parent_descriptor)
+        parent_path_before = path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent_before.st_mode)
+            or parent_before.st_uid != os.getuid()
+            or stat.S_IMODE(parent_before.st_mode) != 0o700
+            or (parent_before.st_dev, parent_before.st_ino, parent_before.st_mode)
+            != (
+                parent_path_before.st_dev,
+                parent_path_before.st_ino,
+                parent_path_before.st_mode,
+            )
+        ):
+            raise AdoptionError("journal_drift")
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
         before = os.fstat(descriptor)
+        path_before = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_uid != os.getuid()
             or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1
             or before.st_size > maximum
+            or (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_uid,
+                before.st_gid,
+                before.st_nlink,
+                before.st_size,
+            )
+            != (
+                path_before.st_dev,
+                path_before.st_ino,
+                path_before.st_mode,
+                path_before.st_uid,
+                path_before.st_gid,
+                path_before.st_nlink,
+                path_before.st_size,
+            )
         ):
             raise AdoptionError("journal_drift")
         content = os.read(descriptor, maximum + 1)
         after = os.fstat(descriptor)
+        path_after = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        parent_after = os.fstat(parent_descriptor)
+        parent_path_after = path.parent.lstat()
     finally:
-        os.close(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent_descriptor)
     if len(content) > maximum or (
         before.st_dev,
         before.st_ino,
         before.st_mode,
+        before.st_uid,
+        before.st_gid,
+        before.st_nlink,
         before.st_size,
         before.st_mtime_ns,
         before.st_ctime_ns,
@@ -1910,12 +2145,170 @@ def _private_file_bytes(path: Path, *, maximum: int = 512 * 1024) -> bytes:
         after.st_dev,
         after.st_ino,
         after.st_mode,
+        after.st_uid,
+        after.st_gid,
+        after.st_nlink,
         after.st_size,
         after.st_mtime_ns,
         after.st_ctime_ns,
+    ) or (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_uid,
+        after.st_gid,
+        after.st_nlink,
+        after.st_size,
+    ) != (
+        path_after.st_dev,
+        path_after.st_ino,
+        path_after.st_mode,
+        path_after.st_uid,
+        path_after.st_gid,
+        path_after.st_nlink,
+        path_after.st_size,
+    ) or (
+        parent_before.st_dev,
+        parent_before.st_ino,
+        parent_before.st_mode,
+    ) != (
+        parent_after.st_dev,
+        parent_after.st_ino,
+        parent_after.st_mode,
+    ) or (
+        parent_after.st_dev,
+        parent_after.st_ino,
+        parent_after.st_mode,
+    ) != (
+        parent_path_after.st_dev,
+        parent_path_after.st_ino,
+        parent_path_after.st_mode,
     ):
         raise AdoptionError("journal_drift")
     return content
+
+
+def _write_private_file_exclusive(
+    path: Path,
+    content: bytes,
+    *,
+    failure_code: str,
+) -> None:
+    _lstat_admitted_directory(path.parent, create=True)
+    parent_descriptor = os.open(
+        path.parent,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    temporary = f".{path.name}.{secrets.token_hex(16)}"
+    descriptor = -1
+    published = False
+    written_identity: tuple[int, ...] | None = None
+    try:
+        parent_before = os.fstat(parent_descriptor)
+        parent_path_before = path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent_before.st_mode)
+            or parent_before.st_uid != os.getuid()
+            or stat.S_IMODE(parent_before.st_mode) != 0o700
+            or (parent_before.st_dev, parent_before.st_ino, parent_before.st_mode)
+            != (
+                parent_path_before.st_dev,
+                parent_path_before.st_ino,
+                parent_path_before.st_mode,
+            )
+        ):
+            raise AdoptionError(failure_code)
+        try:
+            os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure_code)
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "private file write failed")
+            view = view[written:]
+        os.fsync(descriptor)
+        written_info = os.fstat(descriptor)
+        written_identity = _archive_stat_identity(written_info)
+        if (
+            not stat.S_ISREG(written_info.st_mode)
+            or written_info.st_uid != os.getuid()
+            or stat.S_IMODE(written_info.st_mode) != 0o600
+            or written_info.st_nlink != 1
+            or written_info.st_size != len(content)
+        ):
+            raise AdoptionError(failure_code)
+        _rename_directory_exclusive(
+            parent_descriptor, temporary, path.name
+        )
+        published_info = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not _terminal_rename_identity_matches(
+                written_identity,
+                _archive_stat_identity(published_info),
+            )
+            or not _terminal_rename_identity_matches(
+                written_identity,
+                _archive_stat_identity(os.fstat(descriptor)),
+            )
+        ):
+            raise AdoptionError(failure_code)
+        published = True
+        os.fsync(parent_descriptor)
+        parent_after = os.fstat(parent_descriptor)
+        parent_path_after = path.parent.lstat()
+        if (
+            parent_before.st_dev,
+            parent_before.st_ino,
+            parent_before.st_mode,
+        ) != (
+            parent_after.st_dev,
+            parent_after.st_ino,
+            parent_after.st_mode,
+        ) or (
+            parent_after.st_dev,
+            parent_after.st_ino,
+            parent_after.st_mode,
+        ) != (
+            parent_path_after.st_dev,
+            parent_path_after.st_ino,
+            parent_path_after.st_mode,
+        ):
+            raise AdoptionError(failure_code)
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        raise AdoptionError(failure_code) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if not published:
+            # A same-UID peer may have exchanged the random leaf after its
+            # inode was bound.  Retain any ambiguous residue rather than
+            # unlinking a pathname that no longer names our inode.
+            pass
+        os.close(parent_descriptor)
+    if _private_file_bytes(path) != content:
+        raise AdoptionError(failure_code)
 
 
 def _journal_path(root: Path) -> Path:
@@ -2182,6 +2575,18 @@ def _read_terminal_record(root: Path) -> dict[str, object]:
 
 def _write_journal(root: Path, record: dict[str, object]) -> None:
     _atomic_private_write(_journal_path(root), _journal_bytes(record))
+
+
+def _write_journal_exclusive(root: Path, record: dict[str, object]) -> None:
+    content = _journal_bytes(record)
+    path = _journal_path(root)
+    if path.exists() or path.is_symlink():
+        raise AdoptionError("ordinary_journal_collision")
+    _write_private_file_exclusive(
+        path,
+        content,
+        failure_code="ordinary_journal_collision",
+    )
 
 
 def _terminal_file_identity(info: os.stat_result) -> tuple[int, ...]:
@@ -3122,6 +3527,8 @@ def _archive_terminal_transaction(
         "quarantine",
         "rollback",
         "stage",
+        _TERMINAL_BRIDGE_MANIFEST_LEAF,
+        _ORDINARY_CONSUMED_LEAF,
     })
     try:
         initial_snapshot, _ = _archive_snapshot(root_descriptor)
@@ -3266,9 +3673,392 @@ def _advance_journal(
     if phase not in allowed_edges[current]:
         raise AdoptionError("journal_transition_invalid")
     successor = {**record, "phase": phase}
-    _write_journal(root, successor)
+    _replace_journal_cas(root, record, successor)
     crash_hook(phase)
     return successor
+
+
+def _replace_legacy_journal_cas(
+    root: Path,
+    expected: dict[str, object],
+    successor: dict[str, object],
+) -> None:
+    expected_bytes = _journal_bytes(expected)
+    successor_bytes = _journal_bytes(successor)
+    path = _journal_path(root)
+    if _private_file_bytes(path) != expected_bytes:
+        raise AdoptionError("journal_transition_cas_mismatch")
+    directory = os.open(
+        root,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    current_descriptor = temporary_descriptor = -1
+    temporary = f".journal.transition.{secrets.token_hex(16)}"
+    exchanged = False
+    current_identity: tuple[int, ...] | None = None
+    temporary_identity: tuple[int, ...] | None = None
+    try:
+        current_descriptor = os.open(
+            "journal.json",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory,
+        )
+        current_info = os.fstat(current_descriptor)
+        current_identity = _archive_stat_identity(current_info)
+        if (
+            not stat.S_ISREG(current_info.st_mode)
+            or current_info.st_uid != os.getuid()
+            or stat.S_IMODE(current_info.st_mode) != 0o600
+            or current_info.st_nlink != 1
+            or current_info.st_size != len(expected_bytes)
+            or current_identity
+            != _archive_stat_identity(
+                os.stat(
+                    "journal.json",
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+        current_content = bytearray()
+        while len(current_content) <= len(expected_bytes):
+            chunk = os.read(
+                current_descriptor,
+                len(expected_bytes) + 1 - len(current_content),
+            )
+            if not chunk:
+                break
+            current_content.extend(chunk)
+        if (
+            bytes(current_content) != expected_bytes
+            or current_identity
+            != _archive_stat_identity(os.fstat(current_descriptor))
+            or current_identity
+            != _archive_stat_identity(
+                os.stat(
+                    "journal.json",
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+        temporary_descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
+        os.fchmod(temporary_descriptor, 0o600)
+        view = memoryview(successor_bytes)
+        while view:
+            written = os.write(temporary_descriptor, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "journal transition write failed")
+            view = view[written:]
+        os.fsync(temporary_descriptor)
+        temporary_info = os.fstat(temporary_descriptor)
+        temporary_identity = _archive_stat_identity(temporary_info)
+        if (
+            not stat.S_ISREG(temporary_info.st_mode)
+            or temporary_info.st_uid != os.getuid()
+            or stat.S_IMODE(temporary_info.st_mode) != 0o600
+            or temporary_info.st_nlink != 1
+            or temporary_info.st_size != len(successor_bytes)
+            or current_identity
+            != _archive_stat_identity(os.fstat(current_descriptor))
+            or current_identity
+            != _archive_stat_identity(
+                os.stat(
+                    "journal.json",
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+        os.close(temporary_descriptor)
+        temporary_descriptor = -1
+        _exchange_directory_entries(directory, temporary, "journal.json")
+        exchanged = True
+        displaced = os.stat(
+            temporary, dir_fd=directory, follow_symlinks=False
+        )
+        published = os.stat(
+            "journal.json", dir_fd=directory, follow_symlinks=False
+        )
+        if (
+            not _terminal_rename_identity_matches(
+                current_identity, _archive_stat_identity(displaced)
+            )
+            or not _terminal_rename_identity_matches(
+                temporary_identity, _archive_stat_identity(published)
+            )
+        ):
+            _exchange_directory_entries(
+                directory, temporary, "journal.json"
+            )
+            exchanged = False
+            raise AdoptionError("journal_transition_cas_mismatch")
+        os.fsync(directory)
+        os.unlink(temporary, dir_fd=directory)
+        exchanged = False
+        os.fsync(directory)
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        raise AdoptionError("journal_transition_publish_failed") from exc
+    finally:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        if current_descriptor >= 0:
+            os.close(current_descriptor)
+        if not exchanged:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        os.close(directory)
+    if _private_file_bytes(path) != successor_bytes:
+        raise AdoptionError("journal_transition_publish_failed")
+
+
+def _replace_bridge_journal_cas(
+    root: Path,
+    expected: dict[str, object],
+    successor: dict[str, object],
+) -> None:
+    """Advance a bridge journal while retaining every displaced bound inode."""
+
+    expected_bytes = _journal_bytes(expected)
+    successor_bytes = _journal_bytes(successor)
+    phase = str(expected["phase"])
+    successor_phase = str(successor["phase"])
+    if (
+        re.fullmatch(r"[A-Z_]+", phase) is None
+        or re.fullmatch(r"[A-Z_]+", successor_phase) is None
+    ):
+        raise AdoptionError("journal_transition_cas_mismatch")
+    prior_leaf = (
+        ".ordinary-journal-edge-"
+        f"{phase.lower()}-to-{successor_phase.lower()}"
+    )
+    directory = _open_terminal_root(
+        root,
+        failure="journal_transition_cas_mismatch",
+    )
+    current_descriptor = successor_descriptor = -1
+    exchanged = False
+    try:
+        root_identity = _archive_stat_identity(os.fstat(directory))
+        if root_identity != _archive_stat_identity(root.lstat()):
+            raise AdoptionError("journal_transition_cas_mismatch")
+        current_descriptor = os.open(
+            "journal.json",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory,
+        )
+        current_info = os.fstat(current_descriptor)
+        current_identity = _archive_stat_identity(current_info)
+        if (
+            not stat.S_ISREG(current_info.st_mode)
+            or current_info.st_uid != os.getuid()
+            or stat.S_IMODE(current_info.st_mode) != 0o600
+            or current_info.st_nlink != 1
+            or current_info.st_size != len(expected_bytes)
+            or current_identity
+            != _archive_stat_identity(
+                os.stat(
+                    "journal.json",
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+        current_content = bytearray()
+        while len(current_content) <= len(expected_bytes):
+            chunk = os.read(
+                current_descriptor,
+                len(expected_bytes) + 1 - len(current_content),
+            )
+            if not chunk:
+                break
+            current_content.extend(chunk)
+        if (
+            bytes(current_content) != expected_bytes
+            or current_identity
+            != _archive_stat_identity(os.fstat(current_descriptor))
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+
+        try:
+            successor_descriptor = os.open(
+                prior_leaf,
+                os.O_RDWR
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=directory,
+            )
+            os.fchmod(successor_descriptor, 0o600)
+            view = memoryview(successor_bytes)
+            while view:
+                written = os.write(successor_descriptor, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "bridge journal write failed")
+                view = view[written:]
+            os.fsync(successor_descriptor)
+            os.lseek(successor_descriptor, 0, os.SEEK_SET)
+        except FileExistsError:
+            successor_descriptor = os.open(
+                prior_leaf,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory,
+            )
+        successor_info = os.fstat(successor_descriptor)
+        successor_identity = _archive_stat_identity(successor_info)
+        successor_content = bytearray()
+        while len(successor_content) <= len(successor_bytes):
+            chunk = os.read(
+                successor_descriptor,
+                len(successor_bytes) + 1 - len(successor_content),
+            )
+            if not chunk:
+                break
+            successor_content.extend(chunk)
+        if (
+            not stat.S_ISREG(successor_info.st_mode)
+            or successor_info.st_uid != os.getuid()
+            or stat.S_IMODE(successor_info.st_mode) != 0o600
+            or successor_info.st_nlink != 1
+            or successor_info.st_size != len(successor_bytes)
+            or bytes(successor_content) != successor_bytes
+            or successor_identity
+            != _archive_stat_identity(os.fstat(successor_descriptor))
+            or successor_identity
+            != _archive_stat_identity(
+                os.stat(
+                    prior_leaf,
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+            or current_identity
+            != _archive_stat_identity(os.fstat(current_descriptor))
+            or current_identity
+            != _archive_stat_identity(
+                os.stat(
+                    "journal.json",
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+
+        _exchange_directory_entries(directory, prior_leaf, "journal.json")
+        exchanged = True
+        displaced = _archive_stat_identity(
+            os.stat(
+                prior_leaf,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        )
+        published = _archive_stat_identity(
+            os.stat(
+                "journal.json",
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        )
+        if (
+            not _terminal_rename_identity_matches(current_identity, displaced)
+            or not _terminal_rename_identity_matches(
+                successor_identity,
+                published,
+            )
+            or not _terminal_rename_identity_matches(
+                current_identity,
+                _archive_stat_identity(os.fstat(current_descriptor)),
+            )
+            or not _terminal_rename_identity_matches(
+                successor_identity,
+                _archive_stat_identity(os.fstat(successor_descriptor)),
+            )
+        ):
+            raise AdoptionError("journal_transition_cas_mismatch")
+        os.fsync(directory)
+        if root_identity[:5] != _archive_stat_identity(root.lstat())[:5]:
+            raise AdoptionError("journal_transition_cas_mismatch")
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        raise AdoptionError("journal_transition_publish_failed") from exc
+    finally:
+        if successor_descriptor >= 0:
+            os.close(successor_descriptor)
+        if current_descriptor >= 0:
+            os.close(current_descriptor)
+        # Never unlink the retained predecessor or an ambiguous pre-exchange
+        # leaf: pathname cleanup cannot be made inode-CAS-safe against a
+        # same-UID exchange.  Exact per-edge names bound growth to the finite
+        # journal state graph while allowing a crash-reconciled rollback edge
+        # to coexist with an earlier prepared normal-successor edge.
+        os.close(directory)
+    if (
+        not exchanged
+        or _private_file_bytes(_journal_path(root)) != successor_bytes
+        or _private_file_bytes(root / prior_leaf) != expected_bytes
+    ):
+        raise AdoptionError("journal_transition_publish_failed")
+
+
+def _replace_journal_cas(
+    root: Path,
+    expected: dict[str, object],
+    successor: dict[str, object],
+) -> None:
+    try:
+        before_states = tuple(
+            HostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                expected["before_states"], HOST_ORDER, strict=True
+            )
+        )
+    except (KeyError, TypeError, ValueError, AdoptionError):
+        before_states = ()
+    if len(before_states) == len(HOST_ORDER) and all(
+        state.plugin_version == authority.TERMINAL_PLUGIN_VERSION
+        for state in before_states
+    ):
+        _replace_bridge_journal_cas(root, expected, successor)
+        return
+    _replace_legacy_journal_cas(root, expected, successor)
+
+
+def _has_unsupported_snapshot_metadata(
+    descriptor: int,
+    info: os.stat_result,
+) -> bool:
+    if getattr(info, "st_flags", 0):
+        return True
+    try:
+        return bool(os.listxattr(descriptor))
+    except AttributeError:
+        return False
+    except OSError as exc:
+        if exc.errno in {errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}:
+            return False
+        raise
 
 
 def _tree_digest(root: Path, *, ignored: frozenset[str] = frozenset()) -> str | None:
@@ -3305,6 +4095,8 @@ def _tree_digest(root: Path, *, ignored: frozenset[str] = frozenset()) -> str | 
                     not stat.S_ISREG(before.st_mode)
                     or before.st_uid != uid
                     or before.st_mode & 0o022
+                    or before.st_nlink != 1
+                    or _has_unsupported_snapshot_metadata(descriptor, before)
                     or (before.st_dev, before.st_ino, before.st_mode, before.st_size)
                     != (info.st_dev, info.st_ino, info.st_mode, info.st_size)
                 ):
@@ -3338,6 +4130,238 @@ def _tree_digest(root: Path, *, ignored: frozenset[str] = frozenset()) -> str | 
         else:
             raise AdoptionError("cache_metadata_drift")
     return hashlib.sha256("".join(rows).encode("utf-8")).hexdigest()
+
+
+def _copy_private_tree_exclusive(
+    source: Path,
+    destination: Path,
+    *,
+    expected_digest: str,
+    crash_hook: Callable[[str], None] = lambda _phase: None,
+) -> None:
+    if _safe_sha256(expected_digest) is None:
+        raise AdoptionError("terminal_rollback_capture_digest_invalid")
+    _lstat_admitted_directory(destination.parent, create=True)
+    if destination.exists() or destination.is_symlink():
+        try:
+            destination_digest = _bounded_private_tree_digest(destination)
+        except AdoptionError as exc:
+            if str(exc) == "terminal_rollback_capture_limit_exceeded":
+                raise
+            raise AdoptionError(
+                "terminal_rollback_capture_no_clobber"
+            ) from exc
+        if destination_digest != expected_digest:
+            raise AdoptionError("terminal_rollback_capture_no_clobber")
+        return
+    stage = destination.parent / f".{destination.name}.snapshot"
+    if stage.exists() or stage.is_symlink():
+        try:
+            _publish_private_snapshot_stage(
+                stage,
+                destination,
+                expected_digest=expected_digest,
+                digest_mismatch_code=(
+                    "terminal_rollback_capture_no_clobber"
+                ),
+            )
+        except AdoptionError as exc:
+            if str(exc) in {
+                "terminal_rollback_capture_limit_exceeded",
+                "terminal_rollback_capture_drift",
+                "terminal_rollback_capture_no_clobber",
+            }:
+                raise
+            raise AdoptionError(
+                "terminal_rollback_capture_no_clobber"
+            ) from exc
+        return
+    try:
+        root_before = source.lstat()
+    except OSError as exc:
+        raise AdoptionError("terminal_rollback_source_unavailable") from exc
+    if (
+        stat.S_ISLNK(root_before.st_mode)
+        or not stat.S_ISDIR(root_before.st_mode)
+        or root_before.st_uid != os.getuid()
+        or root_before.st_mode & 0o022
+    ):
+        raise AdoptionError("terminal_rollback_source_metadata_invalid")
+    source_descriptor = os.open(
+        source,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if _has_unsupported_snapshot_metadata(
+            source_descriptor, os.fstat(source_descriptor)
+        ):
+            raise AdoptionError("terminal_rollback_source_metadata_invalid")
+    finally:
+        os.close(source_descriptor)
+    if _bounded_private_tree_digest(source) != expected_digest:
+        raise AdoptionError("terminal_rollback_source_digest_mismatch")
+    stage.mkdir(mode=stat.S_IMODE(root_before.st_mode))
+    stage.chmod(stat.S_IMODE(root_before.st_mode))
+    entry_count = 0
+    total_bytes = 0
+    try:
+        for source_path in sorted(
+            source.rglob("*"),
+            key=lambda item: item.relative_to(source).as_posix(),
+        ):
+            relative = source_path.relative_to(source)
+            if (
+                len(relative.parts) > _MAX_ROLLBACK_SNAPSHOT_DEPTH
+                or any(
+                    part in {"", ".", ".."}
+                    or "/" in part
+                    or "\\" in part
+                    for part in relative.parts
+                )
+            ):
+                raise AdoptionError("terminal_rollback_capture_path_invalid")
+            entry_count += 1
+            if entry_count > _MAX_ROLLBACK_SNAPSHOT_ENTRIES:
+                raise AdoptionError("terminal_rollback_capture_limit_exceeded")
+            source_info = source_path.lstat()
+            destination_path = stage / relative
+            if (
+                stat.S_ISLNK(source_info.st_mode)
+                or source_info.st_uid != os.getuid()
+                or source_info.st_mode & 0o022
+            ):
+                raise AdoptionError("terminal_rollback_source_metadata_invalid")
+            if stat.S_ISDIR(source_info.st_mode):
+                descriptor = os.open(
+                    source_path,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    if (
+                        _archive_stat_identity(os.fstat(descriptor))
+                        != _archive_stat_identity(source_info)
+                        or _has_unsupported_snapshot_metadata(
+                            descriptor, source_info
+                        )
+                    ):
+                        raise AdoptionError(
+                            "terminal_rollback_source_metadata_invalid"
+                        )
+                finally:
+                    os.close(descriptor)
+                destination_path.mkdir(
+                    mode=stat.S_IMODE(source_info.st_mode)
+                )
+                destination_path.chmod(stat.S_IMODE(source_info.st_mode))
+                continue
+            if not stat.S_ISREG(source_info.st_mode) or source_info.st_nlink != 1:
+                raise AdoptionError("terminal_rollback_source_metadata_invalid")
+            total_bytes += source_info.st_size
+            if total_bytes > _MAX_ROLLBACK_SNAPSHOT_BYTES:
+                raise AdoptionError("terminal_rollback_capture_limit_exceeded")
+            source_file = os.open(
+                source_path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            destination_file = -1
+            try:
+                before = os.fstat(source_file)
+                if (
+                    _archive_stat_identity(before)
+                    != _archive_stat_identity(source_info)
+                    or before.st_nlink != 1
+                    or _has_unsupported_snapshot_metadata(source_file, before)
+                ):
+                    raise AdoptionError(
+                        "terminal_rollback_source_metadata_invalid"
+                    )
+                destination_file = os.open(
+                    destination_path,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    stat.S_IMODE(before.st_mode),
+                )
+                os.fchmod(destination_file, stat.S_IMODE(before.st_mode))
+                os.fchown(destination_file, -1, before.st_gid)
+                while chunk := os.read(source_file, 1024 * 1024):
+                    view = memoryview(chunk)
+                    while view:
+                        written = os.write(destination_file, view)
+                        if written <= 0:
+                            raise OSError(errno.EIO, "snapshot write failed")
+                        view = view[written:]
+                os.fsync(destination_file)
+                source_after = os.fstat(source_file)
+                destination_info = os.fstat(destination_file)
+                path_after = source_path.lstat()
+                if (
+                    _archive_stat_identity(before)
+                    != _archive_stat_identity(source_after)
+                    or _archive_stat_identity(source_after)
+                    != _archive_stat_identity(path_after)
+                    or not stat.S_ISREG(destination_info.st_mode)
+                    or destination_info.st_uid != os.getuid()
+                    or destination_info.st_gid != before.st_gid
+                    or destination_info.st_nlink != 1
+                    or stat.S_IMODE(destination_info.st_mode)
+                    != stat.S_IMODE(before.st_mode)
+                    or destination_info.st_size != before.st_size
+                    or _has_unsupported_snapshot_metadata(
+                        destination_file, destination_info
+                    )
+                ):
+                    raise AdoptionError("terminal_rollback_capture_drift")
+            finally:
+                if destination_file >= 0:
+                    os.close(destination_file)
+                os.close(source_file)
+        for directory in sorted(
+            (path for path in stage.rglob("*") if path.is_dir()),
+            key=lambda item: len(item.relative_to(stage).parts),
+            reverse=True,
+        ):
+            _fsync_directory(directory)
+        _fsync_directory(stage)
+        root_after = source.lstat()
+        if (
+            _archive_stat_identity(root_before)
+            != _archive_stat_identity(root_after)
+            or _bounded_private_tree_digest(source) != expected_digest
+            or _bounded_private_tree_digest(stage) != expected_digest
+        ):
+            raise AdoptionError("terminal_rollback_capture_drift")
+        crash_hook("TERMINAL_ROLLBACK_SNAPSHOT_READY")
+        if (
+            _archive_stat_identity(root_before)
+            != _archive_stat_identity(source.lstat())
+            or _bounded_private_tree_digest(source) != expected_digest
+            or _bounded_private_tree_digest(stage) != expected_digest
+        ):
+            raise AdoptionError("terminal_rollback_capture_drift")
+        _publish_private_snapshot_stage(
+            stage,
+            destination,
+            expected_digest=expected_digest,
+        )
+        crash_hook("TERMINAL_ROLLBACK_SNAPSHOT_PUBLISHED")
+    except InjectedCrash:
+        raise
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise AdoptionError("terminal_rollback_capture_enospc") from exc
+        if exc.errno == errno.EXDEV:
+            raise AdoptionError("terminal_rollback_capture_cross_device") from exc
+        raise AdoptionError("terminal_rollback_capture_failed") from exc
+    if _bounded_private_tree_digest(destination) != expected_digest:
+        raise AdoptionError("terminal_rollback_capture_drift")
 
 
 def _open_bound_directory(
@@ -3397,6 +4421,10 @@ def _tree_digests_from_descriptor(
     *,
     ignored_sets: tuple[frozenset[str], ...],
     file_validators: dict[str, Callable[[os.stat_result, bytes], None]] | None = None,
+    file_projectors: dict[str, Callable[[bytes], bytes]] | None = None,
+    maximum_depth: int | None = None,
+    maximum_entries: int | None = None,
+    maximum_bytes: int | None = None,
 ) -> tuple[str, ...]:
     if not ignored_sets:
         raise AdoptionError("generated_candidate_drift")
@@ -3406,6 +4434,9 @@ def _tree_digests_from_descriptor(
     held_files: list[tuple[int, str, int, tuple[int, ...]]] = []
     root_before = os.fstat(descriptor)
     validators = file_validators or {}
+    projectors = file_projectors or {}
+    entry_count = 0
+    total_bytes = 0
 
     def path_is_ignored(relative: str, ignored: frozenset[str]) -> bool:
         return any(
@@ -3417,11 +4448,13 @@ def _tree_digests_from_descriptor(
         return all(path_is_ignored(relative, ignored) for ignored in ignored_sets)
 
     def walk(current: int, prefix: str = "") -> None:
+        nonlocal entry_count, total_bytes
         current_before = os.fstat(current)
         if (
             not stat.S_ISDIR(current_before.st_mode)
             or current_before.st_uid != uid
             or current_before.st_mode & 0o022
+            or _has_unsupported_snapshot_metadata(current, current_before)
         ):
             raise AdoptionError("generated_candidate_drift")
         try:
@@ -3434,6 +4467,17 @@ def _tree_digests_from_descriptor(
             relative = f"{prefix}/{name}" if prefix else name
             if ignored_by_every_projection(relative):
                 continue
+            entry_count += 1
+            if (
+                (maximum_entries is not None and entry_count > maximum_entries)
+                or (
+                    maximum_depth is not None
+                    and len(Path(relative).parts) > maximum_depth
+                )
+            ):
+                raise AdoptionError(
+                    "terminal_rollback_capture_limit_exceeded"
+                )
             try:
                 info = os.stat(name, dir_fd=current, follow_symlinks=False)
             except OSError as exc:
@@ -3467,26 +4511,53 @@ def _tree_digests_from_descriptor(
                 )
                 before = os.fstat(file_descriptor)
                 file_identity = _archive_stat_identity(before)
-                if file_identity != _archive_stat_identity(info):
+                if (
+                    file_identity != _archive_stat_identity(info)
+                    or before.st_nlink != 1
+                    or _has_unsupported_snapshot_metadata(
+                        file_descriptor, before
+                    )
+                ):
                     os.close(file_descriptor)
                     raise AdoptionError("generated_candidate_drift")
+                total_bytes += before.st_size
+                if maximum_bytes is not None and total_bytes > maximum_bytes:
+                    os.close(file_descriptor)
+                    raise AdoptionError(
+                        "terminal_rollback_capture_limit_exceeded"
+                    )
                 held_files.append(
                     (current, name, file_descriptor, file_identity)
                 )
                 hasher = hashlib.sha256()
-                captured = bytearray() if relative in validators else None
+                captured = (
+                    bytearray()
+                    if relative in validators or relative in projectors
+                    else None
+                )
                 while chunk := os.read(file_descriptor, 1024 * 1024):
                     hasher.update(chunk)
                     if captured is not None:
                         captured.extend(chunk)
-                        if len(captured) > 64:
+                        if relative in validators and len(captured) > 64:
                             raise AdoptionError("generated_candidate_drift")
                 if captured is not None:
-                    validators[relative](before, bytes(captured))
+                    if relative in validators:
+                        validators[relative](before, bytes(captured))
+                    if relative in projectors:
+                        projected = projectors[relative](bytes(captured))
+                        if type(projected) is not bytes:
+                            raise AdoptionError("generated_candidate_drift")
+                        hasher = hashlib.sha256(projected)
+                        projected_size = len(projected)
+                    else:
+                        projected_size = info.st_size
+                else:
+                    projected_size = info.st_size
                 rows.append(
                     (
                         relative,
-                        f"f {stat.S_IMODE(info.st_mode):04o} {info.st_size} "
+                        f"f {stat.S_IMODE(info.st_mode):04o} {projected_size} "
                         f"{hasher.hexdigest()} {relative}\n",
                     )
                 )
@@ -3549,6 +4620,199 @@ def _tree_digest_from_descriptor(
         descriptor,
         ignored_sets=(ignored,),
     )[0]
+
+
+def _bounded_private_tree_digest(
+    path: Path,
+    *,
+    ignored: frozenset[str] = frozenset(),
+    file_projectors: dict[str, Callable[[bytes], bytes]] | None = None,
+) -> str | None:
+    if not path.exists() and not path.is_symlink():
+        return None
+    parent_descriptor = descriptor = -1
+    try:
+        parent_descriptor, descriptor, parent_identity, identity = (
+            _open_bound_directory(path)
+        )
+        digest = _tree_digests_from_descriptor(
+            descriptor,
+            ignored_sets=(ignored,),
+            file_projectors=file_projectors,
+            maximum_depth=_MAX_ROLLBACK_SNAPSHOT_DEPTH,
+            maximum_entries=_MAX_ROLLBACK_SNAPSHOT_ENTRIES,
+            maximum_bytes=_MAX_ROLLBACK_SNAPSHOT_BYTES,
+        )[0]
+        _recheck_bound_directory(
+            path,
+            parent_descriptor,
+            descriptor,
+            parent_identity,
+            identity,
+        )
+        return digest
+    except AdoptionError as exc:
+        if str(exc) == "terminal_rollback_capture_limit_exceeded":
+            raise
+        raise AdoptionError(
+            "terminal_rollback_source_metadata_invalid"
+        ) from exc
+    except OSError as exc:
+        raise AdoptionError(
+            "terminal_rollback_source_metadata_invalid"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+
+
+def _publish_private_snapshot_stage(
+    stage: Path,
+    destination: Path,
+    *,
+    expected_digest: str,
+    digest_mismatch_code: str = "terminal_rollback_capture_drift",
+) -> None:
+    parent_descriptor = descriptor = -1
+    try:
+        parent_descriptor, descriptor, parent_identity, identity = (
+            _open_bound_directory(stage)
+        )
+        digest = _tree_digests_from_descriptor(
+            descriptor,
+            ignored_sets=(frozenset(),),
+            maximum_depth=_MAX_ROLLBACK_SNAPSHOT_DEPTH,
+            maximum_entries=_MAX_ROLLBACK_SNAPSHOT_ENTRIES,
+            maximum_bytes=_MAX_ROLLBACK_SNAPSHOT_BYTES,
+        )[0]
+        _recheck_bound_directory(
+            stage,
+            parent_descriptor,
+            descriptor,
+            parent_identity,
+            identity,
+        )
+        if digest != expected_digest:
+            raise AdoptionError(digest_mismatch_code)
+        _rename_directory_exclusive(
+            parent_descriptor,
+            stage.name,
+            destination.name,
+        )
+        published = _archive_stat_identity(
+            os.stat(
+                destination.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        )
+        held = _archive_stat_identity(os.fstat(descriptor))
+        if (
+            not _archive_root_rename_identity_matches(identity, published)
+            or not _archive_root_rename_identity_matches(identity, held)
+        ):
+            try:
+                _rename_directory_exclusive(
+                    parent_descriptor,
+                    destination.name,
+                    stage.name,
+                )
+                os.fsync(parent_descriptor)
+            except OSError:
+                pass
+            raise AdoptionError("terminal_rollback_capture_drift")
+        os.fsync(parent_descriptor)
+        parent_after = _archive_stat_identity(
+            os.fstat(parent_descriptor)
+        )
+        path_parent_after = _archive_stat_identity(
+            destination.parent.lstat()
+        )
+        if (
+            parent_identity[:6] != parent_after[:6]
+            or parent_after[:6] != path_parent_after[:6]
+        ):
+            raise AdoptionError("terminal_rollback_capture_drift")
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.EXDEV:
+            raise AdoptionError(
+                "terminal_rollback_capture_cross_device"
+            ) from exc
+        raise AdoptionError("terminal_rollback_capture_drift") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+    if _bounded_private_tree_digest(destination) != expected_digest:
+        raise AdoptionError("terminal_rollback_capture_drift")
+
+
+def _project_terminal_runtime_binding(content: bytes) -> bytes:
+    try:
+        value = json.loads(content.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("terminal_install_projection_invalid") from exc
+    if type(value) is not dict or type(value.get("source_root")) is not str:
+        raise AdoptionError("terminal_install_projection_invalid")
+    projected = dict(value)
+    projected["source_root"] = "<materialized-source-root>"
+    return _json_bytes(projected)
+
+
+def _project_terminal_source_manifest(content: bytes) -> bytes:
+    try:
+        value = json.loads(content.decode("ascii"))
+        mcp = value["mcp"]
+        locator = mcp["locator"]
+        source_binding = value["operational_source_binding"]
+        self_binding = source_binding["self_content_binding"]
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise AdoptionError("terminal_install_projection_invalid") from exc
+    if (
+        type(value) is not dict
+        or type(mcp) is not dict
+        or type(locator) is not dict
+        or _safe_sha256(locator.get("binding_sha256")) is None
+        or type(source_binding) is not dict
+        or type(self_binding) is not dict
+        or _safe_sha256(self_binding.get("digest")) is None
+    ):
+        raise AdoptionError("terminal_install_projection_invalid")
+    projected = json.loads(json.dumps(value))
+    projected["mcp"]["locator"]["binding_sha256"] = (
+        "<materialized-binding-digest>"
+    )
+    projected["operational_source_binding"]["self_content_binding"][
+        "digest"
+    ] = "<materialized-self-digest>"
+    return _json_bytes(projected)
+
+
+def _terminal_install_projection_digest(root: Path) -> str:
+    digest = _bounded_private_tree_digest(
+        root,
+        ignored=frozenset({
+            ".in_use",
+            distribution.ORPHANED_INSTALLED_MARKER,
+        }),
+        file_projectors={
+            "SOURCE_MANIFEST.json": _project_terminal_source_manifest,
+            "runtime/RUNTIME_BINDING.json": _project_terminal_runtime_binding,
+        },
+    )
+    if digest is None:
+        raise AdoptionError("terminal_install_projection_invalid")
+    return digest
 
 
 def _validate_generated_orphan_marker(
@@ -3679,6 +4943,7 @@ class FixedHostAdapter:
         *,
         previous_transaction_root: Path | None = None,
         previous_state: HostState | None = None,
+        terminal_source_transaction_root: Path | None = None,
     ):
         if name not in HOST_ORDER:
             raise AdoptionError("host_not_admitted")
@@ -3694,6 +4959,10 @@ class FixedHostAdapter:
             raise AdoptionError("previous_committed_state_unavailable")
         self._previous_transaction_root = previous_transaction_root
         self._previous_state = previous_state
+        self._terminal_source_transaction_root = terminal_source_transaction_root
+        self._terminal_bridge_state: TerminalHostState | None = None
+        self._terminal_bridge_binding_digest: str | None = None
+        self._terminal_bridge_capture: dict[str, object] | None = None
         home = _fixed_user_home()
         if name == "codex":
             self._cli = _CODEX_CLI
@@ -3723,6 +4992,23 @@ class FixedHostAdapter:
             / "marketplaces"
             / authority.MARKETPLACE_ID
         )
+
+    def configure_terminal_bridge(
+        self,
+        terminal_state: TerminalHostState,
+        binding_digest: str,
+    ) -> None:
+        if (
+            self._terminal_source_transaction_root is None
+            or self._previous_state is not None
+            or terminal_state.host != self.name
+            or terminal_state.plugin_version
+            != authority.TERMINAL_PLUGIN_VERSION
+            or _safe_sha256(binding_digest) is None
+        ):
+            raise AdoptionError("terminal_bridge_adapter_unavailable")
+        self._terminal_bridge_state = terminal_state
+        self._terminal_bridge_binding_digest = binding_digest
 
     def _run(self, args: tuple[str, ...], *, json_output: bool = False) -> object:
         identity = _admit_fixed_cli(self._cli, self._transaction_root)
@@ -3781,6 +5067,19 @@ class FixedHostAdapter:
             ):
                 raise AdoptionError("marketplace_binding_unadmitted")
             return self._previous_state.marketplace_binding_digest
+        if (
+            version == authority.TERMINAL_PLUGIN_VERSION
+            and self._terminal_bridge_state is not None
+            and self._terminal_bridge_binding_digest is not None
+        ):
+            expected = self._terminal_admitted_marketplace_root(source)
+            if (
+                not matches_root(expected)
+                or marketplace_digest
+                != self._terminal_bridge_state.marketplace_digest
+            ):
+                raise AdoptionError("marketplace_binding_unadmitted")
+            return self._terminal_bridge_binding_digest
         if version == authority.PLUGIN_VERSION:
             try:
                 expected = self._stage_marketplace_root().resolve(strict=True)
@@ -4007,7 +5306,14 @@ class FixedHostAdapter:
         cache = self._cache if version == authority.PLUGIN_VERSION else self._cache.with_name(version or "absent")
         _validate_fixed_host_chain(cache, allow_missing=True)
         _validate_fixed_host_chain(self._cache, allow_missing=True)
-        cache_digest = _tree_digest(cache, ignored=frozenset({".in_use"}))
+        cache_ignored = {".in_use"}
+        if (
+            version == authority.TERMINAL_PLUGIN_VERSION
+            and self._terminal_bridge_state is not None
+            and self._terminal_bridge_state.orphan_marker_digest is not None
+        ):
+            cache_ignored.add(distribution.ORPHANED_INSTALLED_MARKER)
+        cache_digest = _tree_digest(cache, ignored=frozenset(cache_ignored))
         if present is not (cache_digest is not None):
             raise AdoptionError("plugin_registry_cache_mismatch")
         (
@@ -4040,6 +5346,23 @@ class FixedHostAdapter:
                     source=source,
                     cache_digest=cache_digest,
                 )
+            elif (
+                version == authority.TERMINAL_PLUGIN_VERSION
+                and self._terminal_bridge_state is not None
+            ):
+                if physical_marketplace_digest is not None:
+                    raise AdoptionError("marketplace_registry_cache_mismatch")
+                source_root = self._terminal_admitted_marketplace_root(
+                    source
+                )
+                marketplace_digest = _tree_digest(source_root)
+                if (
+                    marketplace_digest
+                    != self._terminal_bridge_state.marketplace_digest
+                    or cache_digest
+                    != self._terminal_bridge_state.cache_digest
+                ):
+                    raise AdoptionError("terminal_current_state_drift")
             marketplace_binding_digest = self._binding_digest(
                 source=source,
                 version=version,
@@ -4063,6 +5386,7 @@ class FixedHostAdapter:
             elif version not in {
                 authority.PLUGIN_VERSION,
                 authority.PREVIOUS_TERMINAL_PLUGIN_VERSION,
+                authority.TERMINAL_PLUGIN_VERSION,
             }:
                 raise AdoptionError("marketplace_registry_cache_mismatch")
         elif present or physical_marketplace_digest is not None:
@@ -4087,6 +5411,22 @@ class FixedHostAdapter:
             and observed_state != self._previous_state
         ):
             raise AdoptionError("previous_committed_state_drift")
+        if (
+            version == authority.TERMINAL_PLUGIN_VERSION
+            and self._terminal_bridge_state is not None
+            and (
+                observed_state.marketplace_digest
+                != self._terminal_bridge_state.marketplace_digest
+                or observed_state.cache_digest
+                != self._terminal_bridge_state.cache_digest
+                or observed_state.active
+                is not (
+                    self._terminal_bridge_state.registry_state
+                    in {"active", "installed"}
+                )
+            )
+        ):
+            raise AdoptionError("terminal_current_state_drift")
         return observed_state
 
     def _stage_marketplace_root(self) -> Path:
@@ -4100,6 +5440,49 @@ class FixedHostAdapter:
         if self._previous_transaction_root is None:
             raise AdoptionError("previous_committed_source_unavailable")
         return self._previous_transaction_root / "stage" / self.name
+
+    def _terminal_stage_marketplace_root(self) -> Path:
+        if self._terminal_source_transaction_root is None:
+            raise AdoptionError("terminal_rollback_source_unavailable")
+        return self._terminal_source_transaction_root / "stage" / self.name
+
+    def _terminal_admitted_marketplace_root(self, source: Path) -> Path:
+        """Resolve only the terminal source the host registry actually names."""
+
+        candidates = (
+            self._rollback_root() / "marketplace",
+            self._terminal_stage_marketplace_root(),
+        )
+        for candidate in candidates:
+            try:
+                info = candidate.lstat()
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != os.getuid()
+                    or info.st_mode & 0o022
+                ):
+                    continue
+                resolved = candidate.resolve(strict=True)
+            except OSError:
+                continue
+            if source in {
+                resolved,
+                resolved / ".claude-plugin" / "marketplace.json",
+                resolved / ".agents" / "plugins" / "marketplace.json",
+            }:
+                return resolved
+        raise AdoptionError("marketplace_binding_unadmitted")
+
+    @staticmethod
+    def _terminal_marketplace_bundle_root(marketplace_root: Path) -> Path:
+        return (
+            marketplace_root
+            / "distribution"
+            / authority.MARKETPLACE_ID
+            / authority.PLUGIN_ID
+            / authority.TERMINAL_PLUGIN_VERSION
+        )
 
     def _stage_root(self) -> Path:
         return (
@@ -4569,13 +5952,62 @@ class FixedHostAdapter:
         ) is not None
 
     def _install_from(self, marketplace_root: Path) -> None:
+        terminal_capture = (
+            getattr(self, "_terminal_bridge_capture", None)
+            if marketplace_root == self._rollback_root() / "marketplace"
+            else None
+        )
+
+        def reverify_terminal_source() -> None:
+            if terminal_capture is None:
+                return
+            if (
+                _bounded_private_tree_digest(marketplace_root)
+                != terminal_capture["source_digest"]
+                or _terminal_install_projection_digest(
+                    self._terminal_marketplace_bundle_root(marketplace_root)
+                )
+                != terminal_capture["install_projection_digest"]
+            ):
+                raise AdoptionError("terminal_rollback_source_drift")
+
+        def verify_terminal_install_effect() -> None:
+            if terminal_capture is None:
+                return
+            terminal = getattr(self, "_terminal_bridge_state", None)
+            if terminal is None:
+                raise AdoptionError("terminal_rollback_effect_mismatch")
+            installed = self._cache.with_name(
+                authority.TERMINAL_PLUGIN_VERSION
+            )
+            ignored = {".in_use"}
+            if terminal.orphan_marker_digest is not None:
+                ignored.add(distribution.ORPHANED_INSTALLED_MARKER)
+            if (
+                _bounded_private_tree_digest(
+                    installed,
+                    ignored=frozenset(ignored),
+                )
+                != terminal_capture["cache_digest"]
+                or _terminal_install_projection_digest(installed)
+                != terminal_capture["install_projection_digest"]
+            ):
+                raise AdoptionError("terminal_rollback_effect_mismatch")
+
         selector = f"{authority.PLUGIN_ID}@{authority.MARKETPLACE_ID}"
+        reverify_terminal_source()
         if self.name == "codex":
             self._run(("plugin", "marketplace", "add", str(marketplace_root), "--json"))
+            reverify_terminal_source()
             self._run(("plugin", "add", selector, "--json"))
+            verify_terminal_install_effect()
+            reverify_terminal_source()
         else:
             self._run(("plugin", "marketplace", "add", str(marketplace_root), "--scope", "user"))
+            reverify_terminal_source()
             self._run(("plugin", "install", selector, "--scope", "user"))
+            verify_terminal_install_effect()
+            reverify_terminal_source()
             plugins = self._run(("plugin", "list", "--json"), json_output=True)
             present, version, active = _row_projection(_find_plugin_row(plugins))
             if marketplace_root == self._stage_marketplace_root():
@@ -4585,6 +6017,12 @@ class FixedHostAdapter:
                 and marketplace_root == self._previous_stage_marketplace_root()
             ):
                 expected_version = authority.PREVIOUS_TERMINAL_PLUGIN_VERSION
+            elif (
+                getattr(self, "_terminal_bridge_capture", None) is not None
+                and marketplace_root
+                == self._rollback_root() / "marketplace"
+            ):
+                expected_version = authority.TERMINAL_PLUGIN_VERSION
             else:
                 expected_version = PREDECESSOR_VERSION
             if not present or version != expected_version:
@@ -4697,11 +6135,22 @@ class FixedHostAdapter:
         evidence and is never used to reinstall or authorize execution.
         """
 
-        if before != getattr(self, "_previous_state", None):
+        terminal_active = (
+            before.plugin_version == authority.TERMINAL_PLUGIN_VERSION
+            and getattr(self, "_terminal_bridge_capture", None) is not None
+        )
+        if before != getattr(self, "_previous_state", None) and not terminal_active:
             return
-        source = self._cache.with_name(authority.PREVIOUS_TERMINAL_PLUGIN_VERSION)
-        handle = "previous-active-v" + authority.PREVIOUS_TERMINAL_PLUGIN_VERSION.replace(
-            ".", ""
+        active_version = (
+            authority.TERMINAL_PLUGIN_VERSION
+            if terminal_active
+            else authority.PREVIOUS_TERMINAL_PLUGIN_VERSION
+        )
+        source = self._cache.with_name(active_version)
+        handle = (
+            "terminal-active-v048"
+            if terminal_active
+            else "previous-active-v" + active_version.replace(".", "")
         )
         destination = self._quarantine_root() / handle
         source_present = source.exists() or source.is_symlink()
@@ -4710,13 +6159,13 @@ class FixedHostAdapter:
             if destination_present:
                 self._entry_for_path(
                     destination,
-                    version=authority.PREVIOUS_TERMINAL_PLUGIN_VERSION,
+                    version=active_version,
                     handle=handle,
                 )
             return
         entry = self._entry_for_path(
             source,
-            version=authority.PREVIOUS_TERMINAL_PLUGIN_VERSION,
+            version=active_version,
             handle=handle,
         )
         self._quarantine_before(replace(before, quarantine_entries=(entry,)))
@@ -5009,21 +6458,13 @@ class FixedHostAdapter:
                 if descriptor >= 0:
                     os.close(descriptor)
 
-    def _restore_quarantine(self, before: HostState) -> None:
+    def _restore_quarantine_entries(self, before: HostState) -> None:
         if not before.quarantine_entries:
             return
         quarantine = self._quarantine_root()
         _lstat_admitted_directory(quarantine)
         cache_parent = self._cache.parent
         _validate_fixed_host_chain(cache_parent, allow_missing=False)
-        if not self._registry_is_exact_predecessor():
-            plugin_present, marketplace_present = self._cleanup_presence()
-            if plugin_present:
-                self._remove_plugin()
-            if marketplace_present:
-                self._remove_marketplace()
-            self._install_from(_resolve_predecessor_source())
-        self._quarantine_failed_candidate()
         flags = (
             os.O_RDONLY
             | getattr(os, "O_DIRECTORY", 0)
@@ -5058,11 +6499,12 @@ class FixedHostAdapter:
                     generated = quarantine / generated_handle
                     if generated.exists() or generated.is_symlink():
                         raise AdoptionError("quarantine_restore_conflict")
-                    _rename_directory_between_exclusive(
+                    _rename_bound_directory_between_exclusive(
                         destination_descriptor,
                         entry.version,
                         source_descriptor,
                         generated_handle,
+                        failure="quarantine_restore_cas_mismatch",
                     )
                     os.fsync(destination_descriptor)
                     os.fsync(source_descriptor)
@@ -5072,11 +6514,13 @@ class FixedHostAdapter:
                     handle=entry.handle,
                 ) != entry:
                     raise AdoptionError("quarantine_entry_drift")
-                _rename_directory_between_exclusive(
+                _rename_bound_directory_between_exclusive(
                     source_descriptor,
                     entry.handle,
                     destination_descriptor,
                     entry.version,
+                    failure="quarantine_restore_cas_mismatch",
+                    expected_identity_digest=entry.identity_digest,
                 )
                 if self._entry_for_path(
                     restored,
@@ -5090,13 +6534,48 @@ class FixedHostAdapter:
             os.close(destination_descriptor)
             os.close(source_descriptor)
 
+    def _restore_quarantine(self, before: HostState) -> None:
+        if not before.quarantine_entries:
+            return
+        if not self._registry_is_exact_predecessor():
+            plugin_present, marketplace_present = self._cleanup_presence()
+            if plugin_present:
+                self._remove_plugin()
+            if marketplace_present:
+                self._remove_marketplace()
+            self._install_from(_resolve_predecessor_source())
+        self._quarantine_failed_candidate()
+        self._restore_quarantine_entries(before)
+
     @staticmethod
     def _rollback_marker(
         before: HostState,
         *,
         previous_state: HostState | None = None,
+        terminal_capture: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        if before == previous_state:
+        if terminal_capture is not None:
+            binding = {
+                "cache_source_digest": terminal_capture[
+                    "cache_source_digest"
+                ],
+                "install_projection_digest": terminal_capture[
+                    "install_projection_digest"
+                ],
+                "kind": "terminal_observation_private_snapshot",
+                "marketplace_source_digest": terminal_capture[
+                    "source_digest"
+                ],
+                "orphan_marker_content_digest": terminal_capture[
+                    "orphan_marker_content_digest"
+                ],
+                "plugin_version": authority.TERMINAL_PLUGIN_VERSION,
+                "source_state_digest": _canonical_digest(
+                    before.projection()
+                ),
+            }
+            binding_digest = str(before.marketplace_binding_digest)
+        elif before == previous_state:
             binding: dict[str, object] = {
                 "kind": "previous_committed",
                 "plugin_version": authority.PREVIOUS_TERMINAL_PLUGIN_VERSION,
@@ -5116,7 +6595,12 @@ class FixedHostAdapter:
     def _verify_rollback_marker(self, rollback: Path, before: HostState) -> None:
         try:
             _lstat_admitted_directory(rollback)
-            self._exact_directory_names(rollback, frozenset({"predecessor.json"}))
+            expected_names = (
+                frozenset({"cache", "marketplace", "predecessor.json"})
+                if getattr(self, "_terminal_bridge_capture", None) is not None
+                else frozenset({"predecessor.json"})
+            )
+            self._exact_directory_names(rollback, expected_names)
             actual = _private_file_bytes(rollback / "predecessor.json")
         except (OSError, AdoptionError) as exc:
             raise AdoptionError("rollback_source_drift") from exc
@@ -5124,11 +6608,295 @@ class FixedHostAdapter:
             self._rollback_marker(
                 before,
                 previous_state=getattr(self, "_previous_state", None),
+                terminal_capture=getattr(
+                    self, "_terminal_bridge_capture", None
+                ),
             )
         ):
             raise AdoptionError("rollback_source_drift")
 
+    def capture_terminal_rollback(
+        self,
+        expected_before: HostState,
+    ) -> dict[str, object]:
+        terminal = getattr(self, "_terminal_bridge_state", None)
+        if (
+            terminal is None
+            or expected_before.host != self.name
+            or expected_before.plugin_version
+            != authority.TERMINAL_PLUGIN_VERSION
+            or expected_before.cache_digest != terminal.cache_digest
+            or expected_before.marketplace_digest
+            != terminal.marketplace_digest
+        ):
+            raise AdoptionError("terminal_rollback_source_unavailable")
+        rollback = self._rollback_root()
+        _lstat_admitted_directory(rollback, create=True)
+        marketplace_source = self._terminal_stage_marketplace_root()
+        cache_source = self._cache.with_name(
+            authority.TERMINAL_PLUGIN_VERSION
+        )
+        marker_path = cache_source / distribution.ORPHANED_INSTALLED_MARKER
+        marker_content: bytes | None = None
+        observed_marker_digest = None
+        if marker_path.exists() or marker_path.is_symlink():
+            marker_content, marker_info = _terminal_regular_file_record(
+                marker_path,
+                maximum=64,
+            )
+            _validate_generated_orphan_marker(marker_info, marker_content)
+            observed_marker_digest = _canonical_digest({
+                "content_sha256": hashlib.sha256(marker_content).hexdigest(),
+                "device": marker_info.st_dev,
+                "group": marker_info.st_gid,
+                "inode": marker_info.st_ino,
+                "mode": stat.S_IMODE(marker_info.st_mode),
+                "owner": marker_info.st_uid,
+            })
+        marketplace_digest = _bounded_private_tree_digest(marketplace_source)
+        cache_source_digest = _bounded_private_tree_digest(cache_source)
+        marketplace_install_projection = (
+            _terminal_install_projection_digest(
+                self._terminal_marketplace_bundle_root(
+                    marketplace_source
+                )
+            )
+        )
+        cache_install_projection = _terminal_install_projection_digest(
+            cache_source
+        )
+        cache_ignored = {".in_use"}
+        if terminal.orphan_marker_digest is not None:
+            cache_ignored.add(distribution.ORPHANED_INSTALLED_MARKER)
+        if (
+            marketplace_digest != terminal.marketplace_digest
+            or observed_marker_digest != terminal.orphan_marker_digest
+            or cache_source_digest is None
+            or _bounded_private_tree_digest(
+                cache_source, ignored=frozenset(cache_ignored)
+            )
+            != terminal.cache_digest
+            or marketplace_install_projection != cache_install_projection
+        ):
+            raise AdoptionError("terminal_rollback_source_digest_mismatch")
+        _copy_private_tree_exclusive(
+            marketplace_source,
+            rollback / "marketplace",
+            expected_digest=marketplace_digest,
+        )
+        _copy_private_tree_exclusive(
+            cache_source,
+            rollback / "cache",
+            expected_digest=cache_source_digest,
+        )
+        captured_marker = (
+            rollback
+            / "cache"
+            / distribution.ORPHANED_INSTALLED_MARKER
+        )
+        if marker_content is None:
+            if (
+                marker_path.exists()
+                or marker_path.is_symlink()
+                or captured_marker.exists()
+                or captured_marker.is_symlink()
+            ):
+                raise AdoptionError(
+                    "terminal_rollback_source_digest_mismatch"
+                )
+        else:
+            source_marker_content, source_marker_info = (
+                _terminal_regular_file_record(marker_path, maximum=64)
+            )
+            captured_marker_content, captured_marker_info = (
+                _terminal_regular_file_record(captured_marker, maximum=64)
+            )
+            _validate_generated_orphan_marker(
+                source_marker_info,
+                source_marker_content,
+            )
+            _validate_generated_orphan_marker(
+                captured_marker_info,
+                captured_marker_content,
+            )
+            source_marker_digest = _canonical_digest({
+                "content_sha256": hashlib.sha256(
+                    source_marker_content
+                ).hexdigest(),
+                "device": source_marker_info.st_dev,
+                "group": source_marker_info.st_gid,
+                "inode": source_marker_info.st_ino,
+                "mode": stat.S_IMODE(source_marker_info.st_mode),
+                "owner": source_marker_info.st_uid,
+            })
+            if (
+                source_marker_content != marker_content
+                or captured_marker_content != marker_content
+                or source_marker_digest != observed_marker_digest
+            ):
+                raise AdoptionError(
+                    "terminal_rollback_source_digest_mismatch"
+                )
+        capture = {
+            "before_state_digest": _canonical_digest(
+                expected_before.projection()
+            ),
+            "cache_digest": expected_before.cache_digest,
+            "cache_source_digest": cache_source_digest,
+            "host": self.name,
+            "install_projection_digest": cache_install_projection,
+            "marketplace_digest": expected_before.marketplace_digest,
+            "orphan_marker_content_digest": (
+                hashlib.sha256(marker_content).hexdigest()
+                if marker_content is not None
+                else None
+            ),
+            "source_digest": marketplace_digest,
+            "source_version": authority.TERMINAL_PLUGIN_VERSION,
+        }
+        self._terminal_bridge_capture = capture
+        marker = self._rollback_marker(
+            expected_before,
+            previous_state=self._previous_state,
+            terminal_capture=capture,
+        )
+        marker_path = rollback / "predecessor.json"
+        marker_bytes = _json_bytes(marker)
+        if marker_path.exists() or marker_path.is_symlink():
+            if _private_file_bytes(marker_path) != marker_bytes:
+                raise AdoptionError("terminal_rollback_capture_no_clobber")
+        else:
+            _write_private_file_exclusive(
+                marker_path,
+                marker_bytes,
+                failure_code="terminal_rollback_capture_no_clobber",
+            )
+        self.verify_terminal_rollback(expected_before, capture)
+        return capture
+
+    def verify_terminal_rollback(
+        self,
+        expected_before: HostState,
+        capture: dict[str, object],
+    ) -> None:
+        terminal = getattr(self, "_terminal_bridge_state", None)
+        if (
+            terminal is None
+            or type(capture) is not dict
+            or set(capture) != _TERMINAL_BRIDGE_CAPTURE_KEYS
+            or capture["host"] != self.name
+            or capture["source_version"]
+            != authority.TERMINAL_PLUGIN_VERSION
+            or capture["before_state_digest"]
+            != _canonical_digest(expected_before.projection())
+            or capture["cache_digest"] != expected_before.cache_digest
+            or capture["marketplace_digest"]
+            != expected_before.marketplace_digest
+            or capture["source_digest"]
+            != expected_before.marketplace_digest
+            or _safe_sha256(capture["cache_source_digest"]) is None
+            or _safe_sha256(capture["install_projection_digest"]) is None
+            or (
+                capture["orphan_marker_content_digest"] is not None
+                and _safe_sha256(
+                    capture["orphan_marker_content_digest"]
+                )
+                is None
+            )
+            or (
+                terminal.orphan_marker_digest is None
+            )
+            is not (
+                capture["orphan_marker_content_digest"] is None
+            )
+        ):
+            raise AdoptionError("terminal_rollback_capture_mismatch")
+        self._terminal_bridge_capture = capture
+        rollback = self._rollback_root()
+        if (
+            _bounded_private_tree_digest(rollback / "marketplace")
+            != capture["source_digest"]
+            or _bounded_private_tree_digest(rollback / "cache")
+            != capture["cache_source_digest"]
+            or _terminal_install_projection_digest(
+                self._terminal_marketplace_bundle_root(
+                    rollback / "marketplace"
+                )
+            )
+            != capture["install_projection_digest"]
+            or _terminal_install_projection_digest(
+                rollback / "cache"
+            )
+            != capture["install_projection_digest"]
+        ):
+            raise AdoptionError("terminal_rollback_source_drift")
+        self._verify_rollback_marker(rollback, expected_before)
+
+    def _restore_terminal_orphan_marker(self) -> None:
+        terminal = getattr(self, "_terminal_bridge_state", None)
+        capture = getattr(self, "_terminal_bridge_capture", None)
+        if terminal is None or capture is None:
+            raise AdoptionError("terminal_rollback_source_unavailable")
+        rollback_cache = self._rollback_root() / "cache"
+
+        def require_bound_cache() -> None:
+            if (
+                _bounded_private_tree_digest(rollback_cache)
+                != capture["cache_source_digest"]
+            ):
+                raise AdoptionError("terminal_rollback_marker_drift")
+
+        require_bound_cache()
+        rollback_marker = (
+            rollback_cache
+            / distribution.ORPHANED_INSTALLED_MARKER
+        )
+        installed_marker = (
+            self._cache.with_name(authority.TERMINAL_PLUGIN_VERSION)
+            / distribution.ORPHANED_INSTALLED_MARKER
+        )
+        if terminal.orphan_marker_digest is None:
+            if (
+                rollback_marker.exists()
+                or rollback_marker.is_symlink()
+                or installed_marker.exists()
+                or installed_marker.is_symlink()
+            ):
+                raise AdoptionError("terminal_rollback_marker_drift")
+            return
+        if not rollback_marker.is_file() or rollback_marker.is_symlink():
+            raise AdoptionError("terminal_rollback_marker_drift")
+        marker_content, rollback_marker_info = _terminal_regular_file_record(
+            rollback_marker,
+            maximum=64,
+        )
+        require_bound_cache()
+        if (
+            not stat.S_ISREG(rollback_marker_info.st_mode)
+            or rollback_marker_info.st_uid != os.getuid()
+            or stat.S_IMODE(rollback_marker_info.st_mode) != 0o644
+            or rollback_marker_info.st_nlink != 1
+            or rollback_marker_info.st_size != 13
+            or len(marker_content) != 13
+            or not marker_content.isdigit()
+            or hashlib.sha256(marker_content).hexdigest()
+            != capture["orphan_marker_content_digest"]
+        ):
+            raise AdoptionError("terminal_rollback_marker_drift")
+        _write_terminal_orphan_marker_exclusive(
+            installed_marker,
+            marker_content,
+        )
+
     def _capture_rollback_marketplace(self, before: HostState) -> None:
+        if (
+            before.plugin_version == authority.TERMINAL_PLUGIN_VERSION
+            and getattr(self, "_terminal_bridge_capture", None) is not None
+        ):
+            self.verify_terminal_rollback(
+                before, self._terminal_bridge_capture
+            )
+            return
         rollback = self._rollback_root()
         previous_committed = before == getattr(self, "_previous_state", None)
         predecessor = (
@@ -5383,7 +7151,13 @@ class FixedHostAdapter:
             current = self.observe()
         except AdoptionError:
             current = None
-        if current == expected_before:
+        terminal_capture = getattr(self, "_terminal_bridge_capture", None)
+        terminal_rollback = (
+            expected_before.plugin_version
+            == authority.TERMINAL_PLUGIN_VERSION
+            and terminal_capture is not None
+        )
+        if current == expected_before and not terminal_rollback:
             return expected_before
         if not rollback.is_dir() or rollback.is_symlink():
             raise AdoptionError("rollback_source_unavailable")
@@ -5393,11 +7167,50 @@ class FixedHostAdapter:
                 admitted_previous=(expected_before,)
                 if expected_before == getattr(self, "_previous_state", None)
                 else None,
+                admitted_terminal=(expected_before,)
+                if terminal_rollback
+                else None,
             )
         except AdoptionError as exc:
             raise AdoptionError("rollback_source_unavailable") from exc
-        self._exact_directory_names(rollback, frozenset({"predecessor.json"}))
         self._verify_rollback_marker(rollback, expected_before)
+        if terminal_rollback:
+            self.verify_terminal_rollback(
+                expected_before, terminal_capture
+            )
+            if current == expected_before:
+                # HostState intentionally excludes the terminal-only orphan
+                # marker, so verify/restore that separately bound state before
+                # accepting an otherwise exact idempotent rollback effect.
+                self._restore_terminal_orphan_marker()
+                return expected_before
+            if current is not None and replace(
+                current,
+                quarantine_entries=expected_before.quarantine_entries,
+            ) == expected_before:
+                # The private .48 install effect is already exact and only
+                # cache-quarantine reconciliation remains.  Do not repeat the
+                # host CLI removal/install after a crash at that boundary.
+                self._restore_terminal_orphan_marker()
+                self._quarantine_failed_candidate()
+                self._restore_quarantine_entries(expected_before)
+                observed = self.observe()
+                if observed != expected_before:
+                    raise AdoptionError("rollback_verification_failed")
+                return observed
+            plugin_present, marketplace_present = self._cleanup_presence()
+            if plugin_present:
+                self._remove_plugin()
+            if marketplace_present:
+                self._remove_marketplace()
+            self._install_from(rollback / "marketplace")
+            self._restore_terminal_orphan_marker()
+            self._quarantine_failed_candidate()
+            self._restore_quarantine_entries(expected_before)
+            observed = self.observe()
+            if observed != expected_before:
+                raise AdoptionError("rollback_verification_failed")
+            return observed
         if expected_before == getattr(self, "_previous_state", None):
             plugin_present, marketplace_present = self._cleanup_presence()
             if plugin_present:
@@ -5432,11 +7245,11 @@ class FixedHostAdapter:
         return observed
 
 
-def _terminal_regular_file_bytes(
+def _terminal_regular_file_record(
     path: Path,
     *,
     maximum: int = 16 * 1024 * 1024,
-) -> bytes:
+) -> tuple[bytes, os.stat_result]:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
@@ -5459,9 +7272,122 @@ def _terminal_regular_file_bytes(
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    if _archive_stat_identity(before) != _archive_stat_identity(after):
+    try:
+        path_after = path.lstat()
+    except OSError as exc:
+        raise AdoptionError("terminal_observation_drift") from exc
+    if (
+        _archive_stat_identity(before) != _archive_stat_identity(after)
+        or _archive_stat_identity(after)
+        != _archive_stat_identity(path_after)
+    ):
         raise AdoptionError("terminal_observation_drift")
-    return bytes(chunks)
+    return bytes(chunks), after
+
+
+def _terminal_regular_file_bytes(
+    path: Path,
+    *,
+    maximum: int = 16 * 1024 * 1024,
+) -> bytes:
+    return _terminal_regular_file_record(path, maximum=maximum)[0]
+
+
+def _write_terminal_orphan_marker_exclusive(
+    path: Path,
+    content: bytes,
+) -> None:
+    if len(content) != 13 or not content.isdigit():
+        raise AdoptionError("terminal_rollback_marker_drift")
+    if path.exists() or path.is_symlink():
+        actual = _terminal_regular_file_bytes(path, maximum=64)
+        _validate_generated_orphan_marker(path.lstat(), actual)
+        if actual != content:
+            raise AdoptionError("terminal_rollback_marker_drift")
+        return
+    parent_descriptor = descriptor = -1
+    temporary = f".{path.name}.{secrets.token_hex(16)}"
+    published = False
+    try:
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        parent = os.fstat(parent_descriptor)
+        path_parent = path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.getuid()
+            or parent.st_mode & 0o022
+            or _archive_stat_identity(parent)[:5]
+            != _archive_stat_identity(path_parent)[:5]
+        ):
+            raise AdoptionError("terminal_rollback_marker_drift")
+        try:
+            os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError("terminal_rollback_marker_drift")
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        os.fchmod(descriptor, 0o644)
+        os.fchown(descriptor, -1, os.getgid())
+        offset = 0
+        while offset < len(content):
+            written = os.write(descriptor, content[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "orphan marker write failed")
+            offset += written
+        os.fsync(descriptor)
+        info = os.fstat(descriptor)
+        _validate_generated_orphan_marker(info, content)
+        os.close(descriptor)
+        descriptor = -1
+        _rename_directory_exclusive(
+            parent_descriptor,
+            temporary,
+            path.name,
+        )
+        published = True
+        os.fsync(parent_descriptor)
+        final = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        _validate_generated_orphan_marker(final, content)
+        if (
+            _archive_stat_identity(parent)[:5]
+            != _archive_stat_identity(path.parent.lstat())[:5]
+        ):
+            raise AdoptionError("terminal_rollback_marker_drift")
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        raise AdoptionError("terminal_rollback_marker_drift") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            if not published:
+                # A same-UID peer may have swapped the random leaf.  Retain any
+                # ambiguous residue instead of unlinking an unbound inode.
+                pass
+            os.close(parent_descriptor)
+    actual = _terminal_regular_file_bytes(path, maximum=64)
+    _validate_generated_orphan_marker(path.lstat(), actual)
+    if actual != content:
+        raise AdoptionError("terminal_rollback_marker_drift")
 
 
 def _terminal_directory_identity(path: Path) -> str:
@@ -5513,7 +7439,12 @@ def _terminal_registry_projection(
 class FixedTerminalHostObserver:
     """Read only the fixed installed 0.1.48 cache and registry identities."""
 
-    def __init__(self, name: str, transaction_root: Path):
+    def __init__(
+        self,
+        name: str,
+        transaction_root: Path,
+        marketplace_transaction_root: Path,
+    ):
         if name not in HOST_ORDER:
             raise AdoptionError("host_not_admitted")
         self.name = name
@@ -5533,11 +7464,8 @@ class FixedTerminalHostObserver:
             / authority.PLUGIN_ID
             / authority.TERMINAL_PLUGIN_VERSION
         )
-        self._marketplace_cache = (
-            self._host_home
-            / "plugins"
-            / "marketplaces"
-            / authority.MARKETPLACE_ID
+        self._marketplace_source_root = (
+            marketplace_transaction_root / "stage" / name
         )
 
     def _run_json(self, args: tuple[str, ...]) -> object:
@@ -5562,7 +7490,7 @@ class FixedTerminalHostObserver:
     def observe(self) -> TerminalHostState:
         _validate_fixed_host_chain(self._host_home, allow_missing=False)
         _validate_fixed_host_chain(self._cache, allow_missing=False)
-        _validate_fixed_host_chain(self._marketplace_cache, allow_missing=False)
+        _lstat_admitted_directory(self._marketplace_source_root)
         plugin_row = _find_plugin_row(
             self._run_json(("plugin", "list", "--json"))
         )
@@ -5576,9 +7504,14 @@ class FixedTerminalHostObserver:
             raise AdoptionError("terminal_marketplace_identity_mismatch")
         source = _marketplace_source(marketplace_row)
         if source not in {
-            self._marketplace_cache,
-            self._marketplace_cache / ".claude-plugin" / "marketplace.json",
-            self._marketplace_cache / ".agents" / "plugins" / "marketplace.json",
+            self._marketplace_source_root,
+            self._marketplace_source_root
+            / ".claude-plugin"
+            / "marketplace.json",
+            self._marketplace_source_root
+            / ".agents"
+            / "plugins"
+            / "marketplace.json",
         }:
             raise AdoptionError("terminal_marketplace_identity_mismatch")
         marker = self._cache / distribution.ORPHANED_INSTALLED_MARKER
@@ -5598,7 +7531,7 @@ class FixedTerminalHostObserver:
             })
             ignored.add(distribution.ORPHANED_INSTALLED_MARKER)
         cache_digest = _tree_digest(self._cache, ignored=frozenset(ignored))
-        marketplace_digest = _tree_digest(self._marketplace_cache)
+        marketplace_digest = _tree_digest(self._marketplace_source_root)
         if cache_digest is None or marketplace_digest is None:
             raise AdoptionError("terminal_observation_unavailable")
         try:
@@ -5625,7 +7558,7 @@ class FixedTerminalHostObserver:
             cache_identity_digest=_terminal_directory_identity(self._cache),
             marketplace_digest=marketplace_digest,
             marketplace_identity_digest=_terminal_directory_identity(
-                self._marketplace_cache
+                self._marketplace_source_root
             ),
             orphan_marker_digest=marker_digest,
         )
@@ -5864,16 +7797,425 @@ def _rollback_manifest(states: Sequence[HostState]) -> dict[str, object]:
     }
 
 
+def _terminal_bridge_manifest_path(root: Path) -> Path:
+    return root / _TERMINAL_BRIDGE_MANIFEST_LEAF
+
+
+def _ordinary_prepared_path(root: Path) -> Path:
+    return root / _ORDINARY_PREPARED_LEAF
+
+
+def _ordinary_consumed_path(root: Path) -> Path:
+    return root / _ORDINARY_CONSUMED_LEAF
+
+
+def _ordinary_prepared_bytes(value: object) -> bytes:
+    if type(value) is not dict or set(value) != _ORDINARY_PREPARED_KEYS:
+        raise AdoptionError("ordinary_prepared_contract_mismatch")
+    try:
+        request_bytes = base64.b64decode(
+            str(value["request_b64"]), validate=True
+        )
+        request_value = authority._base._parse_canonical_authority_payload(
+            request_bytes
+        )
+        request = authority.validate_request(request_value, now=None)
+    except Exception as exc:
+        raise AdoptionError("ordinary_prepared_contract_mismatch") from exc
+    before = tuple(
+        HostState.from_projection(item, expected_host=host)
+        for item, host in zip(value["before_states"], HOST_ORDER, strict=True)
+    )
+    after = tuple(
+        HostState.from_projection(item, expected_host=host)
+        for item, host in zip(value["after_states"], HOST_ORDER, strict=True)
+    )
+    actual = request["actual"]
+    plan = request["plan"]
+    if (
+        value["schema"] != JOURNAL_SCHEMA
+        or value["phase"] != "REQUEST_PREPARED"
+        or value["transaction_id"] != actual["transaction_id"]
+        or value["decision_id"] != actual["decision_id"]
+        or value["request_digest"]
+        != hashlib.sha256(request_bytes).hexdigest()
+        or value["manifest_digest"] != plan["rollback_manifest_digest"]
+        or _states_digest(before) != plan["before_state_digest"]
+        or _states_digest(after) != plan["after_state_digest"]
+    ):
+        raise AdoptionError("ordinary_prepared_contract_mismatch")
+    return _json_bytes(value)
+
+
+def _ordinary_prepared_from_request(
+    request: dict[str, object],
+    *,
+    before: Sequence[HostState],
+    after: Sequence[HostState],
+) -> dict[str, object]:
+    request_bytes = authority.canonical_bytes(request)
+    actual = request["actual"]
+    plan = request["plan"]
+    prepared = {
+        "after_states": [state.projection() for state in after],
+        "before_states": [state.projection() for state in before],
+        "decision_id": actual["decision_id"],
+        "manifest_digest": plan["rollback_manifest_digest"],
+        "phase": "REQUEST_PREPARED",
+        "request_b64": base64.b64encode(request_bytes).decode("ascii"),
+        "request_digest": hashlib.sha256(request_bytes).hexdigest(),
+        "schema": JOURNAL_SCHEMA,
+        "transaction_id": actual["transaction_id"],
+    }
+    _ordinary_prepared_bytes(prepared)
+    return prepared
+
+
+def _read_ordinary_prepared(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(
+            _private_file_bytes(_ordinary_prepared_path(root)).decode("ascii")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("ordinary_prepared_unavailable") from exc
+    _ordinary_prepared_bytes(value)
+    return value
+
+
+def _write_ordinary_prepared(
+    root: Path,
+    prepared: dict[str, object],
+) -> None:
+    content = _ordinary_prepared_bytes(prepared)
+    path = _ordinary_prepared_path(root)
+    if path.exists() or path.is_symlink():
+        if _private_file_bytes(path) != content:
+            raise AdoptionError("ordinary_prepared_collision")
+        return
+    _write_private_file_exclusive(
+        path,
+        content,
+        failure_code="ordinary_prepared_collision",
+    )
+
+
+def _remove_ordinary_prepared(
+    root: Path,
+    prepared: dict[str, object],
+) -> None:
+    path = _ordinary_prepared_path(root)
+    consumed = _ordinary_consumed_path(root)
+    expected = _ordinary_prepared_bytes(prepared)
+    if consumed.exists() or consumed.is_symlink():
+        if path.exists() or path.is_symlink():
+            raise AdoptionError("ordinary_prepared_drift")
+        if _private_file_bytes(consumed) != expected:
+            raise AdoptionError("ordinary_prepared_drift")
+        return
+    if _private_file_bytes(path) != expected:
+        raise AdoptionError("ordinary_prepared_drift")
+    directory = os.open(
+        root,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    descriptor = -1
+    renamed = False
+    try:
+        root_identity = _archive_stat_identity(os.fstat(directory))
+        if root_identity != _archive_stat_identity(root.lstat()):
+            raise AdoptionError("ordinary_prepared_drift")
+        try:
+            os.stat(
+                _ORDINARY_CONSUMED_LEAF,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError("ordinary_prepared_drift")
+        descriptor = os.open(
+            _ORDINARY_PREPARED_LEAF,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory,
+        )
+        before = os.fstat(descriptor)
+        identity = _archive_stat_identity(before)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1
+            or before.st_size != len(expected)
+            or identity
+            != _archive_stat_identity(
+                os.stat(
+                    _ORDINARY_PREPARED_LEAF,
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("ordinary_prepared_drift")
+        content = bytearray()
+        while len(content) <= len(expected):
+            chunk = os.read(
+                descriptor,
+                len(expected) + 1 - len(content),
+            )
+            if not chunk:
+                break
+            content.extend(chunk)
+        if (
+            bytes(content) != expected
+            or identity != _archive_stat_identity(os.fstat(descriptor))
+            or identity
+            != _archive_stat_identity(
+                os.stat(
+                    _ORDINARY_PREPARED_LEAF,
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise AdoptionError("ordinary_prepared_drift")
+        _rename_directory_exclusive(
+            directory,
+            _ORDINARY_PREPARED_LEAF,
+            _ORDINARY_CONSUMED_LEAF,
+        )
+        renamed = True
+        moved = _archive_stat_identity(
+            os.stat(
+                _ORDINARY_CONSUMED_LEAF,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+        )
+        if (
+            not _terminal_rename_identity_matches(identity, moved)
+            or not _terminal_rename_identity_matches(
+                identity,
+                _archive_stat_identity(os.fstat(descriptor)),
+            )
+        ):
+            try:
+                _rename_directory_exclusive(
+                    directory,
+                    _ORDINARY_CONSUMED_LEAF,
+                    _ORDINARY_PREPARED_LEAF,
+                )
+                renamed = False
+                os.fsync(directory)
+            except OSError:
+                pass
+            raise AdoptionError("ordinary_prepared_drift")
+        os.fsync(directory)
+        root_after = _archive_stat_identity(root.lstat())
+        if root_identity[:6] != root_after[:6]:
+            raise AdoptionError("ordinary_prepared_drift")
+    except AdoptionError:
+        raise
+    except OSError as exc:
+        raise AdoptionError("ordinary_prepared_drift") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory)
+    if not renamed or _private_file_bytes(consumed) != expected:
+        raise AdoptionError("ordinary_prepared_drift")
+
+
+def _terminal_bridge_binding_digest(
+    terminal_state: TerminalHostState,
+    *,
+    terminal_record: dict[str, object],
+) -> str:
+    return _canonical_digest({
+        "host": terminal_state.host,
+        "host_identity_digest": terminal_state.identity_digest(),
+        "schema": TERMINAL_BRIDGE_SCHEMA,
+        "terminal_canonical_identity_digest": terminal_record[
+            "canonical_identity_digest"
+        ],
+        "terminal_current_identity_digest": terminal_record[
+            "current_identity_digest"
+        ],
+        "terminal_envelope_digest": terminal_record["envelope_digest"],
+        "terminal_request_digest": terminal_record["request_digest"],
+    })
+
+
+def _terminal_bridge_manifest_bytes(value: object) -> bytes:
+    if type(value) is not dict or set(value) != _TERMINAL_BRIDGE_MANIFEST_KEYS:
+        raise AdoptionError("terminal_bridge_manifest_mismatch")
+    try:
+        terminal_journal_bytes = base64.b64decode(
+            str(value["terminal_journal_b64"]),
+            validate=True,
+        )
+        terminal_journal_value = json.loads(
+            terminal_journal_bytes.decode("ascii")
+        )
+        if type(terminal_journal_value) is not dict:
+            raise ValueError
+        canonical_terminal_journal = _terminal_journal_bytes(
+            terminal_journal_value
+        )
+        terminal_verified = _reverify_terminal_journal(
+            terminal_journal_value
+        )
+    except Exception as exc:
+        raise AdoptionError("terminal_bridge_manifest_mismatch") from exc
+    sources = value["sources"]
+    states_value = value["states"]
+    terminal_plan = terminal_verified.request["plan"]
+    if (
+        canonical_terminal_journal != terminal_journal_bytes
+        or terminal_journal_value["phase"] != "COMMITTED"
+        or terminal_journal_value["operation"]
+        != authority.TERMINAL_OPERATION
+        or hashlib.sha256(terminal_journal_bytes).hexdigest()
+        != value["terminal_journal_digest"]
+        or terminal_journal_value["transaction_id"]
+        != value["terminal_transaction_id"]
+        or terminal_journal_value["request_digest"]
+        != value["terminal_request_digest"]
+        or terminal_journal_value["envelope_digest"]
+        != value["terminal_envelope_digest"]
+        or terminal_journal_value["current_identity_digest"]
+        != value["terminal_current_identity_digest"]
+        or terminal_journal_value["canonical_identity_digest"]
+        != value["terminal_canonical_identity_digest"]
+        or terminal_plan["source_revision"]
+        != value["terminal_source_revision"]
+        or terminal_plan["source_bundle_digest"]
+        != value["terminal_source_bundle_digest"]
+        or value["schema"] != TERMINAL_BRIDGE_SCHEMA
+        or value["policy"] != "terminal_observation_exact_inverse.v1"
+        or value["host_order"] != list(HOST_ORDER)
+        or value["ordinary_plugin_version"] != authority.PLUGIN_VERSION
+        or value["terminal_plugin_version"]
+        != authority.TERMINAL_PLUGIN_VERSION
+        or value["terminal_source_revision"]
+        != authority.TERMINAL_SOURCE_REVISION
+        or _safe_transaction_id(value["terminal_transaction_id"])
+        != value["terminal_transaction_id"]
+        or any(
+            _safe_sha256(value[key]) is None
+            for key in (
+                "terminal_canonical_identity_digest",
+                "terminal_current_identity_digest",
+                "terminal_envelope_digest",
+                "terminal_journal_digest",
+                "terminal_request_digest",
+                "terminal_source_bundle_digest",
+            )
+        )
+        or type(sources) is not list
+        or len(sources) != len(HOST_ORDER)
+        or type(states_value) is not list
+        or len(states_value) != len(HOST_ORDER)
+    ):
+        raise AdoptionError("terminal_bridge_manifest_mismatch")
+    states = tuple(
+        HostState.from_projection(item, expected_host=host)
+        for item, host in zip(states_value, HOST_ORDER, strict=True)
+    )
+    for state in states:
+        if (
+            state.plugin_version != authority.TERMINAL_PLUGIN_VERSION
+            or not state.plugin_present
+            or not state.marketplace_present
+            or not state.active
+            or state.invalid_cache_leaf_count != 0
+            or state.ambiguous_cache_leaf_count != 0
+        ):
+            raise AdoptionError("terminal_bridge_manifest_mismatch")
+    for source, host, state in zip(sources, HOST_ORDER, states, strict=True):
+        if (
+            type(source) is not dict
+            or set(source) != _TERMINAL_BRIDGE_CAPTURE_KEYS
+            or source["host"] != host
+            or source["source_version"] != authority.TERMINAL_PLUGIN_VERSION
+            or source["cache_digest"] != state.cache_digest
+            or _safe_sha256(source["cache_source_digest"]) is None
+            or _safe_sha256(source["install_projection_digest"]) is None
+            or (
+                source["orphan_marker_content_digest"] is not None
+                and _safe_sha256(
+                    source["orphan_marker_content_digest"]
+                )
+                is None
+            )
+            or source["marketplace_digest"] != state.marketplace_digest
+            or source["source_digest"] != state.marketplace_digest
+            or source["before_state_digest"]
+            != _canonical_digest(state.projection())
+        ):
+            raise AdoptionError("terminal_bridge_manifest_mismatch")
+    return _json_bytes(value)
+
+
+def _read_terminal_bridge_manifest(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(
+            _private_file_bytes(
+                _terminal_bridge_manifest_path(root)
+            ).decode("ascii")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("terminal_bridge_manifest_unavailable") from exc
+    _terminal_bridge_manifest_bytes(value)
+    return value
+
+
+def _write_terminal_bridge_manifest(
+    root: Path,
+    manifest: dict[str, object],
+) -> None:
+    content = _terminal_bridge_manifest_bytes(manifest)
+    path = _terminal_bridge_manifest_path(root)
+    if path.exists() or path.is_symlink():
+        try:
+            if _private_file_bytes(path) != content:
+                raise AdoptionError("terminal_bridge_manifest_collision")
+        except OSError as exc:
+            raise AdoptionError("terminal_bridge_manifest_collision") from exc
+        return
+    _write_private_file_exclusive(
+        path,
+        content,
+        failure_code="terminal_bridge_manifest_collision",
+    )
+
+
 def _require_reversible_before_states(
     states: Sequence[HostState],
     *,
     admitted_previous: Sequence[HostState] | None = None,
+    admitted_terminal: Sequence[HostState] | None = None,
 ) -> None:
     """Admit exact Codex predecessor and one fixed Claude residual predecessor."""
 
     if admitted_previous is not None and tuple(states) == tuple(admitted_previous):
         if any(
             state.plugin_version != authority.PREVIOUS_TERMINAL_PLUGIN_VERSION
+            or not state.plugin_present
+            or not state.marketplace_present
+            or not state.active
+            or state.invalid_cache_leaf_count != 0
+            or state.ambiguous_cache_leaf_count != 0
+            for state in states
+        ):
+            raise AdoptionError("before_state_not_exactly_reversible")
+        return
+
+    if admitted_terminal is not None and tuple(states) == tuple(admitted_terminal):
+        if any(
+            state.plugin_version != authority.TERMINAL_PLUGIN_VERSION
             or not state.plugin_present
             or not state.marketplace_present
             or not state.active
@@ -6119,31 +8461,101 @@ def _host_locks(root: Path, *, typed_failure: bool = False) -> Iterator[None]:
 
     lock_root = _lock_root(root)
     _lstat_admitted_directory(lock_root, create=True)
-    descriptors: list[int] = []
+    parent_descriptor = os.open(
+        lock_root,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    parent_identity = _archive_stat_identity(os.fstat(parent_descriptor))
+    descriptors: list[tuple[int, str, tuple[int, ...]]] = []
     try:
         for host in HOST_ORDER:
-            path = lock_root / f"{host}.lock"
-            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            leaf = f"{host}.lock"
+            descriptor = os.open(
+                leaf,
+                os.O_CREAT
+                | os.O_RDWR
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=parent_descriptor,
+            )
             info = os.fstat(descriptor)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
-                if typed_failure:
-                    os.close(descriptor)
+            parent_identity = _archive_stat_identity(
+                os.fstat(parent_descriptor)
+            )
+            identity = _archive_stat_identity(info)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1
+                or identity
+                != _archive_stat_identity(
+                    os.stat(
+                        leaf,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                )
+            ):
+                os.close(descriptor)
                 raise AdoptionError("host_lock_drift")
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
             except OSError as exc:
+                os.close(descriptor)
                 if not typed_failure:
                     raise
-                os.close(descriptor)
                 raise AdoptionError("host_lock_unavailable") from exc
-            descriptors.append(descriptor)
+            if (
+                identity != _archive_stat_identity(os.fstat(descriptor))
+                or identity
+                != _archive_stat_identity(
+                    os.stat(
+                        leaf,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                )
+            ):
+                os.close(descriptor)
+                raise AdoptionError("host_lock_drift")
+            descriptors.append((descriptor, leaf, identity))
+        parent_identity = _archive_stat_identity(os.fstat(parent_descriptor))
+        if parent_identity != _archive_stat_identity(lock_root.lstat()):
+            raise AdoptionError("host_lock_drift")
         yield
     finally:
-        for descriptor in reversed(descriptors):
+        drift = (
+            parent_identity
+            != _archive_stat_identity(os.fstat(parent_descriptor))
+            or parent_identity
+            != _archive_stat_identity(lock_root.lstat())
+        )
+        for descriptor, leaf, identity in reversed(descriptors):
             try:
+                try:
+                    drift = drift or (
+                        identity
+                        != _archive_stat_identity(os.fstat(descriptor))
+                        or identity
+                        != _archive_stat_identity(
+                            os.stat(
+                                leaf,
+                                dir_fd=parent_descriptor,
+                                follow_symlinks=False,
+                            )
+                        )
+                    )
+                except OSError:
+                    drift = True
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
+        os.close(parent_descriptor)
+        if drift:
+            raise AdoptionError("host_lock_drift")
 
 
 class PluginAdoptionExecutor:
@@ -6162,6 +8574,7 @@ class PluginAdoptionExecutor:
         canonical_recovery_observer: CanonicalRecoveryObserver | None = None,
         terminal_authority_request: Callable[..., authority.VerifiedPluginAdoptionEnvelope]
         | None = None,
+        terminal_bridge_root: Path | None = None,
     ):
         if action not in {"apply", "terminalize"}:
             raise AdoptionError("plugin_adoption_action_invalid")
@@ -6180,6 +8593,13 @@ class PluginAdoptionExecutor:
             or terminal_authority_request is None
         ):
             raise AdoptionError("terminal_observer_unavailable")
+        if terminal_bridge_root is not None and (
+            action != "apply"
+            or terminal_observers is None
+            or tuple(observer.name for observer in terminal_observers) != HOST_ORDER
+            or canonical_recovery_observer is None
+        ):
+            raise AdoptionError("terminal_bridge_observer_unavailable")
         self.root = state_root
         self.adapters = tuple(adapters)
         self.authority_request = authority_request
@@ -6197,6 +8617,8 @@ class PluginAdoptionExecutor:
         )
         self.canonical_recovery_observer = canonical_recovery_observer
         self.terminal_authority_request = terminal_authority_request
+        self.terminal_bridge_root = terminal_bridge_root
+        self._bridge_recovery_required = False
 
     def _observe_terminal_states(self) -> list[TerminalHostState]:
         states = [observer.observe() for observer in self.terminal_observers]
@@ -6209,6 +8631,403 @@ class PluginAdoptionExecutor:
         return _admit_canonical_recovery(
             self.canonical_recovery_observer.observe()
         )
+
+    def _load_terminal_bridge_record(
+        self,
+    ) -> tuple[
+        dict[str, object],
+        authority.VerifiedPluginAdoptionEnvelope,
+        tuple[TerminalHostState, ...],
+        CanonicalRecoveryState,
+    ]:
+        if self.terminal_bridge_root is None:
+            raise AdoptionError("terminal_bridge_unavailable")
+        record = _read_terminal_journal(self.terminal_bridge_root)
+        verified = _reverify_terminal_journal(record)
+        states = tuple(
+            TerminalHostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                record["before_states"], HOST_ORDER, strict=True
+            )
+        )
+        recovery = CanonicalRecoveryState.from_projection(
+            record["canonical_recovery"]
+        )
+        plan = verified.request["plan"]
+        if (
+            record["phase"] != "COMMITTED"
+            or record["operation"] != authority.TERMINAL_OPERATION
+            or plan["plugin_version"] != authority.TERMINAL_PLUGIN_VERSION
+            or plan["source_revision"] != authority.TERMINAL_SOURCE_REVISION
+            or recovery.source_revision != authority.TERMINAL_SOURCE_REVISION
+            or plan["source_bundle_digest"] != recovery.source_bundle_digest
+        ):
+            raise AdoptionError("terminal_bridge_contract_mismatch")
+        if self._observe_terminal_states() != list(states):
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+        return record, verified, states, recovery
+
+    def _configure_terminal_bridge_adapters(
+        self,
+        terminal_record: dict[str, object],
+        terminal_states: Sequence[TerminalHostState],
+        *,
+        observe_before: bool = True,
+    ) -> list[HostState]:
+        for adapter, state in zip(
+            self.adapters, terminal_states, strict=True
+        ):
+            configure = getattr(adapter, "configure_terminal_bridge", None)
+            if not callable(configure):
+                raise AdoptionError("terminal_bridge_adapter_unavailable")
+            configure(
+                state,
+                _terminal_bridge_binding_digest(
+                    state, terminal_record=terminal_record
+                ),
+            )
+        if not observe_before:
+            return []
+        before = [adapter.observe() for adapter in self.adapters]
+        _require_reversible_before_states(
+            before,
+            admitted_terminal=before,
+        )
+        return before
+
+    def _fresh_terminal_bridge_manifest(
+        self,
+    ) -> tuple[list[HostState], dict[str, object]]:
+        record, verified, terminal_states, recovery = (
+            self._load_terminal_bridge_record()
+        )
+        before = self._configure_terminal_bridge_adapters(
+            record, terminal_states
+        )
+        captures: list[dict[str, object]] = []
+        for adapter, state in zip(self.adapters, before, strict=True):
+            capture = getattr(adapter, "capture_terminal_rollback", None)
+            if not callable(capture):
+                raise AdoptionError("terminal_bridge_adapter_unavailable")
+            value = capture(state)
+            if type(value) is not dict:
+                raise AdoptionError("terminal_rollback_capture_mismatch")
+            captures.append(value)
+        if self._observe_terminal_states() != list(terminal_states):
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+        if [adapter.observe() for adapter in self.adapters] != before:
+            raise AdoptionError("before_state_cas_mismatch")
+        terminal_plan = verified.request["plan"]
+        manifest = {
+            "host_order": list(HOST_ORDER),
+            "ordinary_plugin_version": authority.PLUGIN_VERSION,
+            "policy": "terminal_observation_exact_inverse.v1",
+            "schema": TERMINAL_BRIDGE_SCHEMA,
+            "sources": captures,
+            "states": [state.projection() for state in before],
+            "terminal_canonical_identity_digest": record[
+                "canonical_identity_digest"
+            ],
+            "terminal_current_identity_digest": record[
+                "current_identity_digest"
+            ],
+            "terminal_envelope_digest": record["envelope_digest"],
+            "terminal_journal_b64": base64.b64encode(
+                _terminal_journal_bytes(record)
+            ).decode("ascii"),
+            "terminal_journal_digest": hashlib.sha256(
+                _terminal_journal_bytes(record)
+            ).hexdigest(),
+            "terminal_plugin_version": authority.TERMINAL_PLUGIN_VERSION,
+            "terminal_request_digest": record["request_digest"],
+            "terminal_source_bundle_digest": terminal_plan[
+                "source_bundle_digest"
+            ],
+            "terminal_source_revision": terminal_plan["source_revision"],
+            "terminal_transaction_id": record["transaction_id"],
+        }
+        _terminal_bridge_manifest_bytes(manifest)
+        _write_terminal_bridge_manifest(self.root, manifest)
+        return before, manifest
+
+    def _resume_private_terminal_bridge_manifest(
+        self,
+    ) -> tuple[list[HostState], dict[str, object]]:
+        """Load only the durable private bridge closure after request prepare."""
+
+        manifest = _read_terminal_bridge_manifest(self.root)
+        try:
+            terminal_record = json.loads(
+                base64.b64decode(
+                    str(manifest["terminal_journal_b64"]),
+                    validate=True,
+                ).decode("ascii")
+            )
+        except Exception as exc:
+            raise AdoptionError("terminal_bridge_binding_mismatch") from exc
+        terminal_verified = _reverify_terminal_journal(terminal_record)
+        terminal_states = tuple(
+            TerminalHostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                terminal_record["before_states"], HOST_ORDER, strict=True
+            )
+        )
+        recovery = CanonicalRecoveryState.from_projection(
+            terminal_record["canonical_recovery"]
+        )
+        terminal_plan = terminal_verified.request["plan"]
+        if (
+            terminal_record["phase"] != "COMMITTED"
+            or terminal_record["operation"]
+            != authority.TERMINAL_OPERATION
+            or terminal_plan["plugin_version"]
+            != authority.TERMINAL_PLUGIN_VERSION
+            or terminal_plan["source_revision"]
+            != authority.TERMINAL_SOURCE_REVISION
+            or recovery.source_revision
+            != authority.TERMINAL_SOURCE_REVISION
+            or terminal_plan["source_bundle_digest"]
+            != recovery.source_bundle_digest
+            or manifest["terminal_journal_digest"]
+            != hashlib.sha256(
+                _terminal_journal_bytes(terminal_record)
+            ).hexdigest()
+            or manifest["terminal_request_digest"]
+            != terminal_record["request_digest"]
+            or manifest["terminal_envelope_digest"]
+            != terminal_record["envelope_digest"]
+            or manifest["terminal_current_identity_digest"]
+            != terminal_record["current_identity_digest"]
+            or manifest["terminal_canonical_identity_digest"]
+            != terminal_record["canonical_identity_digest"]
+            or manifest["terminal_source_revision"]
+            != terminal_plan["source_revision"]
+            or manifest["terminal_source_bundle_digest"]
+            != terminal_plan["source_bundle_digest"]
+            or manifest["terminal_transaction_id"]
+            != terminal_record["transaction_id"]
+        ):
+            raise AdoptionError("terminal_bridge_binding_mismatch")
+        self._configure_terminal_bridge_adapters(
+            terminal_record,
+            terminal_states,
+            observe_before=False,
+        )
+        before = [
+            HostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                manifest["states"], HOST_ORDER, strict=True
+            )
+        ]
+        _require_reversible_before_states(
+            before,
+            admitted_terminal=before,
+        )
+        for adapter, state, capture in zip(
+            self.adapters,
+            before,
+            manifest["sources"],
+            strict=True,
+        ):
+            verify_capture = getattr(
+                adapter, "verify_terminal_rollback", None
+            )
+            if not callable(verify_capture):
+                raise AdoptionError("terminal_bridge_adapter_unavailable")
+            verify_capture(state, capture)
+        return before, manifest
+
+    def _reverify_terminal_bridge_manifest(
+        self,
+        record: dict[str, object],
+        verified: authority.VerifiedPluginAdoptionEnvelope,
+    ) -> dict[str, object]:
+        if self.terminal_bridge_root is None:
+            raise AdoptionError("terminal_bridge_unavailable")
+        self._bridge_recovery_required = False
+        manifest = _read_terminal_bridge_manifest(self.root)
+        manifest_bytes = _terminal_bridge_manifest_bytes(manifest)
+        try:
+            terminal_record = json.loads(
+                base64.b64decode(
+                    str(manifest["terminal_journal_b64"]),
+                    validate=True,
+                ).decode("ascii")
+            )
+        except Exception as exc:
+            raise AdoptionError("terminal_bridge_binding_mismatch") from exc
+        terminal_verified = _reverify_terminal_journal(terminal_record)
+        terminal_states = tuple(
+            TerminalHostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                terminal_record["before_states"], HOST_ORDER, strict=True
+            )
+        )
+        recovery = CanonicalRecoveryState.from_projection(
+            terminal_record["canonical_recovery"]
+        )
+        terminal_plan = terminal_verified.request["plan"]
+        if (
+            manifest["terminal_journal_digest"]
+            != hashlib.sha256(
+                _terminal_journal_bytes(terminal_record)
+            ).hexdigest()
+            or manifest["terminal_request_digest"]
+            != terminal_record["request_digest"]
+            or manifest["terminal_envelope_digest"]
+            != terminal_record["envelope_digest"]
+            or manifest["terminal_current_identity_digest"]
+            != terminal_record["current_identity_digest"]
+            or manifest["terminal_canonical_identity_digest"]
+            != terminal_record["canonical_identity_digest"]
+            or manifest["terminal_source_revision"]
+            != terminal_plan["source_revision"]
+            or manifest["terminal_source_bundle_digest"]
+            != terminal_plan["source_bundle_digest"]
+            or manifest["terminal_transaction_id"]
+            != terminal_record["transaction_id"]
+            or verified.request["plan"]["rollback_manifest_digest"]
+            != hashlib.sha256(manifest_bytes).hexdigest()
+            or record["rollback_manifest_digest"]
+            != verified.request["plan"]["rollback_manifest_digest"]
+            or manifest["states"] != record["before_states"]
+        ):
+            raise AdoptionError("terminal_bridge_binding_mismatch")
+        self._configure_terminal_bridge_adapters(
+            terminal_record,
+            terminal_states,
+            observe_before=False,
+        )
+        before = [
+            HostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                record["before_states"], HOST_ORDER, strict=True
+            )
+        ]
+        after = [
+            HostState.from_projection(value, expected_host=host)
+            for value, host in zip(
+                record["after_states"], HOST_ORDER, strict=True
+            )
+        ]
+        for adapter, state, capture in zip(
+            self.adapters,
+            before,
+            manifest["sources"],
+            strict=True,
+        ):
+            verify_capture = getattr(
+                adapter, "verify_terminal_rollback", None
+            )
+            if not callable(verify_capture):
+                raise AdoptionError("terminal_bridge_adapter_unavailable")
+            verify_capture(state, capture)
+        phase = str(record["phase"])
+        allowed_states: tuple[frozenset[HostState], ...]
+        if phase == "AUTHORIZED":
+            allowed_states = (
+                frozenset({before[0]}),
+                frozenset({before[1]}),
+            )
+        elif phase == "PREPARED":
+            allowed_states = (
+                frozenset({before[0], after[0]}),
+                frozenset({before[1]}),
+            )
+        elif phase == "CODEX_APPLIED":
+            allowed_states = (
+                frozenset({after[0]}),
+                frozenset({before[1], after[1]}),
+            )
+        elif phase in {"CLAUDE_APPLIED", "VERIFIED", "COMMITTED"}:
+            allowed_states = (
+                frozenset({after[0]}),
+                frozenset({after[1]}),
+            )
+        elif phase == "ROLLED_BACK":
+            allowed_states = (
+                frozenset({before[0]}),
+                frozenset({before[1]}),
+            )
+        else:
+            allowed_states = (
+                frozenset({before[0], after[0]}),
+                frozenset({before[1], after[1]}),
+            )
+        observed_states: list[HostState | None] = []
+        recoverable_intermediate_phases = {
+            "AUTHORIZED",
+            "PREPARED",
+            "CODEX_APPLIED",
+            "CLAUDE_APPLIED",
+            "VERIFIED",
+        }
+        for adapter, expected_before, allowed in zip(
+            self.adapters,
+            before,
+            allowed_states,
+            strict=True,
+        ):
+            try:
+                observed = adapter.observe()
+            except AdoptionError:
+                if phase not in recoverable_intermediate_phases | {
+                    "ROLLING_BACK"
+                }:
+                    raise
+                if phase != "ROLLING_BACK":
+                    self._bridge_recovery_required = True
+                observed_states.append(None)
+                continue
+            if observed not in allowed:
+                if phase == "ROLLING_BACK":
+                    observed_states.append(observed)
+                    continue
+                if phase not in recoverable_intermediate_phases:
+                    raise AdoptionError("ordinary_phase_state_drift")
+                self._bridge_recovery_required = True
+            observed_states.append(observed)
+        host_effect_started = phase in {
+            "CODEX_APPLIED",
+            "CLAUDE_APPLIED",
+            "VERIFIED",
+            "COMMITTED",
+            "ROLLING_BACK",
+            "ROLLED_BACK",
+        } or any(
+            observed is None or observed != expected_before
+            for observed, expected_before in zip(
+                observed_states,
+                before,
+                strict=True,
+            )
+        )
+        if not host_effect_started:
+            try:
+                external_terminal_record = _read_terminal_journal(
+                    self.terminal_bridge_root
+                )
+                if (
+                    _terminal_journal_bytes(external_terminal_record)
+                    != _terminal_journal_bytes(terminal_record)
+                    or [
+                        observer.observe()
+                        for observer in self.terminal_observers
+                    ]
+                    != list(terminal_states)
+                ):
+                    raise AdoptionError("terminal_current_state_drift")
+                if self._observe_canonical_recovery() != recovery:
+                    raise AdoptionError("canonical_recovery_drift")
+            except AdoptionError:
+                if phase not in recoverable_intermediate_phases:
+                    raise
+                self._bridge_recovery_required = True
+        return manifest
 
     def _require_terminal_record_bindings(
         self,
@@ -6643,11 +9462,28 @@ class PluginAdoptionExecutor:
         _lstat_admitted_directory(self.root, create=True)
         if _journal_path(self.root).exists() or _journal_path(self.root).is_symlink():
             raise AdoptionError("active_transaction_exists")
-        before = [adapter.observe() for adapter in self.adapters]
-        _require_reversible_before_states(
-            before,
-            admitted_previous=self.admitted_previous_states,
-        )
+        if (
+            _ordinary_consumed_path(self.root).exists()
+            or _ordinary_consumed_path(self.root).is_symlink()
+        ):
+            raise AdoptionError("ordinary_consumed_without_journal")
+        bridge_manifest: dict[str, object] | None = None
+        if self.terminal_bridge_root is not None:
+            if (
+                _ordinary_prepared_path(self.root).exists()
+                or _ordinary_prepared_path(self.root).is_symlink()
+            ):
+                before, bridge_manifest = (
+                    self._resume_private_terminal_bridge_manifest()
+                )
+            else:
+                before, bridge_manifest = self._fresh_terminal_bridge_manifest()
+        else:
+            before = [adapter.observe() for adapter in self.adapters]
+            _require_reversible_before_states(
+                before,
+                admitted_previous=self.admitted_previous_states,
+            )
         source_revision = _source_revision()
         source_bundle_digest = _source_bundle_digest()
         transaction_seed = authority.canonical_bytes({
@@ -6678,7 +9514,13 @@ class PluginAdoptionExecutor:
             )
             for host, before_state in zip(HOST_ORDER, before, strict=True)
         ]
-        rollback_digest = _canonical_digest(_rollback_manifest(before))
+        rollback_digest = (
+            hashlib.sha256(
+                _terminal_bridge_manifest_bytes(bridge_manifest)
+            ).hexdigest()
+            if bridge_manifest is not None
+            else _canonical_digest(_rollback_manifest(before))
+        )
         plan_without_digest = {
             "marketplace_id": authority.MARKETPLACE_ID,
             "plugin_id": authority.PLUGIN_ID,
@@ -6695,20 +9537,86 @@ class PluginAdoptionExecutor:
             **plan_without_digest,
             "plan_digest": authority.compute_plan_digest(plan_without_digest),
         }
-        issued_at = float(self.clock())
-        request = authority.build_plugin_adoption_request(
-            decision_id=decision_id,
-            transaction_id=transaction_id,
-            source_runtime_revision=source_revision,
-            issued_at=issued_at,
-            expires_at=issued_at + 120.0,
-            plan=plan,
-        )
-        verified = self.authority_request(request, now=issued_at + 0.001)
+        prepared: dict[str, object] | None = None
+        prepared_replay = False
+        if (
+            bridge_manifest is not None
+            and (
+                _ordinary_prepared_path(self.root).exists()
+                or _ordinary_prepared_path(self.root).is_symlink()
+            )
+        ):
+            prepared = _read_ordinary_prepared(self.root)
+            request_bytes = base64.b64decode(
+                str(prepared["request_b64"]), validate=True
+            )
+            request_value = authority._base._parse_canonical_authority_payload(
+                request_bytes
+            )
+            request = authority.validate_request(request_value, now=None)
+            if (
+                request["plan"] != plan
+                or request["actual"]["transaction_id"] != transaction_id
+                or request["actual"]["decision_id"] != decision_id
+                or prepared["before_states"]
+                != [state.projection() for state in before]
+                or prepared["after_states"]
+                != [state.projection() for state in after]
+                or prepared["manifest_digest"] != rollback_digest
+            ):
+                raise AdoptionError("ordinary_prepared_request_mismatch")
+            issued_at = float(request["actual"]["issued_at"])
+            prepared_replay = True
+        else:
+            issued_at = float(self.clock())
+            request = authority.build_plugin_adoption_request(
+                decision_id=decision_id,
+                transaction_id=transaction_id,
+                source_runtime_revision=source_revision,
+                issued_at=issued_at,
+                expires_at=issued_at + 120.0,
+                plan=plan,
+            )
+            if bridge_manifest is not None:
+                prepared = _ordinary_prepared_from_request(
+                    request, before=before, after=after
+                )
+                _write_ordinary_prepared(self.root, prepared)
+                self.crash_hook("ORDINARY_REQUEST_PREPARED")
+        if bridge_manifest is not None:
+            transport_now = (
+                float(self.clock()) if prepared_replay else issued_at + 0.001
+            )
+            verified = self.authority_request(
+                request,
+                now=transport_now,
+                prepared_replay=prepared_replay,
+            )
+            self.crash_hook("ORDINARY_AUTHORIZED")
+            verified = authority.verify_plugin_adoption_envelope(
+                request_bytes=verified.request_bytes,
+                envelope_bytes=verified.envelope_bytes,
+                now=issued_at + 0.001 if prepared_replay else transport_now,
+            )
+            if (
+                verified.request != request
+                or verified.request_bytes != authority.canonical_bytes(request)
+                or not verified.allowed
+            ):
+                raise AdoptionError("ordinary_authority_replay_mismatch")
+        else:
+            verified = self.authority_request(request, now=issued_at + 0.001)
         if not verified.allowed:
             raise AdoptionError("plugin_adoption_denied")
         record = _record_from_verified(verified, before=before, after=after)
-        _write_journal(self.root, record)
+        if bridge_manifest is not None:
+            if prepared is None:
+                raise AdoptionError("ordinary_prepared_unavailable")
+            _write_journal_exclusive(self.root, record)
+            self.crash_hook("ORDINARY_JOURNAL_PUBLISHED")
+            _remove_ordinary_prepared(self.root, prepared)
+        else:
+            _write_journal(self.root, record)
         self.crash_hook("AUTHORIZED")
         return record, before, after
 
@@ -6730,10 +9638,52 @@ class PluginAdoptionExecutor:
         _require_reversible_before_states(
             before,
             admitted_previous=self.admitted_previous_states,
+            admitted_terminal=(
+                before if self.terminal_bridge_root is not None else None
+            ),
         )
         if _states_digest(after) != verified.request["plan"]["after_state_digest"]:
             raise AdoptionError("after_state_plan_mismatch")
         return before, after
+
+    def _reconcile_ordinary_prepared_with_journal(
+        self,
+        record: dict[str, object],
+    ) -> None:
+        path = _ordinary_prepared_path(self.root)
+        consumed = _ordinary_consumed_path(self.root)
+        expected = {
+            "after_states": record["after_states"],
+            "before_states": record["before_states"],
+            "decision_id": record["decision_id"],
+            "manifest_digest": record["rollback_manifest_digest"],
+            "phase": "REQUEST_PREPARED",
+            "request_b64": record["request_b64"],
+            "request_digest": record["request_digest"],
+            "schema": JOURNAL_SCHEMA,
+            "transaction_id": record["transaction_id"],
+        }
+        if consumed.exists() or consumed.is_symlink():
+            if path.exists() or path.is_symlink():
+                raise AdoptionError("ordinary_prepared_journal_mismatch")
+            if _private_file_bytes(consumed) != _ordinary_prepared_bytes(expected):
+                raise AdoptionError("ordinary_prepared_journal_mismatch")
+            return
+        if not (path.exists() or path.is_symlink()):
+            raise AdoptionError("ordinary_prepared_unavailable")
+        prepared = _read_ordinary_prepared(self.root)
+        if (
+            prepared["request_digest"] != record["request_digest"]
+            or prepared["transaction_id"] != record["transaction_id"]
+            or prepared["decision_id"] != record["decision_id"]
+            or prepared["before_states"] != record["before_states"]
+            or prepared["after_states"] != record["after_states"]
+            or prepared["manifest_digest"]
+            != record["rollback_manifest_digest"]
+            or prepared["request_b64"] != record["request_b64"]
+        ):
+            raise AdoptionError("ordinary_prepared_journal_mismatch")
+        _remove_ordinary_prepared(self.root, prepared)
 
     def run(self) -> dict[str, object]:
         if self.action != "terminalize":
@@ -6750,10 +9700,23 @@ class PluginAdoptionExecutor:
                 record = _read_journal(self.root)
                 verified = _reverify_journal(record)
                 before, after = self._states_from_verified(verified, record)
+                if self.terminal_bridge_root is not None:
+                    self._reverify_terminal_bridge_manifest(record, verified)
+                    self._reconcile_ordinary_prepared_with_journal(record)
             else:
                 record, before, after = self._fresh_authorization()
                 verified = _reverify_journal(record)
+                if self.terminal_bridge_root is not None:
+                    self._reverify_terminal_bridge_manifest(record, verified)
             phase = str(record["phase"])
+            if self._bridge_recovery_required:
+                record = _advance_journal(
+                    self.root,
+                    record,
+                    "ROLLING_BACK",
+                    crash_hook=self.crash_hook,
+                )
+                phase = "ROLLING_BACK"
             if phase == "COMMITTED":
                 observed = [
                     adapter.verify(str(record["transaction_id"]), expected)
@@ -6772,7 +9735,10 @@ class PluginAdoptionExecutor:
                 observed = [adapter.observe() for adapter in self.adapters]
                 if _states_digest(observed) != record["before_state_digest"]:
                     raise AdoptionError("rolled_back_state_drift")
-                if not self.archive_rolled_back:
+                if (
+                    not self.archive_rolled_back
+                    or self.terminal_bridge_root is not None
+                ):
                     return {
                         "status": "rolled_back",
                         "transaction_id": record["transaction_id"],
@@ -6952,8 +9918,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         if args.action == "terminalize":
+            terminal_source_root = _fixed_terminal_source_root()
             terminal_observers = tuple(
-                FixedTerminalHostObserver(host, root)
+                FixedTerminalHostObserver(
+                    host,
+                    root,
+                    terminal_source_root,
+                )
                 for host in HOST_ORDER
             )
             result = PluginAdoptionExecutor(
@@ -6984,11 +9955,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "transaction_id": record["transaction_id"],
             }, sort_keys=True))
             return 0
-        if args.action == "resume" and not _journal_path(root).is_file():
+        if (
+            args.action == "resume"
+            and not _journal_path(root).is_file()
+            and not _ordinary_prepared_path(root).is_file()
+            and not _terminal_bridge_manifest_path(root).is_file()
+        ):
             raise AdoptionError("journal_unavailable")
+        terminal_root = _fixed_terminal_state_root()
+        terminal_source_root = _fixed_terminal_source_root()
+        terminal_bridge = (
+            _terminal_bridge_manifest_path(root).exists()
+            or _terminal_bridge_manifest_path(root).is_symlink()
+            or _ordinary_prepared_path(root).exists()
+            or _ordinary_prepared_path(root).is_symlink()
+            or _journal_path(terminal_root).exists()
+            or _journal_path(terminal_root).is_symlink()
+        )
         previous = (
             _previous_committed_context()
-            if _previous_context_required(args.action, root)
+            if not terminal_bridge
+            and _previous_context_required(args.action, root)
             else None
         )
         previous_root = previous[0] if previous is not None else None
@@ -7001,6 +9988,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 previous_state=previous_states[index]
                 if previous_states is not None
                 else None,
+                terminal_source_transaction_root=(
+                    terminal_source_root if terminal_bridge else None
+                ),
             )
             for index, host in enumerate(HOST_ORDER)
         )
@@ -7010,6 +10000,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             authority_request=authority.request_plugin_adoption_decision,
             archive_rolled_back=args.action == "apply",
             admitted_previous_states=previous_states,
+            terminal_bridge_root=(
+                terminal_root if terminal_bridge else None
+            ),
+            terminal_observers=(
+                tuple(
+                    FixedTerminalHostObserver(
+                        host,
+                        terminal_root,
+                        terminal_source_root,
+                    )
+                    for host in HOST_ORDER
+                )
+                if terminal_bridge
+                else None
+            ),
+            canonical_recovery_observer=(
+                FixedCanonicalRecoveryObserver(
+                    _fixed_canonical_recovery_root()
+                )
+                if terminal_bridge
+                else None
+            ),
         )
         result = executor.run()
     except (AdoptionError, authority.PluginAdoptionAuthorityError) as exc:

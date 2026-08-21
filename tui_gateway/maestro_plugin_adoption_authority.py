@@ -916,10 +916,13 @@ def request_plugin_adoption_decision(
     request: object,
     *,
     now: float,
+    prepared_replay: bool = False,
 ) -> VerifiedPluginAdoptionEnvelope:
-    """Send one exact request to the fixed V3 service and verify its envelope."""
+    """Send a fresh request or replay exact durably prepared request bytes."""
 
-    checked = validate_request(request, now=now)
+    if type(prepared_replay) is not bool:
+        raise PluginAdoptionAuthorityError("authority_contract_unavailable")
+    checked = validate_request(request, now=None if prepared_replay else now)
     request_bytes = canonical_bytes(checked)
     if not _base._trusted_runtime_boundary():
         raise PluginAdoptionAuthorityError("authority_contract_unavailable")
@@ -963,7 +966,11 @@ def request_plugin_adoption_decision(
     return verify_plugin_adoption_envelope(
         request_bytes=request_bytes,
         envelope_bytes=line,
-        now=now,
+        now=(
+            float(checked["actual"]["issued_at"]) + 0.001
+            if prepared_replay
+            else now
+        ),
     )
 
 

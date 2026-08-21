@@ -728,6 +728,44 @@ class ReplayAwareTerminalIssuer:
         )
 
 
+class ReplayAwareOrdinaryIssuer:
+    """One-budget ordinary issuer with exact prepared-request replay."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[bytes, bool]] = []
+        self.consumed_budget = 0
+        self.request_bytes: bytes | None = None
+        self.envelope_bytes: bytes | None = None
+
+    def __call__(self, request, *, now, prepared_replay=False):
+        request_bytes = authority.canonical_bytes(request)
+        self.calls.append((request_bytes, prepared_replay))
+        if self.request_bytes is None:
+            assert prepared_replay is False
+            self.consumed_budget += 1
+            self.request_bytes = request_bytes
+            self.envelope_bytes = authority.canonical_bytes({
+                "receipt": _receipt(request),
+                "signature": (
+                    "-----BEGIN SSH SIGNATURE-----\n"
+                    "ordinary-single-use-fixture\n"
+                    "-----END SSH SIGNATURE-----\n"
+                ),
+            })
+        else:
+            assert prepared_replay is True
+            if request_bytes != self.request_bytes:
+                raise authority.PluginAdoptionAuthorityError(
+                    "authority_replay_request_mismatch"
+                )
+        assert self.envelope_bytes is not None
+        return authority.verify_plugin_adoption_envelope(
+            request_bytes=request_bytes,
+            envelope_bytes=self.envelope_bytes,
+            now=float(request["actual"]["issued_at"]) + 0.001,
+        )
+
+
 class TerminalPublicationFault:
     """Inject one write-boundary fault while recording visible-path exposure."""
 
@@ -1601,6 +1639,79 @@ class MemoryAdapter:
         return self.state
 
 
+class BridgeMemoryAdapter(MemoryAdapter):
+    def __init__(self, name: str, *, fail_apply: bool = False):
+        super().__init__(name, fail_apply=fail_apply)
+        self.configure_count = 0
+        self.capture_count = 0
+        self.verify_capture_count = 0
+
+    def configure_terminal_bridge(
+        self,
+        terminal_state: executor.TerminalHostState,
+        binding_digest: str,
+    ) -> None:
+        assert terminal_state.host == self.name
+        self.configure_count += 1
+        if self.configure_count == 1:
+            self.state = executor.HostState(
+                host=self.name,
+                marketplace_present=True,
+                marketplace_digest=terminal_state.marketplace_digest,
+                marketplace_binding_digest=binding_digest,
+                plugin_present=True,
+                plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+                active=terminal_state.registry_state in {"active", "installed"},
+                cache_digest=terminal_state.cache_digest,
+            )
+
+    def capture_terminal_rollback(
+        self,
+        expected_before: executor.HostState,
+    ) -> dict[str, object]:
+        assert self.state == expected_before
+        self.capture_count += 1
+        return {
+            "before_state_digest": executor._canonical_digest(
+                expected_before.projection()
+            ),
+            "cache_digest": expected_before.cache_digest,
+            "cache_source_digest": expected_before.cache_digest,
+            "host": self.name,
+            "install_projection_digest": expected_before.cache_digest,
+            "marketplace_digest": expected_before.marketplace_digest,
+            "orphan_marker_content_digest": None,
+            "source_digest": expected_before.marketplace_digest,
+            "source_version": authority.TERMINAL_PLUGIN_VERSION,
+        }
+
+    def verify_terminal_rollback(
+        self,
+        expected_before: executor.HostState,
+        capture: dict[str, object],
+    ) -> None:
+        self.verify_capture_count += 1
+        assert capture == self.capture_terminal_projection(expected_before)
+
+    def capture_terminal_projection(
+        self,
+        expected_before: executor.HostState,
+    ) -> dict[str, object]:
+        return {
+            "before_state_digest": executor._canonical_digest(
+                expected_before.projection()
+            ),
+            "cache_digest": expected_before.cache_digest,
+            "cache_source_digest": expected_before.cache_digest,
+            "host": self.name,
+            "install_projection_digest": expected_before.cache_digest,
+            "marketplace_digest": expected_before.marketplace_digest,
+            "orphan_marker_content_digest": None,
+            "source_digest": expected_before.marketplace_digest,
+            "source_version": authority.TERMINAL_PLUGIN_VERSION,
+        }
+
+
 class TerminalMemoryObserver:
     def __init__(self, state: executor.TerminalHostState):
         self.name = state.host
@@ -1752,6 +1863,28 @@ def _canonical_recovery() -> executor.CanonicalRecoveryState:
     )
 
 
+def _commit_terminal_v048_journal(root: Path) -> tuple[bytes, dict[str, object]]:
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=TerminalRecoveryObserver(
+            _canonical_recovery()
+        ),
+        terminal_authority_request=_terminal_authority_result,
+        clock=lambda: 1000.0,
+    ).run()
+    return (root / "journal.json").read_bytes(), executor._read_terminal_journal(
+        root
+    )
+
+
 def test_terminalize_records_divergent_v048_without_host_mutation_and_replays_once(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1819,6 +1952,811 @@ def test_terminalize_records_divergent_v048_without_host_mutation_and_replays_on
     assert [adapter.calls for adapter in ordinary] == [[], []]
 
 
+def test_ordinary_v049_bridge_requires_committed_terminal_journal_before_authority(
+    tmp_path: Path,
+) -> None:
+    adapters = tuple(
+        ForbiddenOrdinaryAdapter(host) for host in executor.HOST_ORDER
+    )
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_journal_unavailable",
+    ):
+        executor.PluginAdoptionExecutor(
+            state_root=tmp_path / "ordinary-v049",
+            adapters=adapters,
+            authority_request=lambda *_args, **_kwargs: pytest.fail(
+                "missing terminal journal must fail before ordinary authority"
+            ),
+            terminal_bridge_root=tmp_path / "terminal-v048",
+            terminal_observers=terminal,
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+        ).run()
+    assert [adapter.calls for adapter in adapters] == [[], []]
+
+
+def test_ordinary_v049_bridge_binds_terminal_evidence_in_fresh_ordinary_authority(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    terminal_bytes, terminal_record = _commit_terminal_v048_journal(
+        terminal_root
+    )
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    ordinary_requests: list[dict[str, object]] = []
+
+    def request(request, *, now, prepared_replay=False):
+        assert prepared_replay is False
+        ordinary_requests.append(request)
+        return _authority_result(request, now=now)
+
+    result = executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=adapters,
+        authority_request=request,
+        terminal_bridge_root=terminal_root,
+        terminal_observers=tuple(
+            TerminalMemoryObserver(_terminal_state(host))
+            for host in executor.HOST_ORDER
+        ),
+        canonical_recovery_observer=TerminalRecoveryObserver(
+            _canonical_recovery()
+        ),
+        clock=lambda: 2000.0,
+    ).run()
+
+    assert result["status"] == "committed"
+    assert len(ordinary_requests) == 1
+    ordinary = ordinary_requests[0]
+    assert ordinary["actual"]["operation"] == authority.OPERATION
+    assert ordinary["plan"]["plugin_version"] == authority.PLUGIN_VERSION
+    manifest = executor._read_terminal_bridge_manifest(ordinary_root)
+    assert manifest["terminal_journal_digest"] == hashlib.sha256(
+        terminal_bytes
+    ).hexdigest()
+    assert manifest["terminal_request_digest"] == terminal_record["request_digest"]
+    assert manifest["terminal_envelope_digest"] == terminal_record["envelope_digest"]
+    assert (
+        manifest["terminal_current_identity_digest"]
+        == terminal_record["current_identity_digest"]
+    )
+    assert (
+        manifest["terminal_canonical_identity_digest"]
+        == terminal_record["canonical_identity_digest"]
+    )
+    assert ordinary["plan"]["rollback_manifest_digest"] == hashlib.sha256(
+        executor._terminal_bridge_manifest_bytes(manifest)
+    ).hexdigest()
+    assert (terminal_root / "journal.json").read_bytes() == terminal_bytes
+    assert ordinary_root / "journal.json" != terminal_root / "journal.json"
+    assert [adapter.capture_count for adapter in adapters] == [1, 1]
+
+
+@pytest.mark.parametrize(
+    "crash_phase",
+    ("ORDINARY_AUTHORIZED", "ORDINARY_JOURNAL_PUBLISHED"),
+)
+def test_ordinary_v049_prepared_request_replays_without_second_decision(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+    crash_phase: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    issuer = ReplayAwareOrdinaryIssuer()
+    crashed = False
+
+    def crash(phase: str) -> None:
+        nonlocal crashed
+        if phase == crash_phase and not crashed:
+            crashed = True
+            raise executor.InjectedCrash(phase)
+
+    with pytest.raises(executor.InjectedCrash, match=crash_phase):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=crash,
+            clock=lambda: 2000.0,
+        ).run()
+    assert issuer.consumed_budget == 1
+    assert (ordinary_root / executor._ORDINARY_PREPARED_LEAF).is_file()
+
+    resumed_authority = (
+        issuer
+        if crash_phase == "ORDINARY_AUTHORIZED"
+        else lambda *_args, **_kwargs: pytest.fail(
+            "durable ordinary journal must replay without another decision"
+        )
+    )
+    result = executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=adapters,
+        authority_request=resumed_authority,
+        terminal_bridge_root=terminal_root,
+        terminal_observers=tuple(
+            TerminalMemoryObserver(_terminal_state(host))
+            for host in executor.HOST_ORDER
+        ),
+        canonical_recovery_observer=TerminalRecoveryObserver(
+            _canonical_recovery()
+        ),
+        clock=lambda: 4000.0,
+    ).run()
+    assert result["status"] == "committed"
+    assert issuer.consumed_budget == 1
+    assert not (ordinary_root / executor._ORDINARY_PREPARED_LEAF).exists()
+    if crash_phase == "ORDINARY_AUTHORIZED":
+        assert [replay for _request, replay in issuer.calls] == [False, True]
+        assert issuer.calls[0][0] == issuer.calls[1][0]
+    else:
+        assert [replay for _request, replay in issuer.calls] == [False]
+
+
+@pytest.mark.parametrize(
+    "crash_phase",
+    ("ORDINARY_AUTHORIZED", "ORDINARY_JOURNAL_PUBLISHED", "PREPARED"),
+)
+def test_ordinary_v049_durable_authority_recovers_without_external_terminal(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+    crash_phase: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    issuer = ReplayAwareOrdinaryIssuer()
+    crashed = False
+
+    def crash(phase: str) -> None:
+        nonlocal crashed
+        if phase == crash_phase and not crashed:
+            crashed = True
+            raise executor.InjectedCrash(phase)
+
+    with pytest.raises(executor.InjectedCrash, match=crash_phase):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=crash,
+            clock=lambda: 2000.0,
+        ).run()
+    assert issuer.consumed_budget == 1
+    (terminal_root / "journal.json").unlink()
+    unavailable_observers = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    for observer in unavailable_observers:
+        observer.observe = lambda: (_ for _ in ()).throw(
+            executor.AdoptionError("terminal evidence unavailable")
+        )
+    unavailable_recovery = TerminalRecoveryObserver(_canonical_recovery())
+    unavailable_recovery.observe = lambda: (_ for _ in ()).throw(
+        executor.AdoptionError("canonical evidence unavailable")
+    )
+    resume_authority = (
+        issuer
+        if crash_phase == "ORDINARY_AUTHORIZED"
+        else lambda *_args, **_kwargs: pytest.fail(
+            "durable ordinary authority must not be requested again"
+        )
+    )
+    result = executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=adapters,
+        authority_request=resume_authority,
+        terminal_bridge_root=terminal_root,
+        terminal_observers=unavailable_observers,
+        canonical_recovery_observer=unavailable_recovery,
+        clock=lambda: 4000.0,
+    ).run()
+    assert result["status"] == "rolled_back"
+    assert executor._read_journal(ordinary_root)["phase"] == "ROLLED_BACK"
+    assert issuer.consumed_budget == 1
+    if crash_phase == "ORDINARY_AUTHORIZED":
+        assert [replay for _request, replay in issuer.calls] == [False, True]
+    else:
+        assert [replay for _request, replay in issuer.calls] == [False]
+
+
+def test_ordinary_v049_prepared_request_rejects_fresh_source_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+
+    with pytest.raises(executor.InjectedCrash, match="ORDINARY_REQUEST_PREPARED"):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=lambda *_args, **_kwargs: pytest.fail(
+                "prepared boundary precedes authority"
+            ),
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=lambda phase: (
+                (_ for _ in ()).throw(executor.InjectedCrash(phase))
+                if phase == "ORDINARY_REQUEST_PREPARED"
+                else None
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+    monkeypatch.setattr(executor, "_source_revision", lambda: "9" * 40)
+    with pytest.raises(
+        executor.AdoptionError,
+        match="ordinary_prepared_request_mismatch",
+    ):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=lambda *_args, **_kwargs: pytest.fail(
+                "mismatched prepared bytes must fail before authority"
+            ),
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            clock=lambda: 4000.0,
+        ).run()
+
+
+def test_ordinary_v049_prepared_without_stored_envelope_expires(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+
+    with pytest.raises(executor.InjectedCrash, match="ORDINARY_REQUEST_PREPARED"):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=lambda *_args, **_kwargs: pytest.fail(
+                "prepared boundary precedes authority"
+            ),
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=lambda phase: (
+                (_ for _ in ()).throw(executor.InjectedCrash(phase))
+                if phase == "ORDINARY_REQUEST_PREPARED"
+                else None
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+
+    calls = 0
+
+    def no_stored_envelope(request, *, now, prepared_replay=False):
+        nonlocal calls
+        calls += 1
+        assert prepared_replay is True
+        assert now > request["actual"]["expires_at"]
+        raise authority.PluginAdoptionAuthorityError("authority_stale")
+
+    with pytest.raises(
+        authority.PluginAdoptionAuthorityError,
+        match="authority_stale",
+    ):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=no_stored_envelope,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            clock=lambda: 4000.0,
+        ).run()
+    assert calls == 1
+    assert (ordinary_root / executor._ORDINARY_PREPARED_LEAF).is_file()
+
+
+def test_ordinary_v049_prepared_replay_rejects_changed_authority_ids(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    issuer = ReplayAwareOrdinaryIssuer()
+
+    with pytest.raises(executor.InjectedCrash, match="ORDINARY_AUTHORIZED"):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=lambda phase: (
+                (_ for _ in ()).throw(executor.InjectedCrash(phase))
+                if phase == "ORDINARY_AUTHORIZED"
+                else None
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+    assert issuer.consumed_budget == 1
+
+    prepared_path = ordinary_root / executor._ORDINARY_PREPARED_LEAF
+    prepared = json.loads(prepared_path.read_text(encoding="ascii"))
+    old_request = authority._base._parse_canonical_authority_payload(
+        base64.b64decode(str(prepared["request_b64"]), validate=True)
+    )
+    changed_request = authority.build_plugin_adoption_request(
+        decision_id="plugin-adoption-decision-" + "9" * 32,
+        transaction_id="plugin-adoption-" + "8" * 32,
+        source_runtime_revision=old_request["actual"][
+            "source_runtime_revision"
+        ],
+        issued_at=float(old_request["actual"]["issued_at"]),
+        expires_at=float(old_request["actual"]["expires_at"]),
+        plan=old_request["plan"],
+    )
+    changed_bytes = authority.canonical_bytes(changed_request)
+    prepared["decision_id"] = changed_request["actual"]["decision_id"]
+    prepared["transaction_id"] = changed_request["actual"]["transaction_id"]
+    prepared["request_b64"] = base64.b64encode(changed_bytes).decode("ascii")
+    prepared["request_digest"] = hashlib.sha256(changed_bytes).hexdigest()
+    prepared_path.write_bytes(executor._ordinary_prepared_bytes(prepared))
+    prepared_path.chmod(0o600)
+
+    with pytest.raises(
+        executor.AdoptionError,
+        match="ordinary_prepared_request_mismatch",
+    ):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            clock=lambda: 2001.0,
+        ).run()
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+
+
+@pytest.mark.parametrize("crash_host", executor.HOST_ORDER)
+def test_ordinary_v049_resume_does_not_repeat_exact_applied_host_effect(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+    crash_host: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    selected = adapters[executor.HOST_ORDER.index(crash_host)]
+    original_apply = selected.apply
+    crashed = False
+
+    def apply_then_crash(*args, **kwargs):
+        nonlocal crashed
+        result = original_apply(*args, **kwargs)
+        if not crashed:
+            crashed = True
+            raise executor.InjectedCrash(f"{crash_host}_effect")
+        return result
+
+    selected.apply = apply_then_crash
+    issuer = ReplayAwareOrdinaryIssuer()
+    with pytest.raises(executor.InjectedCrash, match=f"{crash_host}_effect"):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+    assert selected.apply_count == 1
+    selected.apply = original_apply
+    assert executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=adapters,
+        authority_request=lambda *_args, **_kwargs: pytest.fail(
+            "durable ordinary journal must not request a second decision"
+        ),
+        terminal_bridge_root=terminal_root,
+        terminal_observers=tuple(
+            TerminalMemoryObserver(_terminal_state(host))
+            for host in executor.HOST_ORDER
+        ),
+        canonical_recovery_observer=TerminalRecoveryObserver(
+            _canonical_recovery()
+        ),
+    ).run()["status"] == "committed"
+    assert selected.apply_count == 1
+
+
+def test_ordinary_v049_rollback_resume_uses_private_capture_and_never_archives_it(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = (
+        BridgeMemoryAdapter("codex"),
+        BridgeMemoryAdapter("claude", fail_apply=True),
+    )
+    observers = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    issuer = ReplayAwareOrdinaryIssuer()
+
+    with pytest.raises(executor.InjectedCrash, match="ROLLING_BACK"):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=observers,
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=lambda phase: (
+                (_ for _ in ()).throw(executor.InjectedCrash(phase))
+                if phase == "ROLLING_BACK"
+                else None
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+    assert executor._read_journal(ordinary_root)["phase"] == "ROLLING_BACK"
+    assert adapters[0].state.plugin_version == authority.PLUGIN_VERSION
+    assert (
+        adapters[1].state.plugin_version
+        == authority.TERMINAL_PLUGIN_VERSION
+    )
+    # A crash may expose a state outside either signed endpoint.  Once the
+    # journal is ROLLING_BACK, the signed bridge manifest and private capture
+    # must drive cleanup instead of rejecting that intermediate projection.
+    adapters[0].state = replace(
+        adapters[0].state,
+        cache_digest="9" * 64,
+    )
+
+    def obsolete_terminal_source() -> executor.TerminalHostState:
+        raise executor.AdoptionError("terminal source no longer selected")
+
+    for observer in observers:
+        observer.observe = obsolete_terminal_source
+    (terminal_root / "journal.json").unlink()
+    unavailable_recovery = TerminalRecoveryObserver(_canonical_recovery())
+    unavailable_recovery.observe = lambda: (_ for _ in ()).throw(
+        executor.AdoptionError("canonical recovery no longer available")
+    )
+    resumed = executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=adapters,
+        authority_request=lambda *_args, **_kwargs: pytest.fail(
+            "durable ordinary journal must not request authority again"
+        ),
+        terminal_bridge_root=terminal_root,
+        terminal_observers=observers,
+        canonical_recovery_observer=unavailable_recovery,
+        archive_rolled_back=True,
+        clock=lambda: 4000.0,
+    )
+    assert resumed.run()["status"] == "rolled_back"
+    assert executor._read_journal(ordinary_root)["phase"] == "ROLLED_BACK"
+
+    result = resumed.run()
+    assert result["status"] == "rolled_back"
+    assert ordinary_root.is_dir()
+    assert not (
+        executor._history_root(ordinary_root)
+        / str(executor._read_journal(ordinary_root)["transaction_id"])
+    ).exists()
+    assert issuer.consumed_budget == 1
+
+
+def test_ordinary_v049_partial_host_effect_routes_to_private_rollback(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    ordinary_root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    codex = adapters[0]
+    issuer = ReplayAwareOrdinaryIssuer()
+
+    def partial_apply(
+        _transaction_id: str,
+        expected_before: executor.HostState,
+        expected_after: executor.HostState,
+    ) -> executor.HostState:
+        assert codex.state == expected_before
+        codex.apply_count += 1
+        codex.state = replace(expected_after, cache_digest="8" * 64)
+        raise executor.InjectedCrash("codex_partial_effect")
+
+    codex.apply = partial_apply
+    with pytest.raises(executor.InjectedCrash, match="codex_partial_effect"):
+        executor.PluginAdoptionExecutor(
+            state_root=ordinary_root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+    assert executor._read_journal(ordinary_root)["phase"] == "PREPARED"
+
+    observers = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    for observer in observers:
+        observer.observe = lambda: (_ for _ in ()).throw(
+            executor.AdoptionError("terminal source unavailable")
+        )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    recovery.observe = lambda: (_ for _ in ()).throw(
+        executor.AdoptionError("canonical source unavailable")
+    )
+    (terminal_root / "journal.json").unlink()
+    result = executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=adapters,
+        authority_request=lambda *_args, **_kwargs: pytest.fail(
+            "durable ordinary journal must not request authority again"
+        ),
+        terminal_bridge_root=terminal_root,
+        terminal_observers=observers,
+        canonical_recovery_observer=recovery,
+        clock=lambda: 4000.0,
+    ).run()
+    assert result["status"] == "rolled_back"
+    assert executor._read_journal(ordinary_root)["phase"] == "ROLLED_BACK"
+    assert [adapter.rollback_count for adapter in adapters] == [1, 1]
+    assert issuer.consumed_budget == 1
+
+
+def test_ordinary_v049_bridge_rejects_live_terminal_drift_before_capture(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    drifted = replace(
+        _terminal_state("claude"),
+        cache_digest="9" * 64,
+    )
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_current_state_drift",
+    ):
+        executor.PluginAdoptionExecutor(
+            state_root=tmp_path / "ordinary-v049",
+            adapters=adapters,
+            authority_request=lambda *_args, **_kwargs: pytest.fail(
+                "live terminal drift must fail before ordinary authority"
+            ),
+            terminal_bridge_root=terminal_root,
+            terminal_observers=(
+                TerminalMemoryObserver(_terminal_state("codex")),
+                TerminalMemoryObserver(drifted),
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+        ).run()
+    assert [adapter.capture_count for adapter in adapters] == [0, 0]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("not_committed", "wrong_contract", "wrong_digest", "wrong_source_version"),
+)
+def test_ordinary_v049_bridge_rejects_invalid_terminal_journal_variants(
+    tmp_path: Path,
+    monkeypatch,
+    mutation: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _terminal_bytes, original = _commit_terminal_v048_journal(terminal_root)
+    record = json.loads(json.dumps(original))
+    if mutation == "not_committed":
+        record["phase"] = "AUTHORIZED"
+    elif mutation == "wrong_contract":
+        record["operation"] = authority.OPERATION
+    elif mutation == "wrong_digest":
+        record["request_digest"] = "0" * 64
+    else:
+        request = json.loads(
+            base64.b64decode(record["request_b64"], validate=True)
+        )
+        request["plan"]["source_revision"] = "9" * 40
+        request["plan"]["plugin_version"] = authority.PLUGIN_VERSION
+        request_bytes = authority.canonical_bytes(request)
+        record["request_b64"] = base64.b64encode(request_bytes).decode("ascii")
+        record["request_digest"] = hashlib.sha256(request_bytes).hexdigest()
+    executor._atomic_private_write(
+        terminal_root / "journal.json",
+        executor._json_bytes(record),
+    )
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    with pytest.raises(executor.AdoptionError, match="terminal_"):
+        executor.PluginAdoptionExecutor(
+            state_root=tmp_path / "ordinary-v049",
+            adapters=adapters,
+            authority_request=lambda *_args, **_kwargs: pytest.fail(
+                "invalid terminal journal must fail before ordinary authority"
+            ),
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+        ).run()
+    assert [adapter.capture_count for adapter in adapters] == [0, 0]
+
+
+def test_terminal_and_ordinary_journals_reject_cross_verifiers(
+    tmp_path: Path,
+    monkeypatch,
+    fixed_source,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    terminal_root = tmp_path / "terminal-v048"
+    _terminal_bytes, terminal_record = _commit_terminal_v048_journal(
+        terminal_root
+    )
+    with pytest.raises(executor.AdoptionError):
+        executor._reverify_journal(terminal_record)
+
+    ordinary_root = tmp_path / "ordinary-v049"
+    executor.PluginAdoptionExecutor(
+        state_root=ordinary_root,
+        adapters=tuple(
+            BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+        ),
+        authority_request=lambda request, *, now, prepared_replay=False: (
+            _authority_result(request, now=now)
+        ),
+        terminal_bridge_root=terminal_root,
+        terminal_observers=tuple(
+            TerminalMemoryObserver(_terminal_state(host))
+            for host in executor.HOST_ORDER
+        ),
+        canonical_recovery_observer=TerminalRecoveryObserver(
+            _canonical_recovery()
+        ),
+        clock=lambda: 2000.0,
+    ).run()
+    with pytest.raises(executor.AdoptionError):
+        executor._reverify_terminal_journal(
+            executor._read_journal(ordinary_root)
+        )
+
+
 def test_fixed_terminal_observer_reads_exact_v048_without_host_mutation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1827,9 +2765,13 @@ def test_fixed_terminal_observer_reads_exact_v048_without_host_mutation(
     monkeypatch.setattr(executor, "_fixed_user_home", lambda: home)
     transaction = tmp_path / "transaction"
     transaction.mkdir(mode=0o700)
-    observer = executor.FixedTerminalHostObserver("codex", transaction)
+    observer = executor.FixedTerminalHostObserver(
+        "codex",
+        transaction,
+        transaction,
+    )
     cache = observer._cache
-    marketplace = observer._marketplace_cache
+    marketplace = observer._marketplace_source_root
     cache.mkdir(parents=True, mode=0o700)
     marketplace.mkdir(parents=True, mode=0o700)
     manifest = cache / "SOURCE_MANIFEST.json"
@@ -3696,6 +4638,11 @@ def test_terminalize_rejects_state_root_and_lock_metadata_drift(
         run.run()
 
     lock.chmod(0o600)
+    alias = lock_root / "codex-alias.lock"
+    os.link(lock, alias)
+    with pytest.raises(executor.AdoptionError, match="host_lock_drift"):
+        run.run()
+    alias.unlink()
     legacy = root / "legacy-evidence.json"
     legacy.write_text("{}\n", encoding="ascii")
     legacy.chmod(0o600)
@@ -3711,17 +4658,40 @@ def test_terminalize_rejects_state_root_and_lock_metadata_drift(
         run.run()
 
 
+def test_host_lock_rejects_same_uid_path_swap_after_flock(tmp_path: Path) -> None:
+    root = tmp_path / "transaction"
+    root.mkdir(mode=0o700)
+    lock_root = root.parent / ".plugin-adoption-locks"
+    with pytest.raises(executor.AdoptionError, match="host_lock_drift"):
+        with executor._host_locks(root, typed_failure=True):
+            lock = lock_root / "codex.lock"
+            displaced = lock_root / "codex.displaced"
+            lock.rename(displaced)
+            replacement = lock_root / "codex.lock"
+            replacement.write_bytes(b"")
+            replacement.chmod(0o600)
+
+
 def test_main_terminalize_wires_only_fixed_read_only_consumers(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     root = tmp_path / "fresh-terminal-v048"
+    source_root = tmp_path / "plugin-adoption-v048"
     recovery_root = tmp_path / "hermes-fp1-state-schema-20260814"
     seen: dict[str, object] = {}
 
     class Observer:
-        def __init__(self, name: str, transaction_root: Path):
+        def __init__(
+            self,
+            name: str,
+            transaction_root: Path,
+            marketplace_transaction_root: Path,
+        ):
             self.name = name
             seen.setdefault("observer_roots", []).append(transaction_root)
+            seen.setdefault("observer_source_roots", []).append(
+                marketplace_transaction_root
+            )
 
     class RecoveryObserver:
         def __init__(self, source_root: Path):
@@ -3735,6 +4705,11 @@ def test_main_terminalize_wires_only_fixed_read_only_consumers(
             return {"status": "terminalized", "transaction_id": "terminal-fixture"}
 
     monkeypatch.setattr(executor, "_fixed_terminal_state_root", lambda: root)
+    monkeypatch.setattr(
+        executor,
+        "_fixed_terminal_source_root",
+        lambda: source_root,
+    )
     monkeypatch.setattr(
         executor,
         "_fixed_canonical_recovery_root",
@@ -3757,10 +4732,105 @@ def test_main_terminalize_wires_only_fixed_read_only_consumers(
         "claude",
     ]
     assert seen["observer_roots"] == [root, root]
+    assert seen["observer_source_roots"] == [source_root, source_root]
     assert seen["recovery_root"] == recovery_root
     assert seen["terminal_authority_request"] is (
         authority.request_plugin_adoption_terminal_decision
     )
+
+
+@pytest.mark.parametrize(
+    "resume_leaf",
+    (
+        executor._ORDINARY_PREPARED_LEAF,
+        executor._TERMINAL_BRIDGE_MANIFEST_LEAF,
+    ),
+)
+def test_main_resume_admits_durable_bridge_without_published_journal(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    resume_leaf: str,
+) -> None:
+    root = tmp_path / "ordinary-v049"
+    root.mkdir(mode=0o700)
+    durable_bridge = root / resume_leaf
+    durable_bridge.write_bytes(b"bridge-fixture\n")
+    durable_bridge.chmod(0o600)
+    terminal_root = tmp_path / "terminal-v048"
+    terminal_source_root = tmp_path / "plugin-adoption-v048"
+    recovery_root = tmp_path / "recovery"
+    seen: dict[str, object] = {}
+
+    class Adapter:
+        def __init__(self, name: str, transaction_root: Path, **kwargs):
+            self.name = name
+            seen.setdefault("adapter_roots", []).append(transaction_root)
+            seen.setdefault("adapter_source_roots", []).append(
+                kwargs["terminal_source_transaction_root"]
+            )
+
+    class Observer:
+        def __init__(
+            self,
+            name: str,
+            transaction_root: Path,
+            marketplace_transaction_root: Path,
+        ):
+            self.name = name
+            seen.setdefault("observer_roots", []).append(transaction_root)
+            seen.setdefault("observer_source_roots", []).append(
+                marketplace_transaction_root
+            )
+
+    class RecoveryObserver:
+        def __init__(self, source_root: Path):
+            seen["recovery_root"] = source_root
+
+    class Runner:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def run(self):
+            return {"status": "committed", "transaction_id": "resume-fixture"}
+
+    monkeypatch.setattr(executor, "_fixed_state_root", lambda: root)
+    monkeypatch.setattr(
+        executor, "_fixed_terminal_state_root", lambda: terminal_root
+    )
+    monkeypatch.setattr(
+        executor,
+        "_fixed_terminal_source_root",
+        lambda: terminal_source_root,
+    )
+    monkeypatch.setattr(
+        executor,
+        "_fixed_canonical_recovery_root",
+        lambda: recovery_root,
+    )
+    monkeypatch.setattr(executor, "FixedHostAdapter", Adapter)
+    monkeypatch.setattr(executor, "FixedTerminalHostObserver", Observer)
+    monkeypatch.setattr(
+        executor, "FixedCanonicalRecoveryObserver", RecoveryObserver
+    )
+    monkeypatch.setattr(executor, "PluginAdoptionExecutor", Runner)
+
+    assert executor.main(["resume"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "committed",
+        "transaction_id": "resume-fixture",
+    }
+    assert seen["state_root"] == root
+    assert seen["terminal_bridge_root"] == terminal_root
+    assert seen["adapter_source_roots"] == [
+        terminal_source_root,
+        terminal_source_root,
+    ]
+    assert seen["observer_roots"] == [terminal_root, terminal_root]
+    assert seen["observer_source_roots"] == [
+        terminal_source_root,
+        terminal_source_root,
+    ]
 
 
 @pytest.fixture()
@@ -4373,6 +5443,1283 @@ def test_tree_digest_rejects_symlink_and_writable_mode(tmp_path: Path) -> None:
     regular.chmod(0o666)
     with pytest.raises(executor.AdoptionError, match="cache_metadata_drift"):
         executor._tree_digest(tree)
+
+
+def _snapshot_source(tmp_path: Path) -> Path:
+    source = tmp_path / "source"
+    nested = source / "nested"
+    nested.mkdir(parents=True, mode=0o700)
+    source.chmod(0o700)
+    payload = nested / "payload.json"
+    payload.write_text('{"version":"0.1.48"}\n', encoding="ascii")
+    payload.chmod(0o600)
+    return source
+
+
+def test_terminal_rollback_snapshot_is_exact_private_and_no_clobber(
+    tmp_path: Path,
+) -> None:
+    source = _snapshot_source(tmp_path)
+    destination_parent = tmp_path / "private"
+    destination_parent.mkdir(mode=0o700)
+    destination = destination_parent / "marketplace"
+    digest = executor._tree_digest(source)
+    assert digest is not None
+
+    executor._copy_private_tree_exclusive(
+        source,
+        destination,
+        expected_digest=digest,
+    )
+    assert executor._tree_digest(destination) == digest
+    assert stat.S_IMODE(destination.lstat().st_mode) == 0o700
+    assert stat.S_IMODE(
+        (destination / "nested" / "payload.json").lstat().st_mode
+    ) == 0o600
+
+    (source / "nested" / "payload.json").write_text(
+        '{"version":"drift"}\n', encoding="ascii"
+    )
+    assert executor._tree_digest(destination) == digest
+    collision = destination_parent / "cache"
+    collision.mkdir(mode=0o700)
+    foreign = collision / "foreign"
+    foreign.write_bytes(b"foreign")
+    foreign.chmod(0o600)
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_capture_no_clobber",
+    ):
+        executor._copy_private_tree_exclusive(
+            source,
+            collision,
+            expected_digest=digest,
+        )
+
+
+@pytest.mark.parametrize("mutation", ("symlink", "writable", "hardlink"))
+def test_terminal_rollback_snapshot_rejects_unadmitted_source_metadata(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    source = _snapshot_source(tmp_path)
+    payload = source / "nested" / "payload.json"
+    if mutation == "symlink":
+        link = source / "nested" / "link.json"
+        link.symlink_to(payload)
+    elif mutation == "writable":
+        payload.chmod(0o666)
+    else:
+        os.link(payload, source / "nested" / "hardlink.json")
+    destination_parent = tmp_path / "private"
+    destination_parent.mkdir(mode=0o700)
+    with pytest.raises(executor.AdoptionError):
+        executor._copy_private_tree_exclusive(
+            source,
+            destination_parent / "snapshot",
+            expected_digest="a" * 64,
+        )
+    assert not (destination_parent / "snapshot").exists()
+
+
+def test_terminal_rollback_snapshot_rechecks_source_cas_before_publish(
+    tmp_path: Path,
+) -> None:
+    source = _snapshot_source(tmp_path)
+    destination_parent = tmp_path / "private"
+    destination_parent.mkdir(mode=0o700)
+    destination = destination_parent / "snapshot"
+    digest = executor._tree_digest(source)
+    assert digest is not None
+
+    def drift(phase: str) -> None:
+        if phase == "TERMINAL_ROLLBACK_SNAPSHOT_READY":
+            payload = source / "nested" / "payload.json"
+            payload.write_text("drift\n", encoding="ascii")
+            payload.chmod(0o600)
+
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_capture_drift",
+    ):
+        executor._copy_private_tree_exclusive(
+            source,
+            destination,
+            expected_digest=digest,
+            crash_hook=drift,
+        )
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    ("fault", "code"),
+    (
+        ("enospc", "terminal_rollback_capture_enospc"),
+        ("cross_device", "terminal_rollback_capture_cross_device"),
+        ("size", "terminal_rollback_capture_limit_exceeded"),
+        ("count", "terminal_rollback_capture_limit_exceeded"),
+    ),
+)
+def test_terminal_rollback_snapshot_reports_typed_resource_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+    fault: str,
+    code: str,
+) -> None:
+    source = _snapshot_source(tmp_path)
+    destination_parent = tmp_path / "private"
+    destination_parent.mkdir(mode=0o700)
+    digest = executor._tree_digest(source)
+    assert digest is not None
+    if fault == "enospc":
+        monkeypatch.setattr(
+            executor.os,
+            "write",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError(errno.ENOSPC, "fixture full")
+            ),
+        )
+    elif fault == "cross_device":
+        monkeypatch.setattr(
+            executor,
+            "_rename_directory_exclusive",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError(errno.EXDEV, "fixture cross-device")
+            ),
+        )
+    elif fault == "size":
+        monkeypatch.setattr(executor, "_MAX_ROLLBACK_SNAPSHOT_BYTES", 1)
+    else:
+        monkeypatch.setattr(executor, "_MAX_ROLLBACK_SNAPSHOT_ENTRIES", 0)
+    with pytest.raises(executor.AdoptionError, match=code):
+        executor._copy_private_tree_exclusive(
+            source,
+            destination_parent / "snapshot",
+            expected_digest=digest,
+        )
+
+
+def test_terminal_rollback_snapshot_rejects_stale_stage_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    source = _snapshot_source(tmp_path)
+    destination_parent = tmp_path / "private"
+    destination_parent.mkdir(mode=0o700)
+    destination = destination_parent / "snapshot"
+    stale_stage = destination_parent / ".snapshot.snapshot"
+    stale_stage.mkdir(mode=0o700)
+    foreign = stale_stage / "foreign.json"
+    foreign.write_bytes(b"foreign\n")
+    foreign.chmod(0o600)
+    stale_before = executor._tree_digest(stale_stage)
+    digest = executor._tree_digest(source)
+    assert stale_before is not None
+    assert digest is not None
+
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_capture_no_clobber",
+    ):
+        executor._copy_private_tree_exclusive(
+            source,
+            destination,
+            expected_digest=digest,
+        )
+
+    assert executor._tree_digest(stale_stage) == stale_before
+    assert foreign.read_bytes() == b"foreign\n"
+    assert not destination.exists()
+
+
+def test_terminal_rollback_snapshot_recovery_enforces_limits_and_stage_inode_cas(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _snapshot_source(tmp_path)
+    destination_parent = tmp_path / "private"
+    destination_parent.mkdir(mode=0o700)
+    destination = destination_parent / "snapshot"
+    stale_stage = destination_parent / ".snapshot.snapshot"
+    shutil.copytree(source, stale_stage)
+    digest = executor._tree_digest(source)
+    assert digest is not None
+
+    monkeypatch.setattr(executor, "_MAX_ROLLBACK_SNAPSHOT_ENTRIES", 0)
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_capture_limit_exceeded",
+    ):
+        executor._copy_private_tree_exclusive(
+            source,
+            destination,
+            expected_digest=digest,
+        )
+    assert stale_stage.is_dir()
+    monkeypatch.setattr(executor, "_MAX_ROLLBACK_SNAPSHOT_ENTRIES", 8192)
+
+    replacement = destination_parent / ".snapshot.replacement"
+    shutil.copytree(source, replacement)
+    displaced = destination_parent / ".snapshot.displaced"
+    original_rename = executor._rename_directory_exclusive
+
+    def swap_stage_before_publish(
+        parent_descriptor: int,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        if source_name == stale_stage.name:
+            os.rename(
+                source_name,
+                displaced.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.rename(
+                replacement.name,
+                source_name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        original_rename(parent_descriptor, source_name, destination_name)
+
+    monkeypatch.setattr(
+        executor,
+        "_rename_directory_exclusive",
+        swap_stage_before_publish,
+    )
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_capture_drift",
+    ):
+        executor._copy_private_tree_exclusive(
+            source,
+            destination,
+            expected_digest=digest,
+        )
+
+
+def _terminal_projection_tree(
+    root: Path,
+    *,
+    source_root: str,
+    payload_value: str = "v048",
+) -> None:
+    runtime = root / "runtime"
+    runtime.mkdir(parents=True, mode=0o700)
+    payload = root / "payload.json"
+    payload.write_bytes(
+        executor._json_bytes({"payload": payload_value})
+    )
+    payload.chmod(0o600)
+    binding = runtime / "RUNTIME_BINDING.json"
+    binding.write_bytes(executor._json_bytes({
+        "schema": "runtime-binding.v1",
+        "source_root": source_root,
+    }))
+    binding.chmod(0o600)
+    manifest = root / "SOURCE_MANIFEST.json"
+    manifest.write_bytes(executor._json_bytes({
+        "mcp": {
+            "locator": {
+                "binding_sha256": hashlib.sha256(binding.read_bytes()).hexdigest(),
+            },
+        },
+        "operational_source_binding": {
+            "self_content_binding": {
+                "algorithm": "sha256",
+                "digest": hashlib.sha256(source_root.encode()).hexdigest(),
+            },
+        },
+    }))
+    manifest.chmod(0o600)
+
+
+def test_terminal_install_projection_binds_marketplace_bundle_to_cache(
+    tmp_path: Path,
+) -> None:
+    marketplace_bundle = tmp_path / "marketplace-bundle"
+    cache = tmp_path / "cache"
+    _terminal_projection_tree(marketplace_bundle, source_root="/staged/source")
+    _terminal_projection_tree(cache, source_root="/installed/source")
+    marker = cache / executor.distribution.ORPHANED_INSTALLED_MARKER
+    marker.write_bytes(b"1234567890123")
+    marker.chmod(0o644)
+
+    marketplace_projection = executor._terminal_install_projection_digest(
+        marketplace_bundle,
+    )
+    cache_projection = executor._terminal_install_projection_digest(cache)
+    assert marketplace_projection == cache_projection
+
+    payload = cache / "payload.json"
+    payload.write_bytes(b'{"payload":"drift"}\n')
+    payload.chmod(0o600)
+    assert executor._terminal_install_projection_digest(cache) != (
+        marketplace_projection
+    )
+
+
+def _terminal_marketplace_projection_fixture(
+    marketplace: Path,
+    cache: Path,
+    *,
+    host: str,
+) -> Path:
+    marketplace.mkdir(parents=True, mode=0o700)
+    marketplace.chmod(0o700)
+    bundle = (
+        marketplace
+        / "distribution"
+        / authority.MARKETPLACE_ID
+        / authority.PLUGIN_ID
+        / authority.TERMINAL_PLUGIN_VERSION
+    )
+    _terminal_projection_tree(
+        bundle,
+        source_root=f"/staged/{host}",
+        payload_value=host,
+    )
+    _terminal_projection_tree(
+        cache,
+        source_root=f"/installed/{host}",
+        payload_value=host,
+    )
+    return bundle
+
+
+def test_private_journal_reader_rejects_hardlink(tmp_path: Path) -> None:
+    root = tmp_path / "journal"
+    root.mkdir(mode=0o700)
+    journal = root / "journal.json"
+    journal.write_bytes(b"{}\n")
+    journal.chmod(0o600)
+    os.link(journal, root / "alias.json")
+    with pytest.raises(executor.AdoptionError, match="journal_drift"):
+        executor._private_file_bytes(journal)
+
+
+def test_journal_transition_cas_binds_expected_bytes_to_exchanged_inode(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "journal-cas-swap"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    with pytest.raises(executor.InjectedCrash, match="AUTHORIZED"):
+        _runner(root, adapters, crash_phase="AUTHORIZED").run()
+    expected = executor._read_journal(root)
+    successor = {**expected, "phase": "PREPARED"}
+    journal = root / "journal.json"
+    displaced = root / "journal.expected"
+    foreign = root / "journal.foreign"
+    foreign.write_bytes(b"{}\n")
+    foreign.chmod(0o600)
+    original_reader = executor._private_file_bytes
+    swapped = False
+
+    def read_then_swap(path: Path, *, maximum: int = 512 * 1024) -> bytes:
+        nonlocal swapped
+        content = original_reader(path, maximum=maximum)
+        if path == journal and not swapped:
+            swapped = True
+            journal.rename(displaced)
+            foreign.rename(journal)
+        return content
+
+    monkeypatch.setattr(executor, "_private_file_bytes", read_then_swap)
+    with pytest.raises(
+        executor.AdoptionError,
+        match="journal_transition_cas_mismatch",
+    ):
+        executor._replace_journal_cas(root, expected, successor)
+    assert journal.read_bytes() == b"{}\n"
+    assert displaced.read_bytes() == executor._journal_bytes(expected)
+
+
+def test_private_exclusive_publish_never_deletes_swapped_temp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "private-publish-swap"
+    root.mkdir(mode=0o700)
+    target = root / "manifest.json"
+    foreign = root / "foreign.json"
+    held = root / "held.json"
+    foreign.write_bytes(b"foreign\n")
+    foreign.chmod(0o600)
+    swapped_leaf: list[str] = []
+
+    def swap_then_fail(
+        parent_descriptor: int,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        del destination_name
+        os.rename(
+            source_name,
+            held.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        os.rename(
+            foreign.name,
+            source_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        swapped_leaf.append(source_name)
+        raise OSError(errno.EIO, "injected publish failure")
+
+    monkeypatch.setattr(
+        executor,
+        "_rename_directory_exclusive",
+        swap_then_fail,
+    )
+    with pytest.raises(executor.AdoptionError, match="publish_collision"):
+        executor._write_private_file_exclusive(
+            target,
+            b"bound\n",
+            failure_code="publish_collision",
+        )
+    assert not target.exists()
+    assert held.read_bytes() == b"bound\n"
+    assert (root / swapped_leaf[0]).read_bytes() == b"foreign\n"
+
+
+def test_bridge_journal_cas_retains_swapped_displaced_inode(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "bridge-journal-cas-swap"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    with pytest.raises(executor.InjectedCrash, match="AUTHORIZED"):
+        _runner(root, adapters, crash_phase="AUTHORIZED").run()
+    expected = executor._read_journal(root)
+    successor = {**expected, "phase": "PREPARED"}
+    foreign = root / "journal.foreign"
+    held = root / "journal.held"
+    foreign.write_bytes(b"foreign\n")
+    foreign.chmod(0o600)
+    original_exchange = executor._exchange_directory_entries
+    prior_leaf = ".ordinary-journal-edge-authorized-to-prepared"
+
+    def exchange_then_swap(
+        directory: int,
+        first: str,
+        second: str,
+    ) -> None:
+        original_exchange(directory, first, second)
+        os.rename(
+            prior_leaf,
+            held.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        os.rename(
+            foreign.name,
+            prior_leaf,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+
+    monkeypatch.setattr(
+        executor,
+        "_exchange_directory_entries",
+        exchange_then_swap,
+    )
+    with pytest.raises(
+        executor.AdoptionError,
+        match="journal_transition_cas_mismatch",
+    ):
+        executor._replace_bridge_journal_cas(root, expected, successor)
+    assert (root / prior_leaf).read_bytes() == b"foreign\n"
+    assert held.read_bytes() == executor._journal_bytes(expected)
+
+
+def test_bridge_journal_cas_uses_signed_role_and_distinct_recovery_edge(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    terminal_root = tmp_path / "terminal-v048"
+    _commit_terminal_v048_journal(terminal_root)
+    root = tmp_path / "ordinary-v049"
+    adapters = tuple(
+        BridgeMemoryAdapter(host) for host in executor.HOST_ORDER
+    )
+    issuer = ReplayAwareOrdinaryIssuer()
+    with pytest.raises(executor.InjectedCrash, match="AUTHORIZED"):
+        executor.PluginAdoptionExecutor(
+            state_root=root,
+            adapters=adapters,
+            authority_request=issuer,
+            terminal_bridge_root=terminal_root,
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            crash_hook=lambda phase: (
+                (_ for _ in ()).throw(executor.InjectedCrash(phase))
+                if phase == "AUTHORIZED"
+                else None
+            ),
+            clock=lambda: 2000.0,
+        ).run()
+    expected = executor._read_journal(root)
+    prepared = {**expected, "phase": "PREPARED"}
+    rolling_back = {**expected, "phase": "ROLLING_BACK"}
+    original_exchange = executor._exchange_directory_entries
+    blocked_once = False
+
+    def fail_before_exchange(*_args) -> None:
+        nonlocal blocked_once
+        if not blocked_once:
+            blocked_once = True
+            raise OSError(errno.EIO, "injected pre-exchange crash")
+        original_exchange(*_args)
+
+    monkeypatch.setattr(
+        executor,
+        "_exchange_directory_entries",
+        fail_before_exchange,
+    )
+    with pytest.raises(
+        executor.AdoptionError,
+        match="journal_transition_publish_failed",
+    ):
+        executor._replace_bridge_journal_cas(root, expected, prepared)
+    assert executor._read_journal(root)["phase"] == "AUTHORIZED"
+    assert (
+        root / ".ordinary-journal-edge-authorized-to-prepared"
+    ).read_bytes() == executor._journal_bytes(prepared)
+
+    # Hiding the mutable manifest pathname cannot downgrade a signed .48
+    # bridge record into the legacy CAS, and the recovery successor uses a
+    # separate edge leaf from the interrupted normal successor.
+    manifest = root / executor._TERMINAL_BRIDGE_MANIFEST_LEAF
+    manifest.rename(root / "terminal-manifest.hidden")
+    executor._replace_journal_cas(root, expected, rolling_back)
+    assert executor._read_journal(root)["phase"] == "ROLLING_BACK"
+    assert (
+        root / ".ordinary-journal-edge-authorized-to-rolling_back"
+    ).read_bytes() == executor._journal_bytes(expected)
+
+
+def test_ordinary_prepared_removal_rejects_path_swap_without_unlinking_foreign(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "prepared-remove-swap"
+    root.mkdir(mode=0o700)
+    before = tuple(_before(host) for host in executor.HOST_ORDER)
+    after = tuple(_after(host) for host in executor.HOST_ORDER)
+    plan_without_digest = {
+        "marketplace_id": authority.MARKETPLACE_ID,
+        "plugin_id": authority.PLUGIN_ID,
+        "plugin_version": authority.PLUGIN_VERSION,
+        "source_revision": "1" * 40,
+        "source_bundle_digest": "2" * 64,
+        "target_set": list(authority.TARGET_SET),
+        "transition_set": list(authority.TRANSITION_SET),
+        "before_state_digest": executor._states_digest(before),
+        "after_state_digest": executor._states_digest(after),
+        "rollback_manifest_digest": "4" * 64,
+    }
+    plan = {
+        **plan_without_digest,
+        "plan_digest": authority.compute_plan_digest(plan_without_digest),
+    }
+    request = authority.build_plugin_adoption_request(
+        decision_id="decision-prepared-remove-swap",
+        transaction_id="transaction-prepared-remove-swap",
+        source_runtime_revision="1" * 40,
+        issued_at=1000.0,
+        expires_at=1120.0,
+        plan=plan,
+    )
+    prepared = executor._ordinary_prepared_from_request(
+        request,
+        before=before,
+        after=after,
+    )
+    executor._write_ordinary_prepared(root, prepared)
+    path = root / executor._ORDINARY_PREPARED_LEAF
+    expected = path.read_bytes()
+    foreign = root / ".prepared.foreign"
+    foreign.write_bytes(b"foreign\n")
+    foreign.chmod(0o600)
+    held = root / ".prepared.expected"
+    original_rename = executor._rename_directory_exclusive
+
+    def swap_before_rename(
+        parent_descriptor: int,
+        source_name: str,
+        destination_name: str,
+    ) -> None:
+        if source_name == executor._ORDINARY_PREPARED_LEAF:
+            os.rename(
+                source_name,
+                held.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.rename(
+                foreign.name,
+                source_name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        original_rename(parent_descriptor, source_name, destination_name)
+
+    monkeypatch.setattr(
+        executor,
+        "_rename_directory_exclusive",
+        swap_before_rename,
+    )
+    with pytest.raises(executor.AdoptionError, match="ordinary_prepared_drift"):
+        executor._remove_ordinary_prepared(root, prepared)
+    assert path.read_bytes() == b"foreign\n"
+    assert held.read_bytes() == expected
+
+
+def test_fixed_bridge_captures_host_specific_v048_marketplace_and_cache_sources(
+    tmp_path: Path,
+) -> None:
+    transaction = tmp_path / "ordinary"
+    terminal = tmp_path / "terminal"
+    transaction.mkdir(mode=0o700)
+    captures: list[dict[str, object]] = []
+    for index, host in enumerate(executor.HOST_ORDER):
+        marketplace = terminal / "stage" / host
+        cache = tmp_path / "cache" / host / authority.TERMINAL_PLUGIN_VERSION
+        _terminal_marketplace_projection_fixture(
+            marketplace,
+            cache,
+            host=host,
+        )
+        terminal_state = executor.TerminalHostState(
+            host=host,
+            plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+            operational_adoption="qualification_pending",
+            registry_state="active",
+            cache_digest=str(executor._tree_digest(cache)),
+            cache_identity_digest=str(index + 1) * 64,
+            marketplace_digest=str(executor._tree_digest(marketplace)),
+            marketplace_identity_digest=str(index + 3) * 64,
+            orphan_marker_digest=None,
+        )
+        binding = hashlib.sha256(f"binding:{host}".encode()).hexdigest()
+        before = executor.HostState(
+            host=host,
+            marketplace_present=True,
+            marketplace_digest=terminal_state.marketplace_digest,
+            marketplace_binding_digest=binding,
+            plugin_present=True,
+            plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+            active=True,
+            cache_digest=terminal_state.cache_digest,
+        )
+        adapter = object.__new__(executor.FixedHostAdapter)
+        adapter.name = host
+        adapter._transaction_root = transaction
+        adapter._terminal_source_transaction_root = terminal
+        adapter._terminal_bridge_state = terminal_state
+        adapter._terminal_bridge_binding_digest = binding
+        adapter._terminal_bridge_capture = None
+        adapter._previous_state = None
+        adapter._cache = cache.with_name(authority.PLUGIN_VERSION)
+        captures.append(adapter.capture_terminal_rollback(before))
+        rollback = transaction / "rollback" / host
+        assert executor._tree_digest(rollback / "marketplace") == (
+            terminal_state.marketplace_digest
+        )
+        assert executor._tree_digest(rollback / "cache") == captures[-1][
+            "cache_source_digest"
+        ]
+    assert captures[0]["source_digest"] != captures[1]["source_digest"]
+    assert captures[0]["cache_source_digest"] != captures[1][
+        "cache_source_digest"
+    ]
+
+
+def test_fixed_bridge_rejects_mismatched_marketplace_cache_projection(
+    tmp_path: Path,
+) -> None:
+    transaction = tmp_path / "ordinary"
+    terminal = tmp_path / "terminal"
+    transaction.mkdir(mode=0o700)
+    marketplace = terminal / "stage" / "codex"
+    cache = tmp_path / "cache" / authority.TERMINAL_PLUGIN_VERSION
+    _terminal_marketplace_projection_fixture(
+        marketplace,
+        cache,
+        host="codex",
+    )
+    payload = cache / "payload.json"
+    payload.write_bytes(executor._json_bytes({"payload": "stale-cache"}))
+    payload.chmod(0o600)
+    terminal_state = executor.TerminalHostState(
+        host="codex",
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        operational_adoption="qualification_pending",
+        registry_state="active",
+        cache_digest=str(executor._tree_digest(cache)),
+        cache_identity_digest="1" * 64,
+        marketplace_digest=str(executor._tree_digest(marketplace)),
+        marketplace_identity_digest="2" * 64,
+        orphan_marker_digest=None,
+    )
+    before = executor.HostState(
+        host="codex",
+        marketplace_present=True,
+        marketplace_digest=terminal_state.marketplace_digest,
+        marketplace_binding_digest="3" * 64,
+        plugin_present=True,
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        active=True,
+        cache_digest=terminal_state.cache_digest,
+    )
+    adapter = object.__new__(executor.FixedHostAdapter)
+    adapter.name = "codex"
+    adapter._transaction_root = transaction
+    adapter._terminal_source_transaction_root = terminal
+    adapter._terminal_bridge_state = terminal_state
+    adapter._terminal_bridge_binding_digest = "3" * 64
+    adapter._terminal_bridge_capture = None
+    adapter._previous_state = None
+    adapter._cache = cache.with_name(authority.PLUGIN_VERSION)
+
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_source_digest_mismatch",
+    ):
+        adapter.capture_terminal_rollback(before)
+    assert not (transaction / "rollback" / "codex" / "marketplace").exists()
+
+
+def test_fixed_bridge_rollback_installs_only_from_private_v048_snapshot(
+    tmp_path: Path,
+) -> None:
+    transaction = tmp_path / "ordinary"
+    terminal = tmp_path / "terminal"
+    transaction.mkdir(mode=0o700)
+    marketplace = terminal / "stage" / "codex"
+    cache = tmp_path / "cache" / authority.TERMINAL_PLUGIN_VERSION
+    _terminal_marketplace_projection_fixture(
+        marketplace,
+        cache,
+        host="codex",
+    )
+    terminal_state = executor.TerminalHostState(
+        host="codex",
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        operational_adoption="qualification_pending",
+        registry_state="active",
+        cache_digest=str(executor._tree_digest(cache)),
+        cache_identity_digest="1" * 64,
+        marketplace_digest=str(executor._tree_digest(marketplace)),
+        marketplace_identity_digest="2" * 64,
+        orphan_marker_digest=None,
+    )
+    binding = "3" * 64
+    before = executor.HostState(
+        host="codex",
+        marketplace_present=True,
+        marketplace_digest=terminal_state.marketplace_digest,
+        marketplace_binding_digest=binding,
+        plugin_present=True,
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        active=True,
+        cache_digest=terminal_state.cache_digest,
+    )
+    adapter = object.__new__(executor.FixedHostAdapter)
+    adapter.name = "codex"
+    adapter._transaction_root = transaction
+    adapter._terminal_source_transaction_root = terminal
+    adapter._terminal_bridge_state = terminal_state
+    adapter._terminal_bridge_binding_digest = binding
+    adapter._terminal_bridge_capture = None
+    adapter._previous_state = None
+    adapter._cache = cache.with_name(authority.PLUGIN_VERSION)
+    adapter.capture_terminal_rollback(before)
+    private_marketplace = transaction / "rollback" / "codex" / "marketplace"
+    shutil.rmtree(terminal)
+    assert adapter._terminal_admitted_marketplace_root(
+        private_marketplace.resolve(strict=True)
+    ) == private_marketplace.resolve(strict=True)
+    assert adapter._binding_digest(
+        source=private_marketplace.resolve(strict=True),
+        version=authority.TERMINAL_PLUGIN_VERSION,
+        marketplace_digest=terminal_state.marketplace_digest,
+    ) == binding
+    current = _after("codex")
+    installed_from: list[Path] = []
+    adapter.observe = lambda: current
+    adapter._cleanup_presence = lambda: (True, True)
+    adapter._remove_plugin = lambda: None
+    adapter._remove_marketplace = lambda: None
+    adapter._quarantine_failed_candidate = lambda: None
+
+    def install(source: Path) -> None:
+        nonlocal current
+        installed_from.append(source)
+        current = before
+
+    adapter._install_from = install
+    assert adapter.rollback("plugin-adoption-private-v048", before) == before
+    assert installed_from == [transaction / "rollback" / "codex" / "marketplace"]
+    assert installed_from[0] != marketplace
+
+
+def test_terminal_bridge_quarantines_cli_retained_active_v048_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    transaction = tmp_path / "ordinary"
+    transaction.mkdir(mode=0o700)
+    cache = tmp_path / "cache" / authority.TERMINAL_PLUGIN_VERSION
+    _terminal_projection_tree(cache, source_root="/terminal/cache")
+    adapter = object.__new__(executor.FixedHostAdapter)
+    adapter.name = "claude"
+    adapter._transaction_root = transaction
+    adapter._cache = cache.with_name(authority.PLUGIN_VERSION)
+    adapter._previous_state = None
+    adapter._terminal_bridge_capture = {"captured": True}
+    before = executor.HostState(
+        host="claude",
+        marketplace_present=True,
+        marketplace_digest="1" * 64,
+        marketplace_binding_digest="2" * 64,
+        plugin_present=True,
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        active=True,
+        cache_digest=str(executor._tree_digest(cache)),
+    )
+    monkeypatch.setattr(
+        executor,
+        "_validate_fixed_host_chain",
+        lambda *_args, **_kwargs: None,
+    )
+
+    adapter._quarantine_previous_active_cache(before)
+    retained = (
+        transaction
+        / "quarantine"
+        / "claude"
+        / "terminal-active-v048"
+    )
+    assert not cache.exists()
+    assert executor._tree_digest(retained) == before.cache_digest
+
+
+def test_terminal_bridge_rollback_resumes_cache_reconciliation_without_reinstall(
+    tmp_path: Path,
+) -> None:
+    transaction = tmp_path / "ordinary"
+    rollback = transaction / "rollback" / "codex"
+    rollback.mkdir(parents=True, mode=0o700)
+    expected_entry = executor.QuarantineEntry(
+        handle=executor.TARGET_CACHE_HANDLES["0.1.47"],
+        version="0.1.47",
+        cache_digest="3" * 64,
+        full_digest="4" * 64,
+        identity_digest="5" * 64,
+        in_use_present=False,
+    )
+    before = executor.HostState(
+        host="codex",
+        marketplace_present=True,
+        marketplace_digest="1" * 64,
+        marketplace_binding_digest="2" * 64,
+        plugin_present=True,
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        active=True,
+        cache_digest="6" * 64,
+        quarantine_entries=(expected_entry,),
+    )
+    current = replace(before, quarantine_entries=())
+    adapter = object.__new__(executor.FixedHostAdapter)
+    adapter.name = "codex"
+    adapter._transaction_root = transaction
+    adapter._terminal_bridge_capture = {"captured": True}
+    adapter._terminal_bridge_state = executor.TerminalHostState(
+        host="codex",
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        operational_adoption="qualification_pending",
+        registry_state="active",
+        cache_digest=before.cache_digest,
+        cache_identity_digest="7" * 64,
+        marketplace_digest=before.marketplace_digest,
+        marketplace_identity_digest="8" * 64,
+        orphan_marker_digest=None,
+    )
+    effects: list[str] = []
+    adapter.observe = lambda: current
+    adapter._verify_rollback_marker = lambda *_args: None
+    adapter.verify_terminal_rollback = lambda *_args: None
+    adapter._restore_terminal_orphan_marker = lambda: effects.append("marker")
+    adapter._quarantine_failed_candidate = lambda: effects.append("failed")
+
+    def restore_entries(_before: executor.HostState) -> None:
+        nonlocal current
+        effects.append("entries")
+        current = before
+
+    adapter._restore_quarantine_entries = restore_entries
+    adapter._cleanup_presence = lambda: (_ for _ in ()).throw(
+        AssertionError("host CLI cleanup repeated")
+    )
+    adapter._install_from = lambda _source: (_ for _ in ()).throw(
+        AssertionError("host CLI install repeated")
+    )
+    assert adapter.rollback("plugin-adoption-terminal-resume", before) == before
+    assert effects == ["marker", "failed", "entries"]
+
+
+def test_terminal_bridge_quarantine_restore_binds_child_before_live_rename(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    transaction = tmp_path / "ordinary"
+    quarantine = transaction / "quarantine" / "codex"
+    quarantine.mkdir(parents=True, mode=0o700)
+    cache_parent = tmp_path / "cache"
+    cache_parent.mkdir(mode=0o700)
+    adapter = object.__new__(executor.FixedHostAdapter)
+    adapter.name = "codex"
+    adapter._transaction_root = transaction
+    adapter._cache = cache_parent / authority.PLUGIN_VERSION
+    handle = executor.TARGET_CACHE_HANDLES["0.1.47"]
+    expected_path = quarantine / handle
+    _terminal_projection_tree(expected_path, source_root="/expected")
+    entry = adapter._entry_for_path(
+        expected_path,
+        version="0.1.47",
+        handle=handle,
+    )
+    foreign = quarantine / "foreign"
+    _terminal_projection_tree(foreign, source_root="/foreign")
+    held = quarantine / "held-expected"
+    before = replace(_before("codex"), quarantine_entries=(entry,))
+    monkeypatch.setattr(
+        executor,
+        "_validate_fixed_host_chain",
+        lambda *_args, **_kwargs: None,
+    )
+    original_open = executor.os.open
+    swapped = False
+
+    def swap_before_child_bind(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == handle and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            expected_path.rename(held)
+            foreign.rename(expected_path)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(executor.os, "open", swap_before_child_bind)
+    with pytest.raises(
+        executor.AdoptionError,
+        match="quarantine_restore_cas_mismatch",
+    ):
+        adapter._restore_quarantine_entries(before)
+    assert not (cache_parent / "0.1.47").exists()
+    assert adapter._entry_for_path(
+        held,
+        version="0.1.47",
+        handle=handle,
+    ) == entry
+
+
+def _terminal_orphan_marker_adapter(
+    tmp_path: Path,
+) -> tuple[
+    executor.FixedHostAdapter,
+    executor.HostState,
+    Path,
+    bytes,
+    Path,
+    Path,
+]:
+    transaction = tmp_path / "ordinary"
+    terminal = tmp_path / "terminal"
+    transaction.mkdir(mode=0o700)
+    marketplace = terminal / "stage" / "claude"
+    cache = tmp_path / "cache" / authority.TERMINAL_PLUGIN_VERSION
+    bundle = _terminal_marketplace_projection_fixture(
+        marketplace,
+        cache,
+        host="claude",
+    )
+    marker_content = b"1234567890123"
+    marker = cache / executor.distribution.ORPHANED_INSTALLED_MARKER
+    marker.write_bytes(marker_content)
+    marker.chmod(0o644)
+    os.chown(marker, -1, os.getgid())
+    marker_info = marker.lstat()
+    marker_identity_digest = executor._canonical_digest({
+        "content_sha256": hashlib.sha256(marker_content).hexdigest(),
+        "device": marker_info.st_dev,
+        "group": marker_info.st_gid,
+        "inode": marker_info.st_ino,
+        "mode": stat.S_IMODE(marker_info.st_mode),
+        "owner": marker_info.st_uid,
+    })
+    terminal_state = executor.TerminalHostState(
+        host="claude",
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        operational_adoption="orphaned",
+        registry_state="installed",
+        cache_digest=str(
+            executor._tree_digest(
+                cache,
+                ignored=frozenset({
+                    executor.distribution.ORPHANED_INSTALLED_MARKER,
+                }),
+            )
+        ),
+        cache_identity_digest="1" * 64,
+        marketplace_digest=str(executor._tree_digest(marketplace)),
+        marketplace_identity_digest="2" * 64,
+        orphan_marker_digest=marker_identity_digest,
+    )
+    before = executor.HostState(
+        host="claude",
+        marketplace_present=True,
+        marketplace_digest=terminal_state.marketplace_digest,
+        marketplace_binding_digest="4" * 64,
+        plugin_present=True,
+        plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+        active=True,
+        cache_digest=terminal_state.cache_digest,
+    )
+    adapter = object.__new__(executor.FixedHostAdapter)
+    adapter.name = "claude"
+    adapter._transaction_root = transaction
+    adapter._terminal_source_transaction_root = terminal
+    adapter._terminal_bridge_state = terminal_state
+    adapter._terminal_bridge_binding_digest = "4" * 64
+    adapter._terminal_bridge_capture = None
+    adapter._previous_state = None
+    adapter._cache = cache.with_name(authority.PLUGIN_VERSION)
+    return adapter, before, marker, marker_content, bundle, cache
+
+
+def test_fixed_bridge_rollback_restores_orphan_marker_from_private_cache(
+    tmp_path: Path,
+) -> None:
+    adapter, before, marker, marker_content, bundle, cache = (
+        _terminal_orphan_marker_adapter(tmp_path)
+    )
+    transaction = adapter._transaction_root
+    adapter.capture_terminal_rollback(before)
+    shutil.rmtree(cache)
+    current = _after("claude")
+    adapter.observe = lambda: current
+    adapter._cleanup_presence = lambda: (True, True)
+    adapter._remove_plugin = lambda: None
+    adapter._remove_marketplace = lambda: None
+    adapter._quarantine_failed_candidate = lambda: None
+
+    def install(source: Path) -> None:
+        nonlocal current
+        assert source == transaction / "rollback" / "claude" / "marketplace"
+        shutil.copytree(bundle, cache)
+        current = before
+
+    adapter._install_from = install
+    assert adapter.rollback("plugin-adoption-private-marker", before) == before
+    assert marker.read_bytes() == marker_content
+    assert stat.S_IMODE(marker.lstat().st_mode) == 0o644
+
+    # Model a crash after the registry/cache install effect became observable
+    # but before the separately bound terminal-only marker was restored.  The
+    # idempotent resume must not return solely on HostState equality.
+    marker.unlink()
+    current = before
+    assert adapter.rollback("plugin-adoption-private-marker", before) == before
+    assert marker.read_bytes() == marker_content
+    assert stat.S_IMODE(marker.lstat().st_mode) == 0o644
+
+
+def test_fixed_bridge_marker_restore_rejects_unbound_valid_content(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    adapter, before, _marker, marker_content, _bundle, _cache = (
+        _terminal_orphan_marker_adapter(tmp_path)
+    )
+    capture = adapter.capture_terminal_rollback(before)
+    adapter.verify_terminal_rollback(before, capture)
+    private_marker = (
+        adapter._transaction_root
+        / "rollback"
+        / "claude"
+        / "cache"
+        / executor.distribution.ORPHANED_INSTALLED_MARKER
+    )
+    held = tmp_path / "held-private-marker"
+    transient = tmp_path / "transient-private-marker"
+    transient.write_bytes(b"9876543210987")
+    transient.chmod(0o644)
+    os.chown(transient, -1, os.getgid())
+    original_record = executor._terminal_regular_file_record
+    swapped = False
+
+    def swap_read_restore(path: Path, *, maximum: int):
+        nonlocal swapped
+        if path == private_marker and not swapped:
+            swapped = True
+            private_marker.rename(held)
+            transient.rename(private_marker)
+            record = original_record(path, maximum=maximum)
+            private_marker.rename(transient)
+            held.rename(private_marker)
+            return record
+        return original_record(path, maximum=maximum)
+
+    monkeypatch.setattr(
+        executor,
+        "_terminal_regular_file_record",
+        swap_read_restore,
+    )
+
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_marker_drift",
+    ):
+        adapter._restore_terminal_orphan_marker()
+    assert private_marker.read_bytes() == marker_content
+
+
+def test_terminal_rollback_capture_rejects_orphan_marker_snapshot_swap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    adapter, before, marker, marker_content, _bundle, cache = (
+        _terminal_orphan_marker_adapter(tmp_path)
+    )
+    original_copy = executor._copy_private_tree_exclusive
+
+    def copy_then_swap(
+        source: Path,
+        destination: Path,
+        *,
+        expected_digest: str,
+        crash_hook=lambda _phase: None,
+    ) -> None:
+        original_copy(
+            source,
+            destination,
+            expected_digest=expected_digest,
+            crash_hook=crash_hook,
+        )
+        if source == cache:
+            captured = (
+                destination
+                / executor.distribution.ORPHANED_INSTALLED_MARKER
+            )
+            captured.write_bytes(b"9999999999999")
+            captured.chmod(0o644)
+
+    monkeypatch.setattr(
+        executor,
+        "_copy_private_tree_exclusive",
+        copy_then_swap,
+    )
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_source_digest_mismatch",
+    ):
+        adapter.capture_terminal_rollback(before)
+    assert marker.read_bytes() == marker_content
+
+
+def test_terminal_rollback_install_rechecks_snapshot_at_each_cli_boundary(
+    tmp_path: Path,
+) -> None:
+    adapter, before, _marker, _marker_content, _bundle, _cache = (
+        _terminal_orphan_marker_adapter(tmp_path)
+    )
+    adapter.capture_terminal_rollback(before)
+    marketplace = adapter._rollback_root() / "marketplace"
+    calls: list[tuple[str, ...]] = []
+
+    def run(args: tuple[str, ...], **_kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            payload = (
+                marketplace
+                / "distribution"
+                / authority.MARKETPLACE_ID
+                / authority.PLUGIN_ID
+                / authority.TERMINAL_PLUGIN_VERSION
+                / "payload.json"
+            )
+            payload.write_bytes(b'{"payload":"swapped"}\n')
+            payload.chmod(0o600)
+        return None
+
+    adapter._run = run
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_source_drift",
+    ):
+        adapter._install_from(marketplace)
+    assert len(calls) == 1
+    assert calls[0][0:3] == ("plugin", "marketplace", "add")
+
+
+def test_terminal_rollback_rejects_in_call_marketplace_aba_effect(
+    tmp_path: Path,
+) -> None:
+    adapter, before, _marker, _marker_content, _bundle, cache = (
+        _terminal_orphan_marker_adapter(tmp_path)
+    )
+    adapter.capture_terminal_rollback(before)
+    marketplace = adapter._rollback_root() / "marketplace"
+    foreign = tmp_path / "foreign-marketplace"
+    held = tmp_path / "held-marketplace"
+    shutil.copytree(marketplace, foreign)
+    foreign_bundle = adapter._terminal_marketplace_bundle_root(foreign)
+    payload = foreign_bundle / "payload.json"
+    payload.write_bytes(b'{"payload":"foreign-aba"}\n')
+    payload.chmod(0o600)
+    shutil.rmtree(cache)
+    calls: list[tuple[str, ...]] = []
+
+    def run(args: tuple[str, ...], **_kwargs):
+        calls.append(args)
+        marketplace.rename(held)
+        foreign.rename(marketplace)
+        try:
+            if args[1] == "install":
+                shutil.copytree(
+                    adapter._terminal_marketplace_bundle_root(marketplace),
+                    cache,
+                )
+        finally:
+            marketplace.rename(foreign)
+            held.rename(marketplace)
+        return None
+
+    adapter._run = run
+    with pytest.raises(
+        executor.AdoptionError,
+        match="terminal_rollback_effect_mismatch",
+    ):
+        adapter._install_from(marketplace)
+    assert len(calls) == 2
+    assert executor._bounded_private_tree_digest(marketplace) == (
+        adapter._terminal_bridge_capture["source_digest"]
+    )
+    assert executor._terminal_install_projection_digest(cache) != (
+        adapter._terminal_bridge_capture["install_projection_digest"]
+    )
 
 
 @pytest.mark.parametrize(

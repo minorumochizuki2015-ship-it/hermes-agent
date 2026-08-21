@@ -541,6 +541,50 @@ def test_terminal_authority_consumer_replays_stored_envelope_before_ttl_denial(
     assert sent == [request_bytes + b"\n"]
 
 
+def test_ordinary_authority_consumer_replays_exact_prepared_request_after_ttl(
+    monkeypatch,
+) -> None:
+    request = _request()
+    request_bytes = adoption.canonical_bytes(request)
+    envelope_bytes = _envelope_bytes(request)
+    client = object()
+    sent: list[bytes] = []
+
+    monkeypatch.setattr(adoption._base, "_trusted_runtime_boundary", lambda: True)
+    monkeypatch.setattr(
+        adoption._base,
+        "_fixed_authority_socket_path",
+        lambda: "/private/fixture-authority.sock",
+    )
+    monkeypatch.setattr(adoption._base, "_NATIVE_TIME_MONOTONIC", lambda: 10.0)
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_CLASS", lambda *_args: client)
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_SETTIMEOUT", lambda *_args: None)
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_CONNECT", lambda *_args: None)
+    monkeypatch.setattr(
+        adoption._base,
+        "_NATIVE_SOCKET_SENDALL",
+        lambda _client, payload: sent.append(payload),
+    )
+    monkeypatch.setattr(
+        adoption._base,
+        "_NATIVE_SOCKET_RECV",
+        lambda *_args: envelope_bytes + b"\n",
+    )
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_CLOSE", lambda *_args: None)
+    monkeypatch.setattr(adoption._base, "_verify_sshsig", lambda *_args: True)
+
+    verified = adoption.request_plugin_adoption_decision(
+        request,
+        now=1200.0,
+        prepared_replay=True,
+    )
+
+    assert verified.allowed is True
+    assert verified.request_bytes == request_bytes
+    assert verified.envelope_bytes == envelope_bytes
+    assert sent == [request_bytes + b"\n"]
+
+
 def test_request_is_exact_stable_and_contains_no_path_or_command() -> None:
     first = _request()
     second = _request()
