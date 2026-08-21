@@ -690,7 +690,10 @@ class ReplayAwareTerminalIssuer:
         request_bytes = authority.canonical_bytes(request)
         self.calls.append(request_bytes)
         if self.request_bytes is None:
-            if prepared_replay:
+            if (
+                prepared_replay
+                and now >= float(request["actual"]["expires_at"])
+            ):
                 raise authority.PluginAdoptionAuthorityError(
                     "authority_replay_unrecoverable"
                 )
@@ -723,6 +726,86 @@ class ReplayAwareTerminalIssuer:
                 else now
             ),
         )
+
+
+class TerminalPublicationFault:
+    """Inject one write-boundary fault while recording visible-path exposure."""
+
+    def __init__(
+        self,
+        *,
+        target_leaves: set[str],
+        visible_path: Path,
+        fault: str,
+    ) -> None:
+        self.target_leaves = target_leaves
+        self.visible_path = visible_path
+        self.fault = fault
+        self.target_descriptors: set[int] = set()
+        self.visible_during_write: list[bool] = []
+        self.write_calls = 0
+
+    def install(self, monkeypatch) -> None:
+        original_open = executor.os.open
+        original_write = executor.os.write
+        original_fsync = executor.os.fsync
+        original_close = executor.os.close
+
+        def open_(*args, **kwargs):
+            path = os.fspath(args[0])
+            flags = args[1]
+            targeted = (
+                Path(path).name in self.target_leaves
+                and flags & os.O_WRONLY
+                and flags & os.O_CREAT
+            )
+            if targeted and self.fault == "open_error":
+                raise OSError(errno.EIO, "injected publication open failure")
+            descriptor = original_open(*args, **kwargs)
+            if targeted:
+                self.target_descriptors.add(descriptor)
+            return descriptor
+
+        def write_(descriptor: int, content: bytes) -> int:
+            if descriptor not in self.target_descriptors:
+                return original_write(descriptor, content)
+            self.write_calls += 1
+            self.visible_during_write.append(
+                self.visible_path.exists() or self.visible_path.is_symlink()
+            )
+            if self.fault == "crash_before_write":
+                raise executor.InjectedCrash(self.fault)
+            if self.fault in {"crash_after_partial", "write_error"}:
+                written = original_write(descriptor, content[:17])
+                if self.fault == "crash_after_partial":
+                    raise executor.InjectedCrash(self.fault)
+                raise OSError(errno.EIO, "injected publication write failure")
+            if self.fault == "short_write":
+                return original_write(descriptor, content[:17])
+            return original_write(descriptor, content)
+
+        def fsync_(descriptor: int) -> None:
+            if (
+                descriptor in self.target_descriptors
+                and self.fault == "file_fsync_error"
+            ):
+                raise OSError(errno.EIO, "injected publication fsync failure")
+            original_fsync(descriptor)
+
+        def close_(descriptor: int) -> None:
+            try:
+                original_close(descriptor)
+            finally:
+                self.target_descriptors.discard(descriptor)
+
+        monkeypatch.setattr(executor.os, "open", open_)
+        monkeypatch.setattr(executor.os, "write", write_)
+        monkeypatch.setattr(executor.os, "fsync", fsync_)
+        monkeypatch.setattr(executor.os, "close", close_)
+
+
+_PREPARED_TEMP_LEAF = ".terminal-journal.prepared.tmp"
+_STAGE_TEMP_LEAF = ".terminal-journal.stage.tmp"
 
 
 def _before(host: str) -> executor.HostState:
@@ -1963,6 +2046,638 @@ def test_terminal_authorized_crash_reuses_one_prepared_request_and_one_budget(
     ).hexdigest()
     assert record["host_mutation_count"] == 0
     assert stat.S_IMODE((root / "journal.json").stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "open_error",
+        "crash_before_write",
+        "crash_after_partial",
+        "write_error",
+        "file_fsync_error",
+    ],
+)
+def test_terminal_prepared_atomic_publication_recovers_byte_boundary_faults(
+    tmp_path: Path,
+    monkeypatch,
+    fault: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / fault
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    issuer = ReplayAwareTerminalIssuer()
+    ordinary = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    injected = TerminalPublicationFault(
+        target_leaves={"journal.json", _PREPARED_TEMP_LEAF},
+        visible_path=root / "journal.json",
+        fault=fault,
+    )
+    with monkeypatch.context() as fault_patch:
+        injected.install(fault_patch)
+        first = executor.PluginAdoptionExecutor(
+            state_root=root,
+            adapters=ordinary,
+            authority_request=_authority_result,
+            action="terminalize",
+            terminal_observers=terminal,
+            canonical_recovery_observer=recovery,
+            terminal_authority_request=issuer,
+            clock=lambda: 1000.0,
+        )
+        expected = (
+            executor.InjectedCrash
+            if fault.startswith("crash_")
+            else executor.AdoptionError
+        )
+        with pytest.raises(expected):
+            first.run()
+
+    if fault == "open_error":
+        assert injected.write_calls == 0
+        assert injected.visible_during_write == []
+    else:
+        assert injected.write_calls >= 1
+        assert injected.visible_during_write
+    assert not any(injected.visible_during_write)
+    assert issuer.consumed_budget == 0
+    assert issuer.calls == []
+    assert not (root / "journal.json").exists()
+    assert set(path.name for path in root.iterdir()) <= {_PREPARED_TEMP_LEAF}
+
+    resumed = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=ordinary,
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=issuer,
+        clock=lambda: 1001.0,
+    )
+    assert resumed.run()["status"] == "terminalized"
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+    assert len(issuer.decision_ids) == 1
+    assert len(issuer.transaction_ids) == 1
+    assert len(issuer.envelope_digests) == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+    assert [adapter.apply_count for adapter in ordinary] == [0, 0]
+    assert [adapter.rollback_count for adapter in ordinary] == [0, 0]
+    assert set(path.name for path in root.iterdir()) == {"journal.json"}
+
+
+def test_terminal_prepared_short_writes_never_expose_partial_journal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / "prepared-short-write"
+    injected = TerminalPublicationFault(
+        target_leaves={"journal.json", _PREPARED_TEMP_LEAF},
+        visible_path=root / "journal.json",
+        fault="short_write",
+    )
+    issuer = ReplayAwareTerminalIssuer()
+    with monkeypatch.context() as fault_patch:
+        injected.install(fault_patch)
+        run = executor.PluginAdoptionExecutor(
+            state_root=root,
+            adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+            authority_request=_authority_result,
+            action="terminalize",
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            terminal_authority_request=issuer,
+            clock=lambda: 1000.0,
+        )
+        assert run.run()["status"] == "terminalized"
+    assert injected.write_calls > 1
+    assert not any(injected.visible_during_write)
+    assert issuer.consumed_budget == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "open_error",
+        "crash_before_write",
+        "crash_after_partial",
+        "write_error",
+        "file_fsync_error",
+    ],
+)
+def test_terminal_stage_atomic_publication_recovers_one_consumed_budget(
+    tmp_path: Path,
+    monkeypatch,
+    fault: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / f"stage-{fault}"
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    issuer = ReplayAwareTerminalIssuer()
+    ordinary = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    injected = TerminalPublicationFault(
+        target_leaves={executor._TERMINAL_STAGE_LEAF, _STAGE_TEMP_LEAF},
+        visible_path=root / executor._TERMINAL_STAGE_LEAF,
+        fault=fault,
+    )
+    with monkeypatch.context() as fault_patch:
+        injected.install(fault_patch)
+        first = executor.PluginAdoptionExecutor(
+            state_root=root,
+            adapters=ordinary,
+            authority_request=_authority_result,
+            action="terminalize",
+            terminal_observers=terminal,
+            canonical_recovery_observer=recovery,
+            terminal_authority_request=issuer,
+            clock=lambda: 1000.0,
+        )
+        expected = (
+            executor.InjectedCrash
+            if fault.startswith("crash_")
+            else executor.AdoptionError
+        )
+        with pytest.raises(expected):
+            first.run()
+
+    if fault == "open_error":
+        assert injected.write_calls == 0
+        assert injected.visible_during_write == []
+    else:
+        assert injected.write_calls >= 1
+        assert injected.visible_during_write
+    assert not any(injected.visible_during_write)
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+    assert executor._read_terminal_prepared(root)["phase"] == "REQUEST_PREPARED"
+    assert not (root / executor._TERMINAL_STAGE_LEAF).exists()
+    assert set(path.name for path in root.iterdir()) <= {
+        "journal.json",
+        _STAGE_TEMP_LEAF,
+    }
+
+    resumed = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=ordinary,
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=issuer,
+        clock=lambda: 2000.0,
+    )
+    assert resumed.run()["status"] == "terminalized"
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 2
+    assert issuer.calls[0] == issuer.calls[1]
+    assert len(issuer.decision_ids) == 1
+    assert len(issuer.transaction_ids) == 1
+    assert len(issuer.envelope_digests) == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+    assert [adapter.apply_count for adapter in ordinary] == [0, 0]
+    assert [adapter.rollback_count for adapter in ordinary] == [0, 0]
+    assert set(path.name for path in root.iterdir()) == {"journal.json"}
+
+
+def test_terminal_stage_short_writes_never_expose_partial_stage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / "stage-short-write"
+    injected = TerminalPublicationFault(
+        target_leaves={executor._TERMINAL_STAGE_LEAF, _STAGE_TEMP_LEAF},
+        visible_path=root / executor._TERMINAL_STAGE_LEAF,
+        fault="short_write",
+    )
+    issuer = ReplayAwareTerminalIssuer()
+    with monkeypatch.context() as fault_patch:
+        injected.install(fault_patch)
+        run = executor.PluginAdoptionExecutor(
+            state_root=root,
+            adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+            authority_request=_authority_result,
+            action="terminalize",
+            terminal_observers=tuple(
+                TerminalMemoryObserver(_terminal_state(host))
+                for host in executor.HOST_ORDER
+            ),
+            canonical_recovery_observer=TerminalRecoveryObserver(
+                _canonical_recovery()
+            ),
+            terminal_authority_request=issuer,
+            clock=lambda: 1000.0,
+        )
+        assert run.run()["status"] == "terminalized"
+    assert injected.write_calls > 1
+    assert not any(injected.visible_during_write)
+    assert issuer.consumed_budget == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("phase", "temp_leaf", "authority_calls_after_crash"),
+    [
+        ("TERMINAL_PREPARED_TEMP_READY", _PREPARED_TEMP_LEAF, 0),
+        ("TERMINAL_STAGE_TEMP_READY", _STAGE_TEMP_LEAF, 1),
+    ],
+)
+def test_terminal_complete_private_temp_is_promoted_after_crash(
+    tmp_path: Path,
+    monkeypatch,
+    phase: str,
+    temp_leaf: str,
+    authority_calls_after_crash: int,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / phase
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    issuer = ReplayAwareTerminalIssuer()
+    ordinary = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+
+    def crash(crash_phase: str) -> None:
+        if crash_phase == phase:
+            raise executor.InjectedCrash(crash_phase)
+
+    first = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=ordinary,
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=issuer,
+        clock=lambda: 1000.0,
+        crash_hook=crash,
+    )
+    with pytest.raises(executor.InjectedCrash, match=phase):
+        first.run()
+    assert (root / temp_leaf).is_file()
+    assert stat.S_IMODE((root / temp_leaf).stat().st_mode) == 0o600
+    assert len(issuer.calls) == authority_calls_after_crash
+
+    resumed = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=ordinary,
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=(
+            issuer
+            if authority_calls_after_crash == 0
+            else lambda *_args, **_kwargs: pytest.fail(
+                "complete signed stage temp must not replay authority"
+            )
+        ),
+        clock=lambda: (
+            1001.0 if authority_calls_after_crash == 0 else 2000.0
+        ),
+    )
+    assert resumed.run()["status"] == "terminalized"
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+    assert len(issuer.decision_ids) == 1
+    assert len(issuer.transaction_ids) == 1
+    assert len(issuer.envelope_digests) == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+    assert [adapter.apply_count for adapter in ordinary] == [0, 0]
+    assert [adapter.rollback_count for adapter in ordinary] == [0, 0]
+    assert set(path.name for path in root.iterdir()) == {"journal.json"}
+
+
+def test_terminal_partial_prepared_temp_is_cleaned_once_and_restarts_fresh(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / "partial-prepared-residue"
+    root.mkdir(mode=0o700)
+    temp = root / _PREPARED_TEMP_LEAF
+    temp.write_bytes(b'{"after_state_digest"')
+    temp.chmod(0o600)
+    issuer = ReplayAwareTerminalIssuer()
+    run = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=tuple(
+            TerminalMemoryObserver(_terminal_state(host))
+            for host in executor.HOST_ORDER
+        ),
+        canonical_recovery_observer=TerminalRecoveryObserver(_canonical_recovery()),
+        terminal_authority_request=issuer,
+        clock=lambda: 1000.0,
+    )
+    assert run.run()["status"] == "terminalized"
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+    assert set(path.name for path in root.iterdir()) == {"journal.json"}
+
+
+@pytest.mark.parametrize("drift", ["mode", "symlink", "link"])
+def test_terminal_prepared_temp_metadata_drift_is_not_cleaned_or_promoted(
+    tmp_path: Path,
+    monkeypatch,
+    drift: str,
+) -> None:
+    root = tmp_path / drift
+    root.mkdir(mode=0o700)
+    temp = root / _PREPARED_TEMP_LEAF
+    if drift == "symlink":
+        outside = tmp_path / "outside-prepared-temp"
+        outside.write_bytes(b'{"partial"')
+        outside.chmod(0o600)
+        temp.symlink_to(outside)
+    elif drift == "link":
+        outside = tmp_path / "linked-prepared-temp"
+        outside.write_bytes(b'{"partial"')
+        outside.chmod(0o600)
+        os.link(outside, temp)
+    else:
+        temp.write_bytes(b'{"partial"')
+        temp.chmod(0o644)
+
+    run = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=tuple(
+            TerminalMemoryObserver(_terminal_state(host))
+            for host in executor.HOST_ORDER
+        ),
+        canonical_recovery_observer=TerminalRecoveryObserver(_canonical_recovery()),
+        terminal_authority_request=lambda *_args, **_kwargs: pytest.fail(
+            "metadata drift must fail before authority"
+        ),
+        clock=lambda: 1000.0,
+    )
+    with pytest.raises(executor.AdoptionError, match="terminal_temp_drift"):
+        run.run()
+    assert temp.exists() or temp.is_symlink()
+
+
+def test_terminal_complete_stage_temp_state_substitution_is_not_promoted(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    foreign_root = tmp_path / "foreign"
+    foreign_terminal = (
+        TerminalMemoryObserver(
+            replace(_terminal_state("codex"), cache_digest="9" * 64)
+        ),
+        TerminalMemoryObserver(_terminal_state("claude")),
+    )
+
+    def crash_foreign(phase: str) -> None:
+        if phase == "TERMINAL_STAGE_TEMP_READY":
+            raise executor.InjectedCrash(phase)
+
+    foreign = executor.PluginAdoptionExecutor(
+        state_root=foreign_root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=foreign_terminal,
+        canonical_recovery_observer=TerminalRecoveryObserver(_canonical_recovery()),
+        terminal_authority_request=ReplayAwareTerminalIssuer(),
+        clock=lambda: 1000.0,
+        crash_hook=crash_foreign,
+    )
+    with pytest.raises(executor.InjectedCrash, match="TERMINAL_STAGE_TEMP_READY"):
+        foreign.run()
+
+    root = tmp_path / "target"
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    issuer = ReplayAwareTerminalIssuer()
+
+    def crash_target(phase: str) -> None:
+        if phase == "TERMINAL_AUTHORIZED":
+            raise executor.InjectedCrash(phase)
+
+    target = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=issuer,
+        clock=lambda: 1000.0,
+        crash_hook=crash_target,
+    )
+    with pytest.raises(executor.InjectedCrash, match="TERMINAL_AUTHORIZED"):
+        target.run()
+
+    stage_temp = root / _STAGE_TEMP_LEAF
+    shutil.copyfile(foreign_root / _STAGE_TEMP_LEAF, stage_temp)
+    stage_temp.chmod(0o600)
+    resumed = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=lambda *_args, **_kwargs: pytest.fail(
+            "substituted complete stage temp must fail before authority replay"
+        ),
+        clock=lambda: 2000.0,
+    )
+    with pytest.raises(executor.AdoptionError, match="terminal_stage_drift"):
+        resumed.run()
+    assert stage_temp.is_file()
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+
+
+def test_terminal_repeated_partial_crashes_keep_one_bounded_temp_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / "bounded-residue"
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    issuer = ReplayAwareTerminalIssuer()
+    for attempt in range(3):
+        injected = TerminalPublicationFault(
+            target_leaves={"journal.json", _PREPARED_TEMP_LEAF},
+            visible_path=root / "journal.json",
+            fault="crash_after_partial",
+        )
+        with monkeypatch.context() as fault_patch:
+            injected.install(fault_patch)
+            run = executor.PluginAdoptionExecutor(
+                state_root=root,
+                adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+                authority_request=_authority_result,
+                action="terminalize",
+                terminal_observers=terminal,
+                canonical_recovery_observer=recovery,
+                terminal_authority_request=issuer,
+                clock=lambda: 1000.0 + attempt,
+            )
+            with pytest.raises(executor.InjectedCrash, match="crash_after_partial"):
+                run.run()
+        assert set(path.name for path in root.iterdir()) == {
+            _PREPARED_TEMP_LEAF
+        }
+        assert issuer.calls == []
+
+    final = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=issuer,
+        clock=lambda: 1004.0,
+    )
+    assert final.run()["status"] == "terminalized"
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+    assert set(path.name for path in root.iterdir()) == {"journal.json"}
+
+
+@pytest.mark.parametrize("publication", ["prepared", "stage", "final"])
+def test_terminal_directory_fsync_failure_leaves_only_complete_visible_state(
+    tmp_path: Path,
+    monkeypatch,
+    publication: str,
+) -> None:
+    monkeypatch.setattr(authority._base, "_verify_sshsig", lambda *_args: True)
+    root = tmp_path / publication
+    terminal = tuple(
+        TerminalMemoryObserver(_terminal_state(host))
+        for host in executor.HOST_ORDER
+    )
+    recovery = TerminalRecoveryObserver(_canonical_recovery())
+    issuer = ReplayAwareTerminalIssuer()
+    original_fsync = executor.os.fsync
+    failed = False
+
+    def fsync(descriptor: int) -> None:
+        nonlocal failed
+        info = os.fstat(descriptor)
+        stage_exists = (root / executor._TERMINAL_STAGE_LEAF).exists()
+        should_fail = (
+            not failed
+            and stat.S_ISDIR(info.st_mode)
+            and (
+                (
+                    publication == "prepared"
+                    and (root / "journal.json").exists()
+                    and not stage_exists
+                    and issuer.calls == []
+                )
+                or (
+                    publication == "stage"
+                    and stage_exists
+                    and len(issuer.calls) == 1
+                )
+                or (
+                    publication == "final"
+                    and (root / "journal.json").exists()
+                    and not stage_exists
+                    and len(issuer.calls) == 1
+                )
+            )
+        )
+        if should_fail:
+            failed = True
+            raise OSError(errno.EIO, "injected directory fsync failure")
+        original_fsync(descriptor)
+
+    with monkeypatch.context() as fault_patch:
+        fault_patch.setattr(executor.os, "fsync", fsync)
+        first = executor.PluginAdoptionExecutor(
+            state_root=root,
+            adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+            authority_request=_authority_result,
+            action="terminalize",
+            terminal_observers=terminal,
+            canonical_recovery_observer=recovery,
+            terminal_authority_request=issuer,
+            clock=lambda: 1000.0,
+        )
+        with pytest.raises(executor.AdoptionError):
+            first.run()
+    assert failed is True
+
+    if publication == "prepared":
+        assert executor._read_terminal_prepared(root)["phase"] == (
+            "REQUEST_PREPARED"
+        )
+        expected_authority_calls = 0
+        replay_authority = issuer
+        replay_clock = 1001.0
+    elif publication == "stage":
+        assert executor._read_terminal_prepared(root)["phase"] == (
+            "REQUEST_PREPARED"
+        )
+        assert executor._read_terminal_stage(root)["phase"] == "COMMITTED"
+        expected_authority_calls = 1
+        replay_authority = lambda *_args, **_kwargs: pytest.fail(
+            "complete visible stage must not replay authority"
+        )
+        replay_clock = 2000.0
+    else:
+        assert executor._read_terminal_journal(root)["phase"] == "COMMITTED"
+        expected_authority_calls = 1
+        replay_authority = lambda *_args, **_kwargs: pytest.fail(
+            "complete final journal must not replay authority"
+        )
+        replay_clock = 2000.0
+    assert len(issuer.calls) == expected_authority_calls
+
+    resumed = executor.PluginAdoptionExecutor(
+        state_root=root,
+        adapters=(MemoryAdapter("codex"), MemoryAdapter("claude")),
+        authority_request=_authority_result,
+        action="terminalize",
+        terminal_observers=terminal,
+        canonical_recovery_observer=recovery,
+        terminal_authority_request=replay_authority,
+        clock=lambda: replay_clock,
+    )
+    assert resumed.run()["status"] == "terminalized"
+    assert issuer.consumed_budget == 1
+    assert len(issuer.calls) == 1
+    assert executor._read_terminal_journal(root)["host_mutation_count"] == 0
+    assert set(path.name for path in root.iterdir()) == {"journal.json"}
 
 
 @pytest.mark.parametrize(

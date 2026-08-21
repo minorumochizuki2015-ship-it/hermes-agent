@@ -206,7 +206,9 @@ _TERMINAL_PREPARED_KEYS = _TERMINAL_JOURNAL_KEYS - frozenset({
     "envelope_digest",
     "envelope_b64",
 })
+_TERMINAL_PREPARED_TEMP_LEAF: Final = ".terminal-journal.prepared.tmp"
 _TERMINAL_STAGE_LEAF: Final = ".terminal-journal.stage"
+_TERMINAL_STAGE_TEMP_LEAF: Final = ".terminal-journal.stage.tmp"
 _TERMINAL_OPERATIONAL_STATES = frozenset({"qualification_pending", "orphaned"})
 _TERMINAL_REGISTRY_STATES = frozenset({"active", "installed", "inactive", "orphaned"})
 _TERMINAL_ANCHOR = "fp1-canonical-recovery"
@@ -2118,53 +2120,282 @@ def _write_journal(root: Path, record: dict[str, object]) -> None:
     _atomic_private_write(_journal_path(root), _journal_bytes(record))
 
 
-def _write_terminal_prepared_exclusive(
-    root: Path,
-    record: dict[str, object],
-) -> None:
-    """Durably publish the immutable exact request before authority transport."""
+def _terminal_file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_gid,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
-    _lstat_admitted_directory(root, create=True)
-    content = _terminal_prepared_bytes(record)
+
+def _open_terminal_root(root: Path, *, failure: str) -> int:
+    _lstat_admitted_directory(root)
     flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
+    descriptor = -1
     try:
-        descriptor = os.open(_journal_path(root), flags, 0o600)
-    except FileExistsError as exc:
-        raise AdoptionError("terminal_prepared_collision") from exc
-    except OSError as exc:
-        raise AdoptionError("terminal_prepared_publish_failed") from exc
-    try:
+        descriptor = os.open(root, flags)
         info = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise AdoptionError(failure) from exc
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        os.close(descriptor)
+        raise AdoptionError(failure)
+    return descriptor
+
+
+def _terminal_temp_snapshot(
+    root: Path,
+    leaf: str,
+) -> tuple[bytes, tuple[int, ...]]:
+    """Read one bounded deterministic residue through its admitted root fd."""
+
+    directory = _open_terminal_root(root, failure="terminal_temp_drift")
+    descriptor = -1
+    try:
+        info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.getuid()
             or stat.S_IMODE(info.st_mode) != 0o600
             or info.st_nlink != 1
-            or info.st_size != 0
+            or info.st_size > 512 * 1024
         ):
-            raise AdoptionError("terminal_prepared_publish_failed")
+            raise AdoptionError("terminal_temp_drift")
+        descriptor = os.open(
+            leaf,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory,
+        )
+        before = os.fstat(descriptor)
+        identity = _terminal_file_identity(before)
+        if identity != _terminal_file_identity(info):
+            raise AdoptionError("terminal_temp_drift")
+        content = bytearray()
+        while chunk := os.read(descriptor, 64 * 1024):
+            content.extend(chunk)
+            if len(content) > 512 * 1024:
+                raise AdoptionError("terminal_temp_drift")
+        after = os.fstat(descriptor)
+        path_after = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+        if (
+            identity != _terminal_file_identity(after)
+            or identity != _terminal_file_identity(path_after)
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        return bytes(content), identity
+    except OSError as exc:
+        raise AdoptionError("terminal_temp_drift") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory)
+
+
+def _remove_terminal_temp(
+    root: Path,
+    leaf: str,
+    identity: tuple[int, ...],
+) -> None:
+    directory = _open_terminal_root(root, failure="terminal_temp_drift")
+    try:
+        current = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+        if _terminal_file_identity(current) != identity:
+            raise AdoptionError("terminal_temp_drift")
+        os.unlink(leaf, dir_fd=directory)
+        os.fsync(directory)
+    except OSError as exc:
+        raise AdoptionError("terminal_temp_drift") from exc
+    finally:
+        os.close(directory)
+
+
+def _promote_terminal_temp_exclusive(
+    root: Path,
+    *,
+    temp_leaf: str,
+    visible_leaf: str,
+    content: bytes,
+    identity: tuple[int, ...],
+    failure: str,
+) -> None:
+    directory = _open_terminal_root(root, failure=failure)
+    try:
+        current = os.stat(temp_leaf, dir_fd=directory, follow_symlinks=False)
+        if _terminal_file_identity(current) != identity:
+            raise AdoptionError("terminal_temp_drift")
+        try:
+            os.stat(visible_leaf, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure)
+        _rename_directory_exclusive(directory, temp_leaf, visible_leaf)
+        os.fsync(directory)
+    except OSError as exc:
+        raise AdoptionError(failure) from exc
+    finally:
+        os.close(directory)
+    visible = root / visible_leaf
+    if _private_file_bytes(visible) != content:
+        raise AdoptionError(failure)
+
+
+def _atomic_terminal_publish_exclusive(
+    root: Path,
+    *,
+    temp_leaf: str,
+    visible_leaf: str,
+    content: bytes,
+    failure: str,
+    crash_hook: Callable[[str], None],
+    temp_ready_phase: str,
+) -> None:
+    """Write and fsync private bytes before exclusive atomic publication."""
+
+    directory = _open_terminal_root(root, failure=failure)
+    descriptor = -1
+    temp_created = False
+    preserve_temp = False
+    initial_identity: tuple[int, ...] | None = None
+    try:
+        try:
+            os.stat(visible_leaf, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure)
+        descriptor = os.open(
+            temp_leaf,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
+        temp_created = True
+        initial = os.fstat(descriptor)
+        initial_identity = _terminal_file_identity(initial)
+        if (
+            not stat.S_ISREG(initial.st_mode)
+            or initial.st_uid != os.getuid()
+            or stat.S_IMODE(initial.st_mode) != 0o600
+            or initial.st_nlink != 1
+            or initial.st_size != 0
+        ):
+            raise AdoptionError(failure)
         offset = 0
         while offset < len(content):
             written = os.write(descriptor, content[offset:])
             if written <= 0:
-                raise AdoptionError("terminal_prepared_publish_failed")
+                raise AdoptionError(failure)
             offset += written
         os.fsync(descriptor)
-    except OSError as exc:
-        raise AdoptionError("terminal_prepared_publish_failed") from exc
-    finally:
+        after = os.fstat(descriptor)
+        if (
+            after.st_dev != initial.st_dev
+            or after.st_ino != initial.st_ino
+            or after.st_mode != initial.st_mode
+            or after.st_uid != initial.st_uid
+            or after.st_nlink != 1
+            or after.st_size != len(content)
+        ):
+            raise AdoptionError(failure)
         os.close(descriptor)
-    try:
-        if _private_file_bytes(_journal_path(root)) != content:
-            raise AdoptionError("terminal_prepared_publish_failed")
-        _fsync_directory(root)
-    except OSError as exc:
-        raise AdoptionError("terminal_prepared_publish_failed") from exc
+        descriptor = -1
+        crash_hook(temp_ready_phase)
+        current = os.stat(temp_leaf, dir_fd=directory, follow_symlinks=False)
+        if (
+            current.st_dev != initial.st_dev
+            or current.st_ino != initial.st_ino
+            or current.st_mode != initial.st_mode
+            or current.st_uid != initial.st_uid
+            or current.st_nlink != 1
+            or current.st_size != len(content)
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        try:
+            os.stat(visible_leaf, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure)
+        _rename_directory_exclusive(directory, temp_leaf, visible_leaf)
+        temp_created = False
+        os.fsync(directory)
+    except BaseException as exc:
+        preserve_temp = not isinstance(exc, Exception)
+        if isinstance(exc, OSError):
+            raise AdoptionError(failure) from exc
+        raise
+    finally:
+        try:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temp_created and not preserve_temp:
+                try:
+                    current = os.stat(
+                        temp_leaf,
+                        dir_fd=directory,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        initial_identity is None
+                        or current.st_dev != initial_identity[0]
+                        or current.st_ino != initial_identity[1]
+                        or current.st_mode != initial_identity[2]
+                        or current.st_uid != initial_identity[3]
+                        or current.st_gid != initial_identity[4]
+                        or current.st_nlink != 1
+                        or current.st_size > len(content)
+                    ):
+                        raise AdoptionError("terminal_temp_drift")
+                    os.unlink(temp_leaf, dir_fd=directory)
+                    os.fsync(directory)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise AdoptionError("terminal_temp_drift") from exc
+        finally:
+            os.close(directory)
+    if _private_file_bytes(root / visible_leaf) != content:
+        raise AdoptionError(failure)
+
+
+def _write_terminal_prepared_exclusive(
+    root: Path,
+    record: dict[str, object],
+    *,
+    crash_hook: Callable[[str], None],
+) -> None:
+    """Durably publish the immutable exact request before authority transport."""
+
+    _lstat_admitted_directory(root, create=True)
+    _atomic_terminal_publish_exclusive(
+        root,
+        temp_leaf=_TERMINAL_PREPARED_TEMP_LEAF,
+        visible_leaf="journal.json",
+        content=_terminal_prepared_bytes(record),
+        failure="terminal_prepared_publish_failed",
+        crash_hook=crash_hook,
+        temp_ready_phase="TERMINAL_PREPARED_TEMP_READY",
+    )
 
 
 def _require_terminal_stage_matches_prepared(
@@ -2192,134 +2423,31 @@ def _replace_terminal_prepared_with_journal(
     _lstat_admitted_directory(root)
     expected = _terminal_prepared_bytes(prepared)
     content = _terminal_journal_bytes(committed)
-    if _private_file_bytes(_journal_path(root)) != expected:
-        raise AdoptionError("terminal_prepared_drift")
-    directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    directory = os.open(root, directory_flags)
-    temporary = _TERMINAL_STAGE_LEAF
-    descriptor = -1
-    published = False
-    stage_durable = False
     try:
-        root_info = os.fstat(directory)
-        if (
-            not stat.S_ISDIR(root_info.st_mode)
-            or root_info.st_uid != os.getuid()
-            or stat.S_IMODE(root_info.st_mode) != 0o700
-        ):
-            raise AdoptionError("terminal_prepared_drift")
-        prepared_info = os.stat(
+        prepared_bytes, _prepared_identity = _terminal_temp_snapshot(
+            root,
             "journal.json",
-            dir_fd=directory,
-            follow_symlinks=False,
         )
-        prepared_identity = (
-            prepared_info.st_dev,
-            prepared_info.st_ino,
-            prepared_info.st_mode,
-            prepared_info.st_uid,
-            prepared_info.st_gid,
-            prepared_info.st_nlink,
-            prepared_info.st_size,
-            prepared_info.st_mtime_ns,
-            prepared_info.st_ctime_ns,
-        )
-        if (
-            not stat.S_ISREG(prepared_info.st_mode)
-            or prepared_info.st_uid != os.getuid()
-            or stat.S_IMODE(prepared_info.st_mode) != 0o600
-            or prepared_info.st_nlink != 1
-            or prepared_info.st_size != len(expected)
-        ):
-            raise AdoptionError("terminal_prepared_drift")
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory,
-        )
-        staged_info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(staged_info.st_mode)
-            or staged_info.st_uid != os.getuid()
-            or stat.S_IMODE(staged_info.st_mode) != 0o600
-            or staged_info.st_nlink != 1
-            or staged_info.st_size != 0
-        ):
-            raise AdoptionError("terminal_journal_publish_failed")
-        offset = 0
-        while offset < len(content):
-            written = os.write(descriptor, content[offset:])
-            if written <= 0:
-                raise AdoptionError("terminal_journal_publish_failed")
-            offset += written
-        os.fsync(descriptor)
-        after_write = os.fstat(descriptor)
-        if (
-            after_write.st_dev != staged_info.st_dev
-            or after_write.st_ino != staged_info.st_ino
-            or after_write.st_mode != staged_info.st_mode
-            or after_write.st_uid != staged_info.st_uid
-            or after_write.st_nlink != 1
-            or after_write.st_size != len(content)
-        ):
-            raise AdoptionError("terminal_journal_publish_failed")
-        os.close(descriptor)
-        descriptor = -1
-        if _private_file_bytes(_terminal_stage_path(root)) != content:
-            raise AdoptionError("terminal_journal_publish_failed")
-        os.fsync(directory)
-        stage_durable = True
-        crash_hook("TERMINAL_FINAL_READY")
-        if _private_file_bytes(_journal_path(root)) != expected:
-            raise AdoptionError("terminal_prepared_drift")
-        current_info = os.stat(
-            "journal.json",
-            dir_fd=directory,
-            follow_symlinks=False,
-        )
-        current_identity = (
-            current_info.st_dev,
-            current_info.st_ino,
-            current_info.st_mode,
-            current_info.st_uid,
-            current_info.st_gid,
-            current_info.st_nlink,
-            current_info.st_size,
-            current_info.st_mtime_ns,
-            current_info.st_ctime_ns,
-        )
-        if current_identity != prepared_identity:
-            raise AdoptionError("terminal_prepared_drift")
-        os.replace(
-            temporary,
-            "journal.json",
-            src_dir_fd=directory,
-            dst_dir_fd=directory,
-        )
-        published = True
-        crash_hook("TERMINAL_FINAL_REPLACED")
-        os.fsync(directory)
-    except OSError as exc:
-        raise AdoptionError("terminal_journal_publish_failed") from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if not published and not stage_durable:
-            try:
-                os.unlink(temporary, dir_fd=directory)
-            except FileNotFoundError:
-                pass
-        os.close(directory)
-    if _private_file_bytes(_journal_path(root)) != content:
-        raise AdoptionError("terminal_journal_publish_failed")
+    except AdoptionError as exc:
+        raise AdoptionError("terminal_prepared_drift") from exc
+    if prepared_bytes != expected:
+        raise AdoptionError("terminal_prepared_drift")
+    _atomic_terminal_publish_exclusive(
+        root,
+        temp_leaf=_TERMINAL_STAGE_TEMP_LEAF,
+        visible_leaf=_TERMINAL_STAGE_LEAF,
+        content=content,
+        failure="terminal_journal_publish_failed",
+        crash_hook=crash_hook,
+        temp_ready_phase="TERMINAL_STAGE_TEMP_READY",
+    )
+    crash_hook("TERMINAL_FINAL_READY")
+    _replace_existing_terminal_stage(
+        root,
+        prepared,
+        committed,
+        crash_hook=crash_hook,
+    )
 
 
 def _replace_existing_terminal_stage(
@@ -5788,7 +5916,114 @@ class PluginAdoptionExecutor:
             self.canonical_recovery_observer.observe()
         )
 
+    def _reconcile_terminal_publication_residue(self) -> None:
+        """Promote complete deterministic temps or remove only partial residue."""
+
+        try:
+            names = frozenset(path.name for path in self.root.iterdir())
+        except OSError as exc:
+            raise AdoptionError("terminal_temp_drift") from exc
+        temp_names = names & {
+            _TERMINAL_PREPARED_TEMP_LEAF,
+            _TERMINAL_STAGE_TEMP_LEAF,
+        }
+        if not temp_names:
+            return
+        if len(temp_names) != 1:
+            raise AdoptionError("terminal_temp_drift")
+        temp_leaf = next(iter(temp_names))
+        if temp_leaf == _TERMINAL_PREPARED_TEMP_LEAF:
+            if names != {_TERMINAL_PREPARED_TEMP_LEAF}:
+                raise AdoptionError("terminal_temp_drift")
+            content, identity = _terminal_temp_snapshot(self.root, temp_leaf)
+            try:
+                value = json.loads(content.decode("ascii"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _remove_terminal_temp(self.root, temp_leaf, identity)
+                return
+            if type(value) is not dict:
+                raise AdoptionError("terminal_temp_drift")
+            try:
+                canonical = _terminal_prepared_bytes(value)
+            except AdoptionError as exc:
+                raise AdoptionError("terminal_temp_drift") from exc
+            if canonical != content:
+                raise AdoptionError("terminal_temp_drift")
+            states = [
+                TerminalHostState.from_projection(item, expected_host=host)
+                for item, host in zip(
+                    value["before_states"],
+                    HOST_ORDER,
+                    strict=True,
+                )
+            ]
+            recovery = CanonicalRecoveryState.from_projection(
+                value["canonical_recovery"]
+            )
+            if self._observe_terminal_states() != states:
+                raise AdoptionError("terminal_current_state_drift")
+            if self._observe_canonical_recovery() != recovery:
+                raise AdoptionError("canonical_recovery_drift")
+            _promote_terminal_temp_exclusive(
+                self.root,
+                temp_leaf=temp_leaf,
+                visible_leaf="journal.json",
+                content=content,
+                identity=identity,
+                failure="terminal_prepared_publish_failed",
+            )
+            return
+
+        if names != {"journal.json", _TERMINAL_STAGE_TEMP_LEAF}:
+            raise AdoptionError("terminal_temp_drift")
+        prepared = _read_terminal_prepared(self.root)
+        content, identity = _terminal_temp_snapshot(self.root, temp_leaf)
+        try:
+            value = json.loads(content.decode("ascii"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            _remove_terminal_temp(self.root, temp_leaf, identity)
+            return
+        if type(value) is not dict:
+            raise AdoptionError("terminal_temp_drift")
+        try:
+            canonical = _terminal_journal_bytes(value)
+        except AdoptionError as exc:
+            raise AdoptionError("terminal_temp_drift") from exc
+        if canonical != content:
+            raise AdoptionError("terminal_temp_drift")
+        _require_terminal_stage_matches_prepared(prepared, value)
+        verified = _reverify_terminal_journal(value)
+        if (
+            not verified.allowed
+            or verified.request_digest != prepared["request_digest"]
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        states = [
+            TerminalHostState.from_projection(item, expected_host=host)
+            for item, host in zip(
+                prepared["before_states"],
+                HOST_ORDER,
+                strict=True,
+            )
+        ]
+        recovery = CanonicalRecoveryState.from_projection(
+            prepared["canonical_recovery"]
+        )
+        if self._observe_terminal_states() != states:
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+        _promote_terminal_temp_exclusive(
+            self.root,
+            temp_leaf=temp_leaf,
+            visible_leaf=_TERMINAL_STAGE_LEAF,
+            content=content,
+            identity=identity,
+            failure="terminal_journal_publish_failed",
+        )
+
     def _run_terminalize_under_locks(self) -> dict[str, object]:
+        self._reconcile_terminal_publication_residue()
         journal = _journal_path(self.root)
         prepared_replay = False
         if journal.exists() or journal.is_symlink():
@@ -5932,7 +6167,11 @@ class PluginAdoptionExecutor:
                 states=states,
                 recovery=recovery,
             )
-            _write_terminal_prepared_exclusive(self.root, prepared)
+            _write_terminal_prepared_exclusive(
+                self.root,
+                prepared,
+                crash_hook=self.crash_hook,
+            )
             self.crash_hook("TERMINAL_REQUEST_PREPARED")
 
         request_bytes = base64.b64decode(
