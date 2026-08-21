@@ -1,0 +1,475 @@
+{
+  "mk_id": "MK733J-N",
+  "record_type": "gpt56_model_neutral_decision_os_fixed_workpack",
+  "version": "1.0.0",
+  "status": "fixed_sol_ultra_workpack_for_terra_high_implementation",
+  "base_commit": "cf6c6ac72970838e261f78fdb05826831bf8b86d",
+  "support_work_progress_credit": 0,
+  "ui_or_remote_ops_mutation": false,
+  "hidden_chain_of_thought_collection": false,
+  "grand_goal": {
+    "id": "GG-MK733J-N-GPT56-FABLE5-DECISION-OS",
+    "capability_goal": "Route non-trivial work through an automatically firing, measurable, model-neutral Decision OS that selects qualified capacity, escalates uncertainty, and learns from real outcomes without requiring repeated user correction.",
+    "phase_span": ["MK733J", "MK733K", "MK733L", "MK733M", "MK733N"],
+    "continue_rule": "continue_after_local_pass_while_safe_local_phase_work_remains",
+    "external_stop_boundary": [
+      "protected_branch_merge_or_release",
+      "credentials_oauth_paid_provider_or_runtime_activation",
+      "ui_or_remote_ops_mutation",
+      "missing_model_access",
+      "user_final_acceptance",
+      "unchanged_blocker_without_new_evidence"
+    ],
+    "insufficient_single_task": [
+      "model_profile_only",
+      "hooks_only",
+      "agent_toml_only",
+      "fixture_or_validator_only",
+      "genome_record_only",
+      "skill_marker_only"
+    ]
+  },
+  "owner_topology": {
+    "sol_ultra": {
+      "role": "architect_cmd_and_final_independent_auditor",
+      "implementation_mutation": "workpack_only_then_read_only_final_diff_audit",
+      "must_not": ["self_accept_own_implementation", "silently_patch_terra_during_final_audit"]
+    },
+    "terra_high": {
+      "role": "bounded_mk733j_through_n_implementer",
+      "implementation_mutation": "allowed_within_fixed_workpack",
+      "must_not": ["lower_thresholds", "ready_or_merge_pr", "claim_global_model_parity"]
+    },
+    "local_or_lower_cost_models": {
+      "role": "qualified_task_class_only",
+      "implementation_mutation": "allowed_only_when_current_profile_qualification_and_risk_ceiling_permit",
+      "must_not": ["self_declare_identity", "operate_on_stale_qualification", "avoid_required_escalation"]
+    }
+  },
+  "design_authority": {
+    "fable5_mode": "bounded_design_authority",
+    "high_confidence_finding_may_be_weakened_without_evidence": false,
+    "override_requires": ["repo_conflict_ref", "measured_outcome_ref", "replacement_rule", "override_reason"],
+    "runtime_dependency_on_fable5": false,
+    "repo_and_user_authority_preserved": true
+  },
+  "official_source_basis": [
+    {
+      "source": "https://openai.com/index/previewing-gpt-5-6-sol/",
+      "use": "Sol flagship; Terra balanced; Luna fast; Ultra uses subagents; model label is not repo-specific qualification"
+    },
+    {
+      "source": "https://developers.openai.com/api/docs/guides/latest-model",
+      "use": "select model and reasoning effort by measured workload quality; shorter prompts can improve efficiency"
+    },
+    {
+      "source": "https://learn.chatgpt.com/docs/hooks",
+      "use": "project hooks are supported; PreToolUse is not a complete enforcement boundary"
+    },
+    {
+      "source": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+      "use": "project custom agents can declare model, reasoning effort, sandbox and instructions"
+    }
+  ],
+  "product_reality_first_goal_contract": {
+    "final_user_outcome": "The user receives work whose necessity, user benefit, alternatives, route, cost, recurrence risk, and claim boundary were evaluated before cost and whose execution capacity was empirically qualified.",
+    "realistic_operation_loop": [
+      "user_request",
+      "compact_context",
+      "intent_and_goal_lock",
+      "preflight_receipt",
+      "capability_router",
+      "bounded_execution",
+      "independent_audit",
+      "outcome_evaluation",
+      "dna_lifecycle_update"
+    ],
+    "implemented_behavior_required": [
+      "automatic_project_firing_surfaces",
+      "safe_machine_readable_receipts",
+      "task_class_model_qualification",
+      "stop_and_escalation",
+      "outcome_based_fitness",
+      "canonical_and_plugin_skill_propagation"
+    ],
+    "primary_evidence": [
+      "observed_route_decision",
+      "safe_receipt",
+      "actual_patch_and_tests",
+      "seeded_mutation_rejection",
+      "independent_defect_recall",
+      "post_run_outcome"
+    ],
+    "forbidden_substitutes": [
+      "model_label",
+      "reasoning_mode",
+      "prompt_length",
+      "self_reported_confidence",
+      "marker_presence",
+      "hook_installation",
+      "fixture_count",
+      "validator_pass",
+      "ci_green",
+      "pr_state",
+      "fable5_prose"
+    ]
+  },
+  "mandatory_firing_layers": {
+    "hooks": ["SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "Stop"],
+    "receipt_launcher": true,
+    "committed_decision_record_linkage": true,
+    "ci_and_contract_suite": true,
+    "closeout_receipt": true,
+    "hooks_only_sufficient": false,
+    "pretooluse_complete_enforcement_boundary": false,
+    "activation_stages": ["shadow_test", "enforcement_test", "fresh_trusted_session"],
+    "rollback_required": true,
+    "receipt_forbidden_content": [
+      "raw_user_prompt",
+      "raw_transcript",
+      "hidden_chain_of_thought",
+      "secret",
+      "credential",
+      "token"
+    ]
+  },
+  "model_profile_contract": {
+    "required_fields": [
+      "profile_id",
+      "runtime_model_identity_pattern",
+      "reasoning_effort",
+      "allowed_task_classes",
+      "forbidden_task_classes",
+      "risk_ceiling",
+      "mutation_permissions",
+      "qualification_suite_version",
+      "qualification_score",
+      "qualification_digest",
+      "qualified_at",
+      "expires_at",
+      "escalation_triggers",
+      "fallback_profile",
+      "context_compiler_version",
+      "workpack_digest",
+      "non_claims"
+    ],
+    "default_profiles": [
+      "sol_ultra_architect_cmd",
+      "terra_high_implementer",
+      "terra_readonly_explorer",
+      "sol_independent_reviewer",
+      "local_qualified_worker"
+    ],
+    "identity_unverified_behavior": "read_only_or_stop_and_escalate",
+    "qualification_scope": "profile_task_class_version_specific_and_expiring",
+    "blanket_model_parity_allowed": false
+  },
+  "dispatch_handshake_contract": {
+    "required_fields": [
+      "work_id",
+      "goal_ref",
+      "workpack_digest",
+      "model_identity_state",
+      "profile_id",
+      "profile_digest",
+      "qualification_result_ref",
+      "context_digest",
+      "task_class",
+      "risk_class",
+      "allowed_tools",
+      "budget",
+      "return_schema",
+      "readback_required",
+      "auditor_independent_from_implementer",
+      "stop_and_escalation_rules",
+      "non_claims"
+    ],
+    "self_declared_identity_sufficient": false,
+    "same_worker_and_final_auditor_allowed": false,
+    "user_manual_relay_required": false
+  },
+  "context_compiler_contract": {
+    "select_by": ["task_class", "incident_class", "authority_lane", "claim_type"],
+    "required_output": ["policy_ids", "brief_requirements", "non_claims", "workpack_digest", "stop_and_escalation_rules"],
+    "required_policy_and_nonclaim_recall": 1.0,
+    "irrelevant_policy_ref_max": 0,
+    "maximum_baseline_context_ratio": 0.5,
+    "maximum_decision_score_regression_points": 2,
+    "forbidden_output": ["private_prompt", "hidden_reasoning", "secret", "raw_transcript"]
+  },
+  "phases": [
+    {
+      "phase_id": "MK733J",
+      "objective": "model_capability_profiles_qualification_and_routing",
+      "user_capability_delta": "work_is_routed_by_measured_task_class_capability_risk_cost_and_escalation_need",
+      "required_outputs": [
+        "model_profile_schema_and_live_profiles",
+        "task_taxonomy_and_risk_classes",
+        "public_observable_decision_corpus",
+        "mutation_and_anti_cheat_corpus",
+        "deterministic_grader",
+        "capability_router",
+        "dispatch_handshake"
+      ],
+      "stop_condition": "model_identity_or_reproducible_evaluator_unavailable"
+    },
+    {
+      "phase_id": "MK733K",
+      "objective": "layered_mandatory_preflight_firing",
+      "user_capability_delta": "nontrivial_mutation_cannot_silently_start_without_decision_policy_budget_and_route_receipts",
+      "required_outputs": [
+        "project_hooks",
+        "safe_receipt_issuer_and_verifier",
+        "committed_record_linkage",
+        "ci_and_suite_integration",
+        "activation_and_rollback_runbook"
+      ],
+      "stop_condition": "enforcement_deadlock_or_no_safe_rollback"
+    },
+    {
+      "phase_id": "MK733L",
+      "objective": "custom_agents_dispatch_and_escalation",
+      "user_capability_delta": "implementation_support_and_independent_audit_handoff_no_longer_requires_user_routing",
+      "required_outputs": [
+        "project_custom_agents",
+        "bounded_dispatch_envelopes",
+        "automatic_escalation",
+        "no_added_value_self_demotion",
+        "subagent_role_dispositions"
+      ],
+      "stop_condition": "auditor_independence_or_readback_cannot_be_proven"
+    },
+    {
+      "phase_id": "MK733M",
+      "objective": "outcome_based_dna_fitness",
+      "user_capability_delta": "rule_usefulness_false_blocks_and_missed_blocks_are_inspectable_and_drive_explicit_lifecycle_decisions",
+      "required_outputs": [
+        "outcome_record_schema",
+        "deterministic_outcome_aggregation",
+        "fitness_metric_migration",
+        "lifecycle_transition_and_rollback"
+      ],
+      "stop_condition": "only_citation_or_fixture_data_is_available"
+    },
+    {
+      "phase_id": "MK733N",
+      "objective": "skill_ecosystem_distribution_cross_model_calibration_and_final_audit_intake",
+      "user_capability_delta": "goal_selection_dispatch_and_closeout_use_one_model_neutral_contract_without_user_reminder",
+      "required_outputs": [
+        "canonical_and_plugin_skill_updates",
+        "distribution_and_trigger_pipeline_checks",
+        "compact_context_evaluation",
+        "end_to_end_scenarios",
+        "terra_closeout_and_sol_audit_request"
+      ],
+      "stop_condition": "threshold_or_distribution_gap_remains_unresolved"
+    }
+  ],
+  "acceptance_thresholds": {
+    "critical_false_accepts_max": 0,
+    "required_escalation_recall_min": 1.0,
+    "weighted_disposition_match_min": 0.95,
+    "required_implementation_tests_pass_min": 1.0,
+    "unauthorized_changed_files_max": 0,
+    "seeded_mutation_rejection_min": 0.9,
+    "critical_audit_defect_recall_min": 1.0,
+    "overall_audit_defect_recall_min": 0.9,
+    "audit_false_positive_rate_max": 0.1,
+    "budget_bypasses_max": 0,
+    "mandatory_stop_recall_min": 1.0,
+    "unnecessary_sol_escalation_rate_max": 0.15,
+    "required_policy_nonclaim_recall_min": 1.0,
+    "irrelevant_policy_refs_max": 0,
+    "compiled_context_baseline_ratio_max": 0.5,
+    "decision_score_regression_points_max": 2
+  },
+  "mandatory_adversarial_cases": [
+    "shape_complete_nonsense",
+    "copied_gold_after_context_change",
+    "duplicate_or_irrelevant_options",
+    "existing_but_unrelated_fixture",
+    "self_declared_model_identity",
+    "stale_qualification",
+    "cheaper_unqualified_routing",
+    "same_worker_and_final_auditor",
+    "always_escalate_to_sol",
+    "hooks_only_enforcement",
+    "missing_stale_or_wrong_workpack_receipt",
+    "raw_prompt_or_transcript_in_receipt",
+    "citation_or_gene_count_as_success",
+    "fixture_or_validator_as_observed_effective",
+    "docs_canonical_plugin_or_marker_only_skill_propagation"
+  ],
+  "skill_ecosystem_decisions": [
+    {
+      "skill": "grand-goal-native-goal-formulation",
+      "decision": "improve_and_connect_trigger",
+      "required_delta": "delegated_goal_requires_model_profile_qualification_compact_context_dispatch_handshake_and_final_audit_return"
+    },
+    {
+      "skill": "goal-audit-checklist",
+      "decision": "improve_and_connect_trigger",
+      "required_delta": "nontrivial_work_requires_layered_preflight_and_closeout_receipts_before_supported_claims"
+    },
+    {
+      "skill": "best-evaluate",
+      "decision": "improve_and_connect_trigger",
+      "required_delta": "model_route_and_escalation_are_part_of_best_action_selection"
+    },
+    {
+      "skill": "agent-dispatch",
+      "decision": "improve_and_connect_trigger",
+      "required_delta": "dispatch_handshake_carries_profile_qualification_runtime_identity_context_and_audit_independence"
+    },
+    {
+      "skill": "fable5-derived-advisory-synthesis",
+      "decision": "improve_and_connect_trigger",
+      "required_delta": "bounded_design_authority_and_observable_cross_model_evaluation_without_future_fable5_dependency"
+    },
+    {
+      "skill": "skill-health-check_and_skill-quality-review",
+      "decision": "integrate",
+      "required_delta": "detect_docs_only_canonical_only_plugin_only_marker_only_and_unverified_runtime_cache_claims"
+    }
+  ],
+  "subagent_role_dispositions": [
+    {
+      "role_id": "SUB-001",
+      "decision": "keep_dormant_until_explicit_ui_authority",
+      "reason": "same_surface_review_is_ui_specific_and_ui_is_out_of_scope"
+    },
+    {
+      "role_id": "SUB-002",
+      "decision": "replace_default_llm_role_with_deterministic_intent_goal_lock_optional_review_on_ambiguity",
+      "reason": "every_goal_needs_the_check_but_not_every_goal_needs_an_llm_subagent"
+    },
+    {
+      "role_id": "SUB-003",
+      "decision": "retire_llm_role_replace_with_deterministic_automation_and_ci",
+      "reason": "suite_monitoring_is_deterministic_and_should_not_consume_llm_judgment"
+    }
+  ],
+  "evaluation_contract": {
+    "grade_observable_outputs_only": true,
+    "hidden_chain_of_thought_required": false,
+    "public_regression_corpus_visible_to_implementer": true,
+    "sol_held_final_audit_cases_not_in_implementation_prompt": true,
+    "fable5_response_anatomy_used_as_gold_behavior_source": true,
+    "model_label_or_benchmark_marketing_used_as_pass": false
+  },
+  "best_evaluate": {
+    "source_requirement_basis": "user_20260710_gpt56_update_and_model_neutral_full_implementation_direction",
+    "current_biggest_blocker": "decision_preflight_is_manual_and_model_capability_routing_is_absent",
+    "selected_option_id": "sol_fixed_workpack_then_terra_high_implementation_then_sol_final_audit",
+    "candidate_options": [
+      {
+        "option_id": "sol_fixed_workpack_then_terra_high_implementation_then_sol_final_audit",
+        "option_class": "selected_option",
+        "reason": "separates_high_ambiguity_architecture_from_bounded_implementation_and_independent_audit"
+      },
+      {
+        "option_id": "sol_implements_everything",
+        "option_class": "higher_cost_option",
+        "reason": "weakens_cost_efficiency_and_auditor_independence"
+      },
+      {
+        "option_id": "terra_without_fixed_workpack",
+        "option_class": "lower_setup_option",
+        "reason": "risks_threshold_drift_and_incomplete_scope"
+      },
+      {
+        "option_id": "hold_and_do_not_proceed",
+        "option_class": "no_action_stop_option",
+        "reason": "rejected_because_concrete_repo_local_gaps_are_known_and_implementable"
+      },
+      {
+        "option_id": "ui_or_remote_ops_or_more_evidence",
+        "option_class": "wrong_lane_or_evidence_only_option",
+        "reason": "repeats_target_substitution_or_evidence_game"
+      }
+    ],
+    "user_experience_delta": "fewer_user_corrections_less_manual_routing_and_lower_cost_without_sacrificing_high_risk_decision_quality",
+    "same_surface_visible_operation_threshold": "not_applicable_non_ui_control_work",
+    "sub_agent_trigger_status": "required_for_independent_architecture_review_and_final_diff_audit_not_for_deterministic_suite_monitoring",
+    "claim_boundary": "support_control_and_work_system_behavior_only"
+  },
+  "task_checklist_sync": {
+    "task_register_ref": "mk733j-n-gpt56-model-neutral-decision-os",
+    "checklist_ref": "docs/ops/CHECKLIST_MK733J_GPT56_MODEL_NEUTRAL_DECISION_OS_20260710.md",
+    "next_selected_action": "create_fresh_terra_high_worktree_from_fixed_workpack_commit_and_implement_mk733j_through_n",
+    "rejected_work_items": [
+      "ui_or_remote_ops_adaptation",
+      "model_label_parity_claim",
+      "hooks_only_enforcement",
+      "citation_only_dna",
+      "recurring_external_fable5_dependency",
+      "evidence_only_completion_packet"
+    ],
+    "blocker_delta": "manual_preflight_model_routing_and_outcome_fitness_gaps_are_concrete",
+    "evidence_substitution_denied": true,
+    "closeout_non_claims_present": true
+  },
+  "claim_boundary_resolution_ledger": [
+    {
+      "claim": "fable5_equivalent_observable_decision_behavior",
+      "current_status": "scheduled_evaluation",
+      "resolution_phase": "MK733J_and_MK733N",
+      "minimum_confirmation": "thresholded_public_and_sol_held_cases",
+      "owner": "sol_final_audit"
+    },
+    {
+      "claim": "mandatory_prework_firing",
+      "current_status": "scheduled_implementation_and_activation",
+      "resolution_phase": "MK733K_and_MK733N",
+      "minimum_confirmation": "layered_enforcement_and_trusted_fresh_session",
+      "owner": "terra_implementation_user_cmd_activation_sol_audit"
+    },
+    {
+      "claim": "local_model_capability",
+      "current_status": "not_claimed_globally",
+      "resolution_phase": "MK733J_MK733L_MK733N",
+      "minimum_confirmation": "profile_task_class_qualification",
+      "owner": "capability_router"
+    },
+    {
+      "claim": "outcome_driven_self_improvement",
+      "current_status": "scheduled_implementation",
+      "resolution_phase": "MK733M_and_MK733N",
+      "minimum_confirmation": "real_outcome_rows_and_lifecycle_evidence",
+      "owner": "genome_owner"
+    },
+    {
+      "claim": "ui_product_final_acceptance",
+      "current_status": "out_of_scope",
+      "resolution_phase": "separate_authorized_lane",
+      "minimum_confirmation": "same_surface_user_review",
+      "owner": "user"
+    }
+  ],
+  "fixed_source_refs": [
+    "docs/ops/MK733J_WORKPACK_INDEX_20260710.md",
+    "docs/ops/MK733J_GPT56_MODEL_NEUTRAL_DECISION_OS_GRAND_GOAL_20260710.md",
+    "docs/ops/ARCHITECTURE_MK733J_GPT56_MODEL_NEUTRAL_DECISION_OS_20260710.md",
+    "docs/ops/PLAN_MK733J_GPT56_MODEL_NEUTRAL_DECISION_OS_20260710.md",
+    "docs/ops/CHECKLIST_MK733J_GPT56_MODEL_NEUTRAL_DECISION_OS_20260710.md",
+    "docs/ops/MK733J_TERRA_HIGH_IMPLEMENTATION_PROMPT_20260710.md",
+    "artifacts/MK733B_FABLE5_MULTI_FILE_RETURN_20260709/00_INDEX_AND_TRACEABILITY.md",
+    "artifacts/MK733B_FABLE5_MULTI_FILE_RETURN_20260709/06_FABLE5_OS_ARCHITECTURE.md",
+    "artifacts/MK733B_FABLE5_MULTI_FILE_RETURN_20260709/13_OTHER_LLM_REPRODUCIBILITY_CONTRACT.yaml",
+    "research/mk675/fable5_decision_os/mk733g_decision_os_firing_surfaces.json",
+    "research/mk675/fable5_decision_os/mk733h_final_goal_reverse_plan_utilization_audit.json"
+  ],
+  "non_claims": [
+    "no_blanket_fable5_sol_terra_luna_or_local_model_parity",
+    "no_hidden_chain_of_thought_extraction",
+    "no_ui_mutation_or_ui_pr",
+    "no_remote_ops_mutation",
+    "no_runtime_or_permanent_firing_from_workpack",
+    "no_product_progress_from_workpack_validator_ci_or_pr_state",
+    "no_observed_effective_prevention",
+    "no_runtime_readiness",
+    "no_final_product_user_acceptance",
+    "no_deploy_release_public_operator_promotion",
+    "no_a3_plus_autonomy"
+  ]
+}

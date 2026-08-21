@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/runtime/maestro_prompt_context/.codex/hooks/mk733j_prompt_task_selector.py\"",
+            "statusMessage": "Loading Decision OS context",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

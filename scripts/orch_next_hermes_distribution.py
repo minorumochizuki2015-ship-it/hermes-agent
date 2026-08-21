@@ -38,10 +38,10 @@ from agent.skill_materializer import (  # noqa: E402
 )
 
 PLUGIN_ID = "orch-next-hermes-harness"
-PLUGIN_VERSION = "0.1.48"
+PLUGIN_VERSION = "0.1.49"
 PLUGIN_RELEASE_NOTE = (
-    "0.1.48: non-gated front-door WebSocket auth accepts "
-    "X-Hermes-Session-Token; mixed or duplicate credentials remain fail-closed."
+    "0.1.49: Codex UserPromptSubmit carries the accepted bounded Maestro "
+    "Decision OS prompt-context selector; installation and firing remain unclaimed."
 )
 MARKETPLACE_ID = "orch-next-hermes-local"
 LEGACY_PLUGIN_ID = "orch-next-codex-harness"
@@ -101,6 +101,7 @@ ALLOWED_BUNDLE_TOP_LEVEL = frozenset({
     ".mcp.json",
     OPERATIONAL_PROFILE_INDEX_PATH,
     "SOURCE_MANIFEST.json",
+    "hooks",
     "runtime",
     "skills",
 })
@@ -111,6 +112,50 @@ RUNTIME_LOCATOR_MODE_PORTABLE = "manifest_relative"
 RUNTIME_LOCATOR_MODE_INSTALLED = "installer_materialized"
 RUNTIME_WRAPPER_PATH = "runtime/orch_next_hermes_mcp_launcher.py"
 RUNTIME_BINDING_PATH = "runtime/RUNTIME_BINDING.json"
+MAESTRO_PROMPT_CONTEXT_ROOT = "runtime/maestro_prompt_context"
+MAESTRO_PROMPT_CONTEXT_INTAKE = "MAESTRO_SOURCE_INTAKE.json"
+MAESTRO_PROMPT_CONTEXT_SCHEMA = "maestro-prompt-context-source-intake.v1"
+MAESTRO_PROMPT_CONTEXT_SOURCE_COMMIT = (
+    "568fe9ab0804e0b8b51a2e728f691e4a5edb9f26"
+)
+MAESTRO_PROMPT_CONTEXT_SOURCE_TREE = "31e6e9fb34e456f99b33e3c2ced0d0117be7e66e"
+MAESTRO_PROMPT_CONTEXT_FILES = (
+    ".codex/hooks/mk733j_prompt_task_selector.py",
+    "scripts/ops/mk733j_context_compiler.py",
+    "research/mk675/fable5_decision_os/mk733j_gpt56_model_neutral_workpack.json",
+    "research/mk675/fable5_decision_os/mk733j_n_context_baseline.json",
+    "research/mk675/fable5_decision_os/mk733j_n_decision_os_implementation.json",
+    "research/mk675/fable5_decision_os/mk733j_n_policy_corpus.json",
+    "skills/best-evaluate/SKILL.md",
+    "skills/skill-lifecycle/SKILL.md",
+)
+MAESTRO_PROMPT_CONTEXT_DIGESTS = {
+    ".codex/hooks/mk733j_prompt_task_selector.py": (
+        "c4be69f08672acb9931cc21f03aac55260b98d88abd333160180d35886702af0"
+    ),
+    "scripts/ops/mk733j_context_compiler.py": (
+        "d16b80f71f0ffd1b1c2850a0b7cd71ecd4c8b4472014e83966a39382ff6dc8e6"
+    ),
+    "research/mk675/fable5_decision_os/mk733j_gpt56_model_neutral_workpack.json": (
+        "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e"
+    ),
+    "research/mk675/fable5_decision_os/mk733j_n_context_baseline.json": (
+        "9dc1af1964b1b204e9bef39c981e818a6eabedba51c8c16b0c330d5ba6ed461b"
+    ),
+    "research/mk675/fable5_decision_os/mk733j_n_decision_os_implementation.json": (
+        "741335360a705e6a8ed4faf96381d6cc0cd74fef146835dfce7fb66ecbb77e39"
+    ),
+    "research/mk675/fable5_decision_os/mk733j_n_policy_corpus.json": (
+        "51151c260ba1b93710036e3e95e94456b16d3d7418e1d37ed135906ee69979c4"
+    ),
+    "skills/best-evaluate/SKILL.md": (
+        "7ffca0bfb7e602bedc1fb94747747b6bc0f052e8dd844b18f6d9b42230c28101"
+    ),
+    "skills/skill-lifecycle/SKILL.md": (
+        "e511b125d2fe94bae0db30f4e1556d39736b170cecf6be31059188bb980ffe21"
+    ),
+}
+CODEX_HOOKS_PATH = "hooks/hooks.json"
 RUNTIME_PORTABLE_SOURCE_ROOT = "../../.."
 RUNTIME_PYTHON_PATH = ".venv/bin/python"
 RUNTIME_LAUNCHER_PATH = "scripts/orch_next_hermes_mcp_launcher.py"
@@ -119,7 +164,7 @@ ORCH_OVERLAY_MINIMUM_REVISION = "8585d5d9de143750e85629000e62576a1e082169"
 SDO_PRODUCER_MIRROR_ROOT = "runtime/sdo_producer"
 SDO_PRODUCER_SOURCE_REVISION = "c25555b54315b8dc868d12b8699b500b9aab8094"
 SDO_PRODUCER_SOURCE_TREE = "ba7e28fef29e9a28c93ff9226f260e74bc061e3c"
-ROLLBACK_VERSION = "0.1.42"
+ROLLBACK_VERSION = "0.1.48"
 ROLLBACK_IDENTITY = f"installed:{PLUGIN_ID}@{ROLLBACK_VERSION}"
 PREDECESSOR_SOURCE_ONLY_VERSIONS = (
     "0.1.43",
@@ -617,6 +662,192 @@ def _validate_relative_path(value: str, *, label: str) -> PurePosixPath:
     if "\\" in value:
         raise DistributionError(f"{label} must use POSIX separators: {value!r}")
     return path
+
+
+def _maestro_prompt_context_rows(root: Path) -> list[dict[str, int | str]]:
+    expected_paths = set(MAESTRO_PROMPT_CONTEXT_FILES)
+    expected_closure = expected_paths | {MAESTRO_PROMPT_CONTEXT_INTAKE}
+    _reject_symlinks(root, label="Maestro prompt context")
+    observed_paths = {
+        path.relative_to(root).as_posix()
+        for path in _regular_files(root, label="Maestro prompt context")
+    }
+    if observed_paths != expected_closure:
+        raise DistributionError(
+            "Maestro prompt context closure mismatch: "
+            f"extra={sorted(observed_paths - expected_closure)}, "
+            f"missing={sorted(expected_closure - observed_paths)}"
+        )
+    rows: list[dict[str, int | str]] = []
+    for relative in MAESTRO_PROMPT_CONTEXT_FILES:
+        path = root / relative
+        mode = stat.S_IMODE(path.lstat().st_mode)
+        if mode != 0o644:
+            raise DistributionError(f"Maestro prompt context mode drift: {relative}")
+        digest = _sha256_file(path)
+        if digest != MAESTRO_PROMPT_CONTEXT_DIGESTS[relative]:
+            raise DistributionError(f"Maestro prompt context digest drift: {relative}")
+        rows.append({
+            "mode": "100644",
+            "path": relative,
+            "sha256": digest,
+            "size": path.stat().st_size,
+        })
+    intake_path = root / MAESTRO_PROMPT_CONTEXT_INTAKE
+    if stat.S_IMODE(intake_path.lstat().st_mode) != 0o644:
+        raise DistributionError(
+            f"Maestro prompt context mode drift: {MAESTRO_PROMPT_CONTEXT_INTAKE}"
+        )
+    return rows
+
+
+def _maestro_prompt_context_closure_digest(
+    rows: Sequence[dict[str, int | str]],
+) -> str:
+    stream = "".join(
+        f"{row['sha256']}  {row['mode']}  {row['path']}\n" for row in rows
+    )
+    return hashlib.sha256(stream.encode("utf-8")).hexdigest()
+
+
+def _maestro_prompt_context_intake(
+    rows: Sequence[dict[str, int | str]],
+) -> dict:
+    return {
+        "closure_digest": _maestro_prompt_context_closure_digest(rows),
+        "file_count": len(rows),
+        "files": list(rows),
+        "private_runtime_dependencies": True,
+        "schema": MAESTRO_PROMPT_CONTEXT_SCHEMA,
+        "source_commit": MAESTRO_PROMPT_CONTEXT_SOURCE_COMMIT,
+        "source_read": "exact_git_object_bytes",
+        "source_repository": "maestro-kernel",
+        "source_tree": MAESTRO_PROMPT_CONTEXT_SOURCE_TREE,
+        "top_level_plugin_skill_claims": False,
+    }
+
+
+def _maestro_prompt_context_binding(root: Path) -> dict:
+    rows = _maestro_prompt_context_rows(root)
+    intake_path = root / MAESTRO_PROMPT_CONTEXT_INTAKE
+    observed_intake = _read_json(intake_path, label="Maestro prompt context intake")
+    expected_intake = _maestro_prompt_context_intake(rows)
+    if observed_intake != expected_intake:
+        raise DistributionError("Maestro prompt context intake drift")
+    return {
+        "closure_digest": expected_intake["closure_digest"],
+        "file_count": expected_intake["file_count"],
+        "files": list(rows),
+        "hook": {
+            "event": "UserPromptSubmit",
+            "manifest": CODEX_HOOKS_PATH,
+            "registered_channels": ["codex"],
+        },
+        "intake": f"{MAESTRO_PROMPT_CONTEXT_ROOT}/{MAESTRO_PROMPT_CONTEXT_INTAKE}",
+        "intake_sha256": _sha256_file(intake_path),
+        "root": MAESTRO_PROMPT_CONTEXT_ROOT,
+        "source_commit": MAESTRO_PROMPT_CONTEXT_SOURCE_COMMIT,
+        "source_tree": MAESTRO_PROMPT_CONTEXT_SOURCE_TREE,
+    }
+
+
+def _trusted_git(
+    source_repo: Path,
+    arguments: Sequence[str],
+    *,
+    text: bool = False,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["/usr/bin/git", "-C", str(source_repo), *arguments],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=text,
+        env={
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+        },
+    )
+
+
+def _read_maestro_git_object(source_repo: Path, relative: str) -> tuple[bytes, str]:
+    source_repo = source_repo.resolve(strict=True)
+    tree = _trusted_git(
+        source_repo,
+        [
+            "ls-tree",
+            MAESTRO_PROMPT_CONTEXT_SOURCE_COMMIT,
+            "--",
+            relative,
+        ],
+        text=True,
+    )
+    if tree.returncode != 0 or not tree.stdout.strip():
+        raise DistributionError(f"accepted Maestro source unavailable: {relative}")
+    mode = tree.stdout.split(maxsplit=1)[0]
+    if mode != "100644":
+        raise DistributionError(f"accepted Maestro source mode drift: {relative}")
+    blob = _trusted_git(
+        source_repo,
+        [
+            "cat-file",
+            "blob",
+            f"{MAESTRO_PROMPT_CONTEXT_SOURCE_COMMIT}:{relative}",
+        ],
+    )
+    if blob.returncode != 0:
+        raise DistributionError(f"accepted Maestro source unavailable: {relative}")
+    digest = hashlib.sha256(blob.stdout).hexdigest()
+    if digest != MAESTRO_PROMPT_CONTEXT_DIGESTS[relative]:
+        raise DistributionError(f"accepted Maestro source digest drift: {relative}")
+    return blob.stdout, mode
+
+
+def _materialize_maestro_prompt_context(
+    destination: Path, source_repo: Path | None
+) -> None:
+    if source_repo is None:
+        source = default_bundle_target() / MAESTRO_PROMPT_CONTEXT_ROOT
+        _maestro_prompt_context_binding(source)
+        shutil.copytree(source, destination, copy_function=shutil.copy2)
+        return
+    source_repo = source_repo.resolve(strict=True)
+    observed_tree = _trusted_git(
+        source_repo,
+        [
+            "rev-parse",
+            f"{MAESTRO_PROMPT_CONTEXT_SOURCE_COMMIT}^{{tree}}",
+        ],
+        text=True,
+    )
+    if (
+        observed_tree.returncode != 0
+        or observed_tree.stdout.strip() != MAESTRO_PROMPT_CONTEXT_SOURCE_TREE
+    ):
+        raise DistributionError("accepted Maestro source tree drift")
+    for relative in MAESTRO_PROMPT_CONTEXT_FILES:
+        content, _mode = _read_maestro_git_object(source_repo, relative)
+        _write_bytes(destination / relative, content)
+    rows = [
+        {
+            "mode": "100644",
+            "path": relative,
+            "sha256": _sha256_file(destination / relative),
+            "size": (destination / relative).stat().st_size,
+        }
+        for relative in MAESTRO_PROMPT_CONTEXT_FILES
+    ]
+    _write_bytes(
+        destination / MAESTRO_PROMPT_CONTEXT_INTAKE,
+        _json_bytes(_maestro_prompt_context_intake(rows)),
+    )
+    _maestro_prompt_context_binding(destination)
 
 
 def _reject_symlinks(root: Path, *, label: str) -> None:
@@ -1620,6 +1851,7 @@ def _codex_plugin_manifest() -> dict:
             "served by Hermes Agent."
         ),
         "homepage": "https://github.com/NousResearch/hermes-agent",
+        "hooks": f"./{CODEX_HOOKS_PATH}",
         "interface": {
             "capabilities": ["Interactive", "Read", "Write"],
             "category": "Developer Tools",
@@ -1641,6 +1873,29 @@ def _codex_plugin_manifest() -> dict:
         "repository": "https://github.com/NousResearch/hermes-agent",
         "skills": "./skills/",
         "version": PLUGIN_VERSION,
+    }
+
+
+def _codex_hooks_manifest() -> dict:
+    return {
+        "hooks": {
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "command": (
+                                "/usr/bin/python3 \"$PLUGIN_ROOT/runtime/"
+                                "maestro_prompt_context/.codex/hooks/"
+                                "mk733j_prompt_task_selector.py\""
+                            ),
+                            "statusMessage": "Loading Decision OS context",
+                            "timeout": 5,
+                            "type": "command",
+                        }
+                    ]
+                }
+            ]
+        }
     }
 
 
@@ -1709,7 +1964,10 @@ def _claude_marketplace_manifest() -> dict:
 
 
 def _source_manifest(
-    entries: Sequence[dict[str, str]], runtime_binding: dict, profile_index: dict
+    entries: Sequence[dict[str, str]],
+    runtime_binding: dict,
+    profile_index: dict,
+    prompt_context_binding: dict,
 ) -> dict:
     manifest = {
         "channels": {
@@ -1797,6 +2055,7 @@ def _source_manifest(
             "schema": profile_index["schema"],
         },
         "legacy_maestro_compatibility": dict(LEGACY_MAESTRO_COMPATIBILITY),
+        "maestro_prompt_context": prompt_context_binding,
         "maestro_skill_source": _maestro_skill_source_binding(),
         "quarantined_exclusions": sorted(QUARANTINED_SKILLS),
         "required_admitted_skills": sorted(REQUIRED_ADMITTED_SKILLS),
@@ -1926,7 +2185,12 @@ def verify_bundle(
         source_skills, source_entries
     )
     expected_source = _source_manifest(
-        source_entries, expected_binding, expected_profile_index
+        source_entries,
+        expected_binding,
+        expected_profile_index,
+        _maestro_prompt_context_binding(
+            bundle_root / MAESTRO_PROMPT_CONTEXT_ROOT
+        ),
     )
     if observed_source != expected_source:
         raise DistributionError("source manifest drift")
@@ -1940,6 +2204,11 @@ def verify_bundle(
         bundle_root / ".claude-plugin" / "plugin.json",
         _claude_plugin_manifest(),
         label="Claude plugin manifest",
+    )
+    _assert_expected_json(
+        bundle_root / CODEX_HOOKS_PATH,
+        _codex_hooks_manifest(),
+        label="Codex hook manifest",
     )
     _assert_expected_json(
         bundle_root / ".mcp.json", _mcp_manifest(), label="MCP manifest"
@@ -2108,22 +2377,29 @@ def _write_bytes(path: Path, content: bytes, *, mode: int = 0o644) -> None:
 
 
 def _populate_stage(
-    stage: Path, source_skills: Path, *, runtime_root: Path | None = None
+    stage: Path,
+    source_skills: Path,
+    *,
+    runtime_root: Path | None = None,
+    maestro_source_repo: Path | None = None,
 ) -> None:
     entries = verify_source_skills(source_skills)
-    binding = _runtime_binding(runtime_root)
     shutil.copytree(
         source_skills,
         stage / "skills",
         copy_function=shutil.copy2,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    prompt_context_root = stage / MAESTRO_PROMPT_CONTEXT_ROOT
+    _materialize_maestro_prompt_context(prompt_context_root, maestro_source_repo)
+    binding = _runtime_binding(runtime_root)
     _write_bytes(
         stage / ".codex-plugin" / "plugin.json", _json_bytes(_codex_plugin_manifest())
     )
     _write_bytes(
         stage / ".claude-plugin" / "plugin.json", _json_bytes(_claude_plugin_manifest())
     )
+    _write_bytes(stage / CODEX_HOOKS_PATH, _json_bytes(_codex_hooks_manifest()))
     _write_bytes(stage / ".mcp.json", _json_bytes(_mcp_manifest()))
     profile_index = _operational_profile_index(stage / "skills", entries)
     _write_bytes(
@@ -2147,7 +2423,14 @@ def _populate_stage(
     )
     _write_bytes(
         stage / "SOURCE_MANIFEST.json",
-        _json_bytes(_source_manifest(entries, binding, profile_index)),
+        _json_bytes(
+            _source_manifest(
+                entries,
+                binding,
+                profile_index,
+                _maestro_prompt_context_binding(prompt_context_root),
+            )
+        ),
     )
 
 
@@ -2190,6 +2473,7 @@ def transactional_sync(
     target: Path,
     *,
     runtime_root: Path | None = None,
+    maestro_source_repo: Path | None = None,
 ) -> dict:
     source_skills = source_skills.absolute()
     target = target.absolute()
@@ -2215,7 +2499,12 @@ def transactional_sync(
         moved_prior = False
         published = False
         try:
-            _populate_stage(stage, source_skills, runtime_root=runtime_root)
+            _populate_stage(
+                stage,
+                source_skills,
+                runtime_root=runtime_root,
+                maestro_source_repo=maestro_source_repo,
+            )
             verify_bundle(stage, source_skills, runtime_root=runtime_root)
             if prior_present:
                 _atomic_replace(target, rollback)
@@ -2274,6 +2563,8 @@ def _parser() -> argparse.ArgumentParser:
             "--source-skills", type=Path, default=default_source_skills()
         )
         child.add_argument("--target", type=Path, default=default_bundle_target())
+        if command == "sync":
+            child.add_argument("--maestro-source-repo", type=Path)
     subparsers.add_parser("preflight-latest-stable")
     return parser
 
@@ -2286,7 +2577,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(result, sort_keys=True))
             return 0
         if args.command == "sync":
-            result = transactional_sync(args.source_skills, args.target)
+            result = transactional_sync(
+                args.source_skills,
+                args.target,
+                maestro_source_repo=args.maestro_source_repo,
+            )
+            if args.target.absolute() == default_bundle_target().absolute():
+                _write_bytes(
+                    _repo_root() / ".agents" / "plugins" / "marketplace.json",
+                    _json_bytes(_codex_marketplace_manifest()),
+                )
+                _write_bytes(
+                    _repo_root() / ".claude-plugin" / "marketplace.json",
+                    _json_bytes(_claude_marketplace_manifest()),
+                )
         elif args.command == "install":
             result = transactional_install(args.source_skills, args.target)
         elif args.command == "verify-installed":

@@ -1,0 +1,434 @@
+{
+  "mk_id": "MK733J-N",
+  "record_type": "mk733j_n_model_neutral_decision_os_implementation",
+  "status": "repo_local_router_contract_and_firing_layers_validated_empirical_qualification_blocked",
+  "support_work_progress_credit": 0,
+  "ui_or_remote_ops_mutation": false,
+  "hidden_chain_of_thought_collection": false,
+  "workpack_binding": {
+    "fixed_commit": "bd54c40c1",
+    "workpack_ref": "research/mk675/fable5_decision_os/mk733j_gpt56_model_neutral_workpack.json",
+    "workpack_digest": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+    "grand_goal_ref": "GG-MK733J-N-GPT56-FABLE5-DECISION-OS",
+    "binding_record_digest": "fa1de93bfee5e8ffe3d38c76364ca500e5d6b3d447944a849ff426a3e8a5aee7"
+  },
+  "capability_bundle_registry_ref": "research/mk675/fable5_decision_os/mk733j_n_capability_bundles.json",
+  "activation_authority": {
+    "trusted_registry_ref": "research/mk675/fable5_decision_os/mk733j_n_trusted_activation_authorities.json",
+    "trusted_registry_digest": "d846e7dbbda8ed342ba71fba2448428c8dcfe3e161cfa47c64c5b15eab8005c4",
+    "normal_activation_requires_admitted_authority": true,
+    "current_admitted_authority_count": 0,
+    "default_state": "blocked_until_separate_authority_admission",
+    "non_claims": [
+      "no_cryptographic_identity_claim",
+      "no_runtime_enforcement_activation"
+    ]
+  },
+  "model_profiles": [
+    {
+      "profile_id": "sol_ultra_architect_cmd",
+      "runtime_model_identity_pattern": "gpt-5.6-sol",
+      "reasoning_effort": "ultra",
+      "allowed_task_classes": [
+        "ambiguous_design"
+      ],
+      "forbidden_task_classes": [
+        "final_self_acceptance"
+      ],
+      "risk_classes": [
+        "high"
+      ],
+      "mutation_permissions": "bounded_workpack_only",
+      "qualification_suite_version": "not_measured",
+      "qualification_score": null,
+      "qualification_digest": null,
+      "qualified_at": null,
+      "expires_at": null,
+      "qualification_state": "provisional_not_empirically_qualified",
+      "escalation_triggers": [
+        "identity_unverified",
+        "qualification_absent_or_expired"
+      ],
+      "fallback_profile": "sol_ultra_architect_cmd",
+      "context_compiler_version": "mk733j-n.v1",
+      "workpack_digest": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+      "binding_record_digest": "fa1de93bfee5e8ffe3d38c76364ca500e5d6b3d447944a849ff426a3e8a5aee7",
+      "non_claims": [
+        "no_global_superiority"
+      ],
+      "risk_ceiling": "high"
+    },
+    {
+      "profile_id": "terra_high_implementer",
+      "runtime_model_identity_pattern": "gpt-5.6-terra",
+      "reasoning_effort": "high",
+      "allowed_task_classes": [
+        "bounded_implementation"
+      ],
+      "forbidden_task_classes": [
+        "final_independent_audit"
+      ],
+      "risk_classes": [
+        "medium"
+      ],
+      "mutation_permissions": "repo_local_scoped_only_after_empirical_qualification",
+      "qualification_suite_version": "not_measured",
+      "qualification_score": null,
+      "qualification_digest": null,
+      "qualified_at": null,
+      "expires_at": null,
+      "qualification_state": "provisional_not_empirically_qualified",
+      "escalation_triggers": [
+        "identity_unverified",
+        "qualification_absent_or_expired"
+      ],
+      "fallback_profile": "sol_ultra_architect_cmd",
+      "context_compiler_version": "mk733j-n.v1",
+      "workpack_digest": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+      "binding_record_digest": "fa1de93bfee5e8ffe3d38c76364ca500e5d6b3d447944a849ff426a3e8a5aee7",
+      "non_claims": [
+        "no_blanket_parity"
+      ],
+      "risk_ceiling": "medium"
+    },
+    {
+      "profile_id": "terra_readonly_explorer",
+      "runtime_model_identity_pattern": "gpt-5.6-terra",
+      "reasoning_effort": "medium",
+      "allowed_task_classes": [
+        "read_only_exploration"
+      ],
+      "forbidden_task_classes": [
+        "mutation",
+        "audit_verdict"
+      ],
+      "risk_classes": [
+        "low"
+      ],
+      "mutation_permissions": "read_only",
+      "qualification_suite_version": "not_measured",
+      "qualification_score": null,
+      "qualification_digest": null,
+      "qualified_at": null,
+      "expires_at": null,
+      "qualification_state": "provisional_not_empirically_qualified",
+      "escalation_triggers": [
+        "identity_unverified",
+        "qualification_absent_or_expired"
+      ],
+      "fallback_profile": "sol_ultra_architect_cmd",
+      "context_compiler_version": "mk733j-n.v1",
+      "workpack_digest": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+      "binding_record_digest": "fa1de93bfee5e8ffe3d38c76364ca500e5d6b3d447944a849ff426a3e8a5aee7",
+      "non_claims": [
+        "no_mutation_authority"
+      ],
+      "risk_ceiling": "low"
+    },
+    {
+      "profile_id": "sol_independent_reviewer",
+      "runtime_model_identity_pattern": "gpt-5.6-sol",
+      "reasoning_effort": "ultra",
+      "allowed_task_classes": [
+        "independent_audit"
+      ],
+      "forbidden_task_classes": [
+        "same_worker_audit"
+      ],
+      "risk_classes": [
+        "high"
+      ],
+      "mutation_permissions": "read_only",
+      "qualification_suite_version": "not_measured",
+      "qualification_score": null,
+      "qualification_digest": null,
+      "qualified_at": null,
+      "expires_at": null,
+      "qualification_state": "provisional_not_empirically_qualified",
+      "escalation_triggers": [
+        "identity_unverified",
+        "qualification_absent_or_expired",
+        "same_worker_auditor"
+      ],
+      "fallback_profile": "sol_ultra_architect_cmd",
+      "context_compiler_version": "mk733j-n.v1",
+      "workpack_digest": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+      "binding_record_digest": "fa1de93bfee5e8ffe3d38c76364ca500e5d6b3d447944a849ff426a3e8a5aee7",
+      "non_claims": [
+        "no_self_audit",
+        "fresh_top_level_sol_ultra_task_required"
+      ],
+      "risk_ceiling": "high"
+    },
+    {
+      "profile_id": "local_qualified_worker",
+      "runtime_model_identity_pattern": "qwen3.6:35b-a3b-coding-mxfp8",
+      "reasoning_effort": "high",
+      "allowed_task_classes": [
+        "deterministic_support"
+      ],
+      "forbidden_task_classes": [
+        "bounded_implementation",
+        "independent_audit"
+      ],
+      "risk_classes": [
+        "low"
+      ],
+      "mutation_permissions": "qualified_task_class_only",
+      "qualification_suite_version": "not_measured",
+      "qualification_score": null,
+      "qualification_digest": null,
+      "qualified_at": null,
+      "expires_at": null,
+      "qualification_state": "provisional_not_empirically_qualified",
+      "escalation_triggers": [
+        "identity_unverified",
+        "qualification_absent_or_expired",
+        "task_class_not_measured"
+      ],
+      "fallback_profile": "sol_ultra_architect_cmd",
+      "context_compiler_version": "mk733j-n.v1",
+      "workpack_digest": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+      "binding_record_digest": "fa1de93bfee5e8ffe3d38c76364ca500e5d6b3d447944a849ff426a3e8a5aee7",
+      "non_claims": [
+        "no_model_label_qualification",
+        "no_reasoning_effort_or_cross_model_parity_from_local_setting"
+      ],
+      "risk_ceiling": "low"
+    }
+  ],
+  "local_model_identity_contract": {
+    "profile_id": "local_qualified_worker",
+    "provider": "ollama",
+    "runtime_model_identity": "qwen3.6:35b-a3b-coding-mxfp8",
+    "reasoning_effort_observation": "high",
+    "reasoning_effort_control": "ollama_run_--think_high",
+    "role_label_is_model_identity": false,
+    "identity_rule": "bind qualification to the exact provider model identity; never substitute the profile or role label",
+    "additional_local_models": "require a distinct exact alias plus fresh profile-task-class qualification"
+  },
+  "router_contract_results": {
+    "corpus_ref": "research/mk675/fable5_decision_os/mk733j_n_qualification_corpus.json",
+    "status": "deterministic_router_contract_only",
+    "does_not_measure": [
+      "model_output_quality",
+      "empirical_model_capability",
+      "audit_defect_recall",
+      "implementation_test_pass_rate"
+    ]
+  },
+  "empirical_qualification": {
+    "status": "not_measured_blocking",
+    "required_evidence": [
+      "observable_model_outputs",
+      "corpus_version_and_digest",
+      "qualified_at_and_expiry",
+      "threshold_results",
+      "separate_sol_holdout_audit"
+    ],
+    "next_boundary": "authorized_model_output_evaluation_without_paid_provider_or_runtime_activation"
+  },
+  "public_evaluation_observations": [
+    {
+      "profile_id": "local_qualified_worker",
+      "runtime_model_identity": "qwen3.6:35b-a3b-coding-mxfp8",
+      "reasoning_effort": "high",
+      "task_class": "deterministic_support",
+      "bundle_id": "deterministic_support",
+      "run_family": "mk733j-n-local-qwen-high-20260710-v4",
+      "thread_run_id": "ollama-qwen36-high-public-20260710-002",
+      "packet_digest": "fe106e402fd9210650bab74d01491b931ebb9f42bfe2105f3b69722dc8dafafa",
+      "evaluation_corpus_digest": "c6856efb1e489b679c80631666926c8f85c78e3b54bb14ff20fbefb99f6d9a50",
+      "evaluation_schema_digest": "91537ec43778af589cebd2048265cd012a472029398a10737b9e28c4c7187d78",
+      "public_semantic_contract_ref": "research/mk675/fable5_decision_os/mk733j_n_capability_public_semantic_contracts.json",
+      "public_semantic_contract_digest": "222c32c3d5a68df96ebfdd1ae8ae27e1ebdac82287dd458a672e4195403acb92",
+      "output_digest": "44d5a6005ee06ef43fb932faa863e57e3451d9148ab3bb04eb11d85b80d14cc8",
+      "output": {
+        "cases": [
+          {
+            "case_id": "ds-19b4",
+            "check": "ck-a91e",
+            "decision": "return_result",
+            "output": "ABC"
+          },
+          {
+            "case_id": "ds-6f82",
+            "check": "ck-f72c",
+            "decision": "stop_or_escalate",
+            "output": ""
+          }
+        ]
+      },
+      "metrics": {
+        "exact_transform_rate": 1.0,
+        "check_pass_rate": 1.0,
+        "ambiguity_stop_rate": 1.0
+      },
+      "execution_environment": "projectless",
+      "grader_gold_access": false,
+      "status": "public_observable_pass_not_qualified",
+      "qualification_state": "not_qualified_without_separate_sol_owned_sealed_holdout",
+      "artifact_retention": "safe_structured_output_embedded_no_provider_raw_or_reasoning",
+      "route_unlock": false,
+      "support_work_progress_credit": 0
+    }
+  ],
+  "public_evaluation_claim_boundary": {
+    "public_pass_is_profile_qualification": false,
+    "route_unlock_allowed": false,
+    "import_requires_separate_sol_owned_sealed_holdout": true,
+    "public_metrics_are_model_parity": false
+  },
+  "mandatory_firing": {
+    "hooks_path": ".codex/hooks.json",
+    "receipt_launcher": "scripts/ops/mk733j_decision_os.py",
+    "committed_work_record": "research/mk675/fable5_decision_os/mk733j_n_decision_os_implementation.json",
+    "ci_binding": ".github/workflows/ci.yml",
+    "hooks_only_sufficient": false,
+    "fresh_session_activation": "not_verified_non_claim",
+    "rollback": "remove project hook registration; launcher and CI verifier remain diagnostic"
+  },
+  "dispatch_handshake": {
+    "required_fields": [
+      "work_id",
+      "goal_ref",
+      "workpack_digest",
+      "binding_record_digest",
+      "model_identity_state",
+      "runtime_identity_ref",
+      "thread_run_id",
+      "profile_id",
+      "profile_digest",
+      "qualification_result_ref",
+      "qualification_results",
+      "qualification_expires_at",
+      "context_digest",
+      "preflight_ref",
+      "preflight_digest",
+      "preflight_scope_digest",
+      "preflight_contract_version",
+      "task_class",
+      "risk_class",
+      "allowed_tools",
+      "allowed_path_prefixes",
+      "allowed_command_classes",
+      "forbidden_operation_classes",
+      "operation_manifest",
+      "budget",
+      "return_schema",
+      "readback_required",
+      "auditor_independent_from_implementer",
+      "stop_and_escalation_rules",
+      "non_claims"
+    ],
+    "same_worker_final_auditor_allowed": false,
+    "user_manual_relay_required": false
+  },
+  "subagent_dispositions": {
+    "SUB-001": "dormant_until_explicit_ui_authority",
+    "SUB-002": "deterministic_goal_lock_optional_ambiguity_review",
+    "SUB-003": "retired_llm_role_deterministic_ci_owner"
+  },
+  "dna_outcome_fitness": {
+    "citation_count_is_telemetry_only": true,
+    "execution_tiers": {
+      "normal_local_bounded_supervised": "single_observation_operational_telemetry_only_no_identity_qualification_preflight_or_receipt_chain",
+      "autonomous_profile_qualified": "full_canonical_chain_required_and_only_tier_eligible_for_gene_promotion"
+    },
+    "supervised_measurement_can_promote": false,
+    "supervised_measurement_blocks_normal_work": false,
+    "required_metrics": [
+      "correct_allow",
+      "correct_block",
+      "missed_block",
+      "false_block",
+      "user_correction",
+      "wrong_lane",
+      "cost_latency",
+      "unnecessary_escalation",
+      "cross_model_consistency"
+    ],
+    "reject": [
+      "duplicate_run",
+      "fabricated_outcome",
+      "self_scored_success",
+      "fixture_only_observed_effective"
+    ],
+    "lifecycle": "explicit_proposal_with_rollback",
+    "measurement_status": "not_measured_blocks_only_observed_effective_or_enforce_promotion_claims"
+  },
+  "context_compiler": {
+    "select_by": [
+      "task_class",
+      "incident_class",
+      "authority_lane",
+      "claim_type"
+    ],
+    "required_policy_nonclaim_recall": 1.0,
+    "irrelevant_policy_refs_max": 0,
+    "baseline_ratio_max": 0.5,
+    "decision_regression_points_max": 2,
+    "forbidden": [
+      "private_prompt",
+      "hidden_reasoning",
+      "secret",
+      "raw_transcript"
+    ],
+    "measurement_status": "not_measured_blocking"
+  },
+  "adversarial_coverage": {
+    "matrix_ref": "research/mk675/fable5_decision_os/mk733j_n_measurement_matrix.json",
+    "status": "contract_cases_covered_empirical_thresholds_not_measured"
+  },
+  "skill_contracts": {
+    "grand-goal-native-goal-formulation": {
+      "delegated_goal_fields": true,
+      "shadow_activation_mode": true
+    },
+    "goal-audit-checklist": {
+      "enforce_receipt_check": true,
+      "shadow_nonclaim": true
+    },
+    "best-evaluate": {
+      "route_cost_escalation_option": true,
+      "unnecessary_sol_metric": true
+    },
+    "agent-dispatch": {
+      "dispatch_envelope_readback": true,
+      "same_worker_audit_rejected": true
+    },
+    "fable5-derived-advisory-synthesis": {
+      "observable_criteria": true,
+      "override_ledger": true
+    },
+    "skill-health-check": {
+      "owner_trigger_command_receipt_rollback": true,
+      "marker_only_rejected": true
+    },
+    "skill-quality-review": {
+      "owner_specific_review": true,
+      "marker_only_rejected": true
+    }
+  },
+  "skill_distribution": {
+    "canonical_and_plugin": [
+      "grand-goal-native-goal-formulation",
+      "goal-audit-checklist",
+      "best-evaluate",
+      "agent-dispatch",
+      "fable5-derived-advisory-synthesis",
+      "skill-health-check",
+      "skill-quality-review"
+    ],
+    "installed_cache_status": "not_verified_non_claim"
+  },
+  "non_claims": [
+    "no_blanket_model_parity",
+    "no_permanent_runtime_firing",
+    "no_observed_effective_prevention",
+    "no_runtime_readiness",
+    "no_product_final_user_acceptance",
+    "no_release_readiness",
+    "no_a3_plus_autonomy"
+  ]
+}

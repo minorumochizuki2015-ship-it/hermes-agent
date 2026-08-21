@@ -46,6 +46,72 @@
     "status": "pending_zero_consumer_proof_and_retirement",
     "zero_consumer_proof": false
   },
+  "maestro_prompt_context": {
+    "closure_digest": "65e957ca4823cd90cca81ba1afc552bd1bcb613ef18637bd86e0cb26fccbdf4a",
+    "file_count": 8,
+    "files": [
+      {
+        "mode": "100644",
+        "path": ".codex/hooks/mk733j_prompt_task_selector.py",
+        "sha256": "c4be69f08672acb9931cc21f03aac55260b98d88abd333160180d35886702af0",
+        "size": 18170
+      },
+      {
+        "mode": "100644",
+        "path": "scripts/ops/mk733j_context_compiler.py",
+        "sha256": "d16b80f71f0ffd1b1c2850a0b7cd71ecd4c8b4472014e83966a39382ff6dc8e6",
+        "size": 36203
+      },
+      {
+        "mode": "100644",
+        "path": "research/mk675/fable5_decision_os/mk733j_gpt56_model_neutral_workpack.json",
+        "sha256": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+        "size": 19235
+      },
+      {
+        "mode": "100644",
+        "path": "research/mk675/fable5_decision_os/mk733j_n_context_baseline.json",
+        "sha256": "9dc1af1964b1b204e9bef39c981e818a6eabedba51c8c16b0c330d5ba6ed461b",
+        "size": 1092
+      },
+      {
+        "mode": "100644",
+        "path": "research/mk675/fable5_decision_os/mk733j_n_decision_os_implementation.json",
+        "sha256": "741335360a705e6a8ed4faf96381d6cc0cd74fef146835dfce7fb66ecbb77e39",
+        "size": 15550
+      },
+      {
+        "mode": "100644",
+        "path": "research/mk675/fable5_decision_os/mk733j_n_policy_corpus.json",
+        "sha256": "51151c260ba1b93710036e3e95e94456b16d3d7418e1d37ed135906ee69979c4",
+        "size": 548
+      },
+      {
+        "mode": "100644",
+        "path": "skills/best-evaluate/SKILL.md",
+        "sha256": "7ffca0bfb7e602bedc1fb94747747b6bc0f052e8dd844b18f6d9b42230c28101",
+        "size": 7466
+      },
+      {
+        "mode": "100644",
+        "path": "skills/skill-lifecycle/SKILL.md",
+        "sha256": "e511b125d2fe94bae0db30f4e1556d39736b170cecf6be31059188bb980ffe21",
+        "size": 13152
+      }
+    ],
+    "hook": {
+      "event": "UserPromptSubmit",
+      "manifest": "hooks/hooks.json",
+      "registered_channels": [
+        "codex"
+      ]
+    },
+    "intake": "runtime/maestro_prompt_context/MAESTRO_SOURCE_INTAKE.json",
+    "intake_sha256": "2f609b1fc33cec1b84d7109402b6ec91bee266ed3e4daca7a609d5ae1b3178e0",
+    "root": "runtime/maestro_prompt_context",
+    "source_commit": "568fe9ab0804e0b8b51a2e728f691e4a5edb9f26",
+    "source_tree": "31e6e9fb34e456f99b33e3c2ced0d0117be7e66e"
+  },
   "maestro_skill_source": {
     "adaptation": "existing_hermes_operational_skill_tree",
     "files": [
@@ -97,9 +163,9 @@
     "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
     "locator": {
       "binding": "runtime/RUNTIME_BINDING.json",
-      "binding_sha256": "f3356b54c45371979c244d41734ed1f8246c39aa9ca83a94e8c5470e1b657be1",
+      "binding_sha256": "2dfdfcca05a8dab848fdf3de54013e504d9f99a39521dfe7e2dac541a3f2d90d",
       "mode": "manifest_relative",
-      "rollback_identity": "installed:orch-next-hermes-harness@0.1.42"
+      "rollback_identity": "installed:orch-next-hermes-harness@0.1.48"
     },
     "maestro_execution_fallback_allowed": false,
     "module": "agent.transports.hermes_tools_mcp_server",
@@ -162,7 +228,7 @@
     }
   },
   "operational_profile_index": {
-    "digest": "684a578ccad167f4f6f8796143573c045493f6d0bfe6d555989a85ba186f97d8",
+    "digest": "10ae5302c8b23eee543151d9d4207bd8e9deb4216d879eb77b863a8263225be9",
     "identity": "orch-next-hermes-compact-operational-profile.v1",
     "path": "OPERATIONAL_PROFILE_INDEX.json",
     "schema": "orch-next-hermes-operational-profile-index.v1"
@@ -175,7 +241,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "c7ed37a4492e2cfdace3618c35992accef2e12a54cdd20316c795e5c417cbf98",
+      "digest": "48ae96ce74185ed81ea164493a7af4c20240b2c565e8e264215c61e1e7e41845",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"
@@ -194,13 +260,13 @@
   "quarantined_exclusions": [
     "fable5-os-durable-user-value-goal"
   ],
-  "release_note": "0.1.48: non-gated front-door WebSocket auth accepts X-Hermes-Session-Token; mixed or duplicate credentials remain fail-closed.",
+  "release_note": "0.1.49: Codex UserPromptSubmit carries the accepted bounded Maestro Decision OS prompt-context selector; installation and firing remain unclaimed.",
   "required_admitted_skills": [
     "fable5-derived-advisory-synthesis"
   ],
   "rollback": {
-    "identity": "installed:orch-next-hermes-harness@0.1.42",
-    "installed_version": "0.1.42"
+    "identity": "installed:orch-next-hermes-harness@0.1.48",
+    "installed_version": "0.1.48"
   },
   "schema": "orch-next-hermes-harness-distribution.v1",
   "sdo_producer": {
@@ -582,5 +648,5 @@
     "stream_format": "lowercase_sha256_two_spaces_repo_relative_path_lf"
   },
   "upstream_base": "f80f453ae0679347e38abc917c7f94f717bf96c5",
-  "version": "0.1.48"
+  "version": "0.1.49"
 }

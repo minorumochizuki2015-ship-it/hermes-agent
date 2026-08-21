@@ -1,0 +1,61 @@
+{
+  "closure_digest": "65e957ca4823cd90cca81ba1afc552bd1bcb613ef18637bd86e0cb26fccbdf4a",
+  "file_count": 8,
+  "files": [
+    {
+      "mode": "100644",
+      "path": ".codex/hooks/mk733j_prompt_task_selector.py",
+      "sha256": "c4be69f08672acb9931cc21f03aac55260b98d88abd333160180d35886702af0",
+      "size": 18170
+    },
+    {
+      "mode": "100644",
+      "path": "scripts/ops/mk733j_context_compiler.py",
+      "sha256": "d16b80f71f0ffd1b1c2850a0b7cd71ecd4c8b4472014e83966a39382ff6dc8e6",
+      "size": 36203
+    },
+    {
+      "mode": "100644",
+      "path": "research/mk675/fable5_decision_os/mk733j_gpt56_model_neutral_workpack.json",
+      "sha256": "661468238587e89555417955ffd6c3b71a57b7aed72fcfaafaf40a5e8247193e",
+      "size": 19235
+    },
+    {
+      "mode": "100644",
+      "path": "research/mk675/fable5_decision_os/mk733j_n_context_baseline.json",
+      "sha256": "9dc1af1964b1b204e9bef39c981e818a6eabedba51c8c16b0c330d5ba6ed461b",
+      "size": 1092
+    },
+    {
+      "mode": "100644",
+      "path": "research/mk675/fable5_decision_os/mk733j_n_decision_os_implementation.json",
+      "sha256": "741335360a705e6a8ed4faf96381d6cc0cd74fef146835dfce7fb66ecbb77e39",
+      "size": 15550
+    },
+    {
+      "mode": "100644",
+      "path": "research/mk675/fable5_decision_os/mk733j_n_policy_corpus.json",
+      "sha256": "51151c260ba1b93710036e3e95e94456b16d3d7418e1d37ed135906ee69979c4",
+      "size": 548
+    },
+    {
+      "mode": "100644",
+      "path": "skills/best-evaluate/SKILL.md",
+      "sha256": "7ffca0bfb7e602bedc1fb94747747b6bc0f052e8dd844b18f6d9b42230c28101",
+      "size": 7466
+    },
+    {
+      "mode": "100644",
+      "path": "skills/skill-lifecycle/SKILL.md",
+      "sha256": "e511b125d2fe94bae0db30f4e1556d39736b170cecf6be31059188bb980ffe21",
+      "size": 13152
+    }
+  ],
+  "private_runtime_dependencies": true,
+  "schema": "maestro-prompt-context-source-intake.v1",
+  "source_commit": "568fe9ab0804e0b8b51a2e728f691e4a5edb9f26",
+  "source_read": "exact_git_object_bytes",
+  "source_repository": "maestro-kernel",
+  "source_tree": "31e6e9fb34e456f99b33e3c2ced0d0117be7e66e",
+  "top_level_plugin_skill_claims": false
+}

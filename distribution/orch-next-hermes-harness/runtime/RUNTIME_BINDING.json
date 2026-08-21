@@ -6,12 +6,12 @@
   "minimum_source_revision": "8585d5d9de143750e85629000e62576a1e082169",
   "mode": "manifest_relative",
   "plugin_id": "orch-next-hermes-harness",
-  "plugin_version": "0.1.48",
-  "rollback_identity": "installed:orch-next-hermes-harness@0.1.42",
+  "plugin_version": "0.1.49",
+  "rollback_identity": "installed:orch-next-hermes-harness@0.1.48",
   "runtime_files": [
     {
       "path": "scripts/orch_next_hermes_mcp_launcher.py",
-      "sha256": "b27e2494831f2d81b4baebeca6c7a1f549fa65700dc08b7f16b38854a14b65d1"
+      "sha256": "b72728656c29601d3c566df6bda0771ba100bc9392c2a3c68167a816b5b9d323"
     },
     {
       "path": "agent/__init__.py",
@@ -226,7 +226,7 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "c32bbab16a80bc263e192c23a0f26df8545e54d04d39fbadf820548c51d5037b",
+  "runtime_files_digest": "fb0eb0783d58666140933d55e42197be3d95ff3ac0b86fda3061c2e92c9dc165",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
   "runtime_python_sha256": "4c78423e7d5986362ac04df40edb18cdd1174f9818d653402e3abbd2a5bbf793",

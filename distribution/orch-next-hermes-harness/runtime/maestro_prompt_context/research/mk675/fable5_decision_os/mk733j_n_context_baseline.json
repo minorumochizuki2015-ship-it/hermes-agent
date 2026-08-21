@@ -1,0 +1,14 @@
+{
+  "version": "mk733j-n-baseline-v1",
+  "baseline_payload": {
+    "policy_docs": [
+      "MK733J fixed workpack complete specification and required nonclaims.",
+      "MK733G hooks are incomplete and require launcher CI receipt and rollback.",
+      "MK733M outcome evidence requires observable runs and lifecycle rollback.",
+      "MK733N plugin distribution requires canonical mirrors and cache nonclaim."
+    ],
+    "nonclaims": ["no blanket parity", "no runtime readiness", "no permanent firing", "no observed effective prevention", "no product acceptance"],
+    "padding": "baseline-coverage-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-baseline-coverage-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789"
+  },
+  "baseline_digest": "8439534a295cd15d5eb5f2e44344495d72dc9c08bfb17eb4fb79d92a2cf8d912"
+}
