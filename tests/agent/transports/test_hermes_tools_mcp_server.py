@@ -9,6 +9,7 @@ build helper assembles a server when the SDK is present.
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 import types
 from typing import get_args
@@ -137,6 +138,77 @@ class TestModuleSurface:
         expected = {spec["name"] for spec in ORCH_FRONT_DOOR_TOOLS}
         assert len(expected) == 7
         assert set(server._tool_manager._tools) == expected
+
+    def test_orch_prompt_submit_default_path_needs_no_caller_sdo_sideband(
+        self, monkeypatch
+    ):
+        class FakeToolManager:
+            def __init__(self):
+                self._tools = {}
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self._tool_manager = FakeToolManager()
+
+            def add_tool(self, handler, *, name, description):
+                self._tool_manager._tools[name] = handler
+
+            def tool(self, *, name, description):
+                def register(handler):
+                    self._tool_manager._tools[name] = handler
+                    return handler
+
+                return register
+
+        mcp_module = types.ModuleType("mcp")
+        server_module = types.ModuleType("mcp.server")
+        fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_module.FastMCP = FakeFastMCP
+        monkeypatch.setitem(sys.modules, "mcp", mcp_module)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_module)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
+
+        from agent.transports import hermes_orch_front_door as front_door_module
+        from agent.transports import hermes_tools_mcp_server as mcp_server_module
+
+        requests = []
+
+        class FakeFrontDoor:
+            def __init__(self, **_kwargs):
+                pass
+
+            def request(self, method, params):
+                requests.append((method, params))
+                return {"result": {"status": "streaming"}}
+
+        monkeypatch.setattr(
+            front_door_module, "HermesOrchFrontDoor", FakeFrontDoor
+        )
+        server = mcp_server_module._build_server(tool_definitions=[])
+        handler = server._tool_manager._tools["orch_prompt_submit"]
+        context = {"contract_version": "synthetic-operational-context.v1"}
+
+        result = json.loads(
+            handler(
+                session_id="session-natural",
+                text="自然な依頼",
+                operational_class="orch",
+                operational_context=context,
+            )
+        )
+
+        assert requests == [
+            (
+                "prompt.submit",
+                {
+                    "session_id": "session-natural",
+                    "text": "自然な依頼",
+                    "operational_class": "orch",
+                    "operational_context": context,
+                },
+            )
+        ]
+        assert result == {"result": {"status": "streaming"}}
 
     def test_exposed_tools_are_safe_subset(self):
         """We MUST NOT expose tools codex already has, because codex'

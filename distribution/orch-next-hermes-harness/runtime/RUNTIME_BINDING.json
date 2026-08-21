@@ -135,11 +135,11 @@
     },
     {
       "path": "tui_gateway/sdo_adapter.py",
-      "sha256": "22f16a4a6e565bb1eaf2b45016698a5f38a0aa016ef2a54096f57d83c278a3ac"
+      "sha256": "08ec8110f176f97896022c5e5035cf6ca967ef3367fb59d0d0cc6c984c411a5b"
     },
     {
       "path": "tui_gateway/server.py",
-      "sha256": "ec0b4ac386d785678633ec6881f6830aa433c6df250db5bb99bf9839a3b2f109"
+      "sha256": "99d23ff4ca4b4d1a077b7168e4d4d7bb679de561b026b4b7c80343f0434a169c"
     },
     {
       "path": "runtime/sdo_producer/scripts/ops/issue_inc178_current_transition.py",
@@ -226,7 +226,7 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "14c53330b3046cd4fa9cf682d674fcfb6bf4d81a50599fa4da7a7a7aca5b48a2",
+  "runtime_files_digest": "4f6e44a965bc594b5193d173978f01913d2021a4946f691a89ad234f53967ae7",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
   "runtime_python_sha256": "4c78423e7d5986362ac04df40edb18cdd1174f9818d653402e3abbd2a5bbf793",

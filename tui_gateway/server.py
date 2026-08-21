@@ -9,8 +9,10 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -1395,9 +1397,199 @@ def _orch_sdo_unavailable(_context: dict) -> None:
     return unavailable_decision(_context)
 
 
-# Later distribution/runtime binding may inject the current callable. The
-# source-only default is unavailable and cannot select a fallback route.
-_orch_sdo_decision_callable = _orch_sdo_unavailable
+_ORCH_SDO_GIT_TIMEOUT_S = 2.0
+_ORCH_SDO_PRODUCER_TIMEOUT_S = 5.0
+_ORCH_SDO_MAX_STDOUT_BYTES = 1_048_576
+
+
+def _orch_sdo_producer_source() -> tuple[Path, Path]:
+    """Resolve and verify the fixed producer from distribution authority."""
+
+    from scripts import orch_next_hermes_distribution as distribution
+
+    expected_root = Path(__file__).resolve(strict=True).parents[1]
+    lexical_root = distribution._repo_root()
+    if lexical_root.is_symlink():
+        raise RuntimeError("sdo producer root unavailable")
+    source_root = lexical_root.resolve(strict=True)
+    if source_root != expected_root:
+        raise RuntimeError("sdo producer root mismatch")
+    binding = distribution._sdo_producer_binding(source_root)
+    mirror_relative = binding.get("root") if isinstance(binding, dict) else None
+    consumer_relative = (
+        binding.get("consumer_path") if isinstance(binding, dict) else None
+    )
+    if not isinstance(mirror_relative, str) or not isinstance(consumer_relative, str):
+        raise RuntimeError("sdo producer binding unavailable")
+    mirror_path = Path(mirror_relative)
+    consumer_path = Path(consumer_relative)
+    if (
+        mirror_path.is_absolute()
+        or consumer_path.is_absolute()
+        or ".." in mirror_path.parts
+        or ".." in consumer_path.parts
+    ):
+        raise RuntimeError("sdo producer binding invalid")
+
+    cursor = source_root
+    for component in (*mirror_path.parts, *consumer_path.parts):
+        cursor = cursor / component
+        if cursor.is_symlink():
+            raise RuntimeError("sdo producer path unavailable")
+    producer = cursor.resolve(strict=True)
+    if not producer.is_file() or not producer.is_relative_to(source_root):
+        raise RuntimeError("sdo producer path unavailable")
+    return source_root, producer
+
+
+def _orch_sdo_git_identity(source_root: Path) -> dict[str, str]:
+    """Bind the producer call to the current exact Git worktree and HEAD."""
+
+    completed = subprocess.run(
+        [
+            "/usr/bin/git",
+            "-C",
+            str(source_root),
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "HEAD",
+            "--git-common-dir",
+        ],
+        cwd=source_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+        timeout=_ORCH_SDO_GIT_TIMEOUT_S,
+        shell=False,
+    )
+    if completed.returncode != 0 or not isinstance(completed.stdout, str):
+        raise RuntimeError("sdo producer git identity unavailable")
+    lines = completed.stdout.splitlines()
+    if len(lines) != 3:
+        raise RuntimeError("sdo producer git identity invalid")
+    observed_root = Path(lines[0]).resolve(strict=True)
+    head = lines[1]
+    common_git_dir = Path(lines[2]).resolve(strict=True)
+    if observed_root != source_root or re.fullmatch(r"[0-9a-f]{40}", head) is None:
+        raise RuntimeError("sdo producer git identity mismatch")
+    return {
+        "head": head,
+        "repo_id": "opaque:sha256:"
+        + hashlib.sha256(str(common_git_dir).encode("utf-8")).hexdigest(),
+        "worktree_id": "opaque:sha256:"
+        + hashlib.sha256(str(source_root).encode("utf-8")).hexdigest(),
+    }
+
+
+def _orch_sdo_private_state_root(project_id: str) -> tuple[Path, Path]:
+    """Return an owner-private project state directory under HERMES_HOME."""
+
+    home = Path(get_hermes_home())
+    if not home.is_absolute() or home.is_symlink() or not home.is_dir():
+        raise RuntimeError("sdo producer state unavailable")
+    resolved_home = home.resolve(strict=True)
+    project_digest = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
+    cursor = resolved_home
+    for component in ("state", "orch-sdo-producer", project_digest):
+        cursor = cursor / component
+        if cursor.exists():
+            if cursor.is_symlink() or not cursor.is_dir():
+                raise RuntimeError("sdo producer state unavailable")
+        else:
+            cursor.mkdir(mode=0o700)
+        resolved = cursor.resolve(strict=True)
+        if not resolved.is_relative_to(resolved_home):
+            raise RuntimeError("sdo producer state unavailable")
+        metadata = resolved.stat()
+        if metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+            raise RuntimeError("sdo producer state unavailable")
+        cursor = resolved
+    return resolved_home, cursor
+
+
+def _orch_current_sdo_decision(context: dict) -> dict | None:
+    """Run the fixed current SDO producer and return only its compact claim."""
+
+    from hermes_state import validate_orch_operational_context
+    from tui_gateway.sdo_adapter import project_natural_producer_result
+
+    context_status, authenticated = validate_orch_operational_context(context)
+    if context_status != "context_accepted" or authenticated is None:
+        return None
+    source_root, producer = _orch_sdo_producer_source()
+    source_identity = _orch_sdo_git_identity(source_root)
+    binding = authenticated["decision_binding"]
+    if source_identity["head"] != binding["runtime_revision"]:
+        return None
+    hermes_home, state_root = _orch_sdo_private_state_root(binding["project_id"])
+    environment = {
+        "HOME": str(hermes_home),
+        "HERMES_HOME": str(hermes_home),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONUTF8": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+    }
+    with tempfile.TemporaryDirectory(prefix="run-", dir=state_root) as temporary:
+        output_dir = Path(temporary) / "output"
+        state_file = state_root / "cmd-state.json"
+        command = [
+            sys.executable,
+            str(producer),
+            "--natural-project-id",
+            binding["project_id"],
+            "--natural-goal-ref",
+            authenticated["goal"],
+            "--natural-phase-ref",
+            authenticated["task_declaration"]["task_class"],
+            "--natural-operation-id",
+            authenticated["operation_id"],
+            "--natural-task-root",
+            str(source_root),
+            "--output-dir",
+            str(output_dir),
+            "--cmd-state-file",
+            str(state_file),
+            "--json",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=source_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=_ORCH_SDO_PRODUCER_TIMEOUT_S,
+                shell=False,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if (
+            completed.returncode != 0
+            or not isinstance(completed.stdout, str)
+            or len(completed.stdout.encode("utf-8")) > _ORCH_SDO_MAX_STDOUT_BYTES
+        ):
+            return None
+        try:
+            raw_result = json.loads(completed.stdout)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return project_natural_producer_result(
+            raw_result,
+            context=authenticated,
+            source_identity=source_identity,
+        )
+
+
+# Operational prompt submission uses the pinned current producer.  The
+# injected callable argument below remains a test-only seam.
+_orch_sdo_decision_callable = _orch_current_sdo_decision
 
 
 def _orch_profile_name(session: dict) -> str:
@@ -1584,7 +1776,7 @@ def _consume_orch_sdo_submit(
     decision_callable=None,
     gateway_session_id: str | None = None,
 ) -> dict:
-    """Reserve, consume, claim, and project one injected SDO decision."""
+    """Reserve, produce/consume, claim, and project one SDO decision."""
     del params
     from tui_gateway.sdo_adapter import (
         apply_sdo_decision_to_session,

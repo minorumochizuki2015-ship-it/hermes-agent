@@ -2,6 +2,11 @@
 
 import copy
 from contextlib import contextmanager
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import subprocess
 import threading
 from types import SimpleNamespace
 import time
@@ -91,6 +96,384 @@ def _orch_context(operation_id: str) -> dict:
             "prompt_contract_digest": "a" * 64,
         },
     }
+
+
+def _natural_producer_result(
+    context: dict,
+    *,
+    receipt_overrides: dict | None = None,
+    result_overrides: dict | None = None,
+) -> dict:
+    expires_at = datetime.fromtimestamp(
+        time.time() + 120.0, tz=timezone.utc
+    ).isoformat().replace("+00:00", "Z")
+    route = {
+        "provider": sdo_adapter.NATURAL_PROVIDER,
+        "model": sdo_adapter.NATURAL_MODEL,
+        "reasoning_effort": sdo_adapter.NATURAL_EFFORT,
+        "selection_reason": sdo_adapter.NATURAL_SELECTION_REASON,
+        "runtime_identity_verified": False,
+        "fast_mode": {
+            "selected": True,
+            "service_tier_preference": sdo_adapter.NATURAL_TIER,
+            "claim_withheld": True,
+            "runtime_verified": False,
+            "selection_reason": "luna_max_precision_latency_priority",
+        },
+    }
+    selected_action = "natural-safe-local-cause-repair"
+    receipt = {
+        "schema_version": "sdo_decision_receipt.v1",
+        "project_id": context["decision_binding"]["project_id"],
+        "repo_facts": {
+            "head_ref": context["decision_binding"]["runtime_revision"],
+            "goal_ref": context["goal"],
+            "phase_ref": context["task_declaration"]["task_class"],
+            "transition": "return_decide_dispatch",
+        },
+        "model_route": route,
+        "receipt_id": "c" * 64,
+        "receipt_digest": "c" * 64,
+        "receipt_consumed": False,
+        "consumed_by": "",
+        "expiry": {
+            "claim_ttl_seconds": 300,
+            "expires_at": expires_at,
+            "scope": "current_transition",
+        },
+        "protected_transition": {
+            "requested": False,
+            "allowed": False,
+            "execution_authorized": False,
+            "reason": "PROTECTED_TRANSITION_NOT_REQUESTED",
+        },
+        "receipt_expiry_is_authority": False,
+        "support_work_progress_credit": 0,
+        "selected_action_id": selected_action,
+        "base_selected_action_id": selected_action,
+        "decision": "CONTINUE_LOCAL",
+        "capability_delta": {"action_changed": False},
+        "safe_local_continuation": True,
+    }
+    receipt.update(receipt_overrides or {})
+    _reseal_natural_result_receipt({"sdo_decision_receipt": receipt})
+    result = {
+        "status": "PASS_WHOLE_GOAL_CONTROL_SUPPORT_ONLY",
+        "support_work_progress_credit": 0,
+        "decision": receipt["decision"],
+        "selected_action_id": receipt["selected_action_id"],
+        "authority_transition": {
+            "requested": False,
+            "allowed": False,
+            "execution_authorized": False,
+        },
+        "model_routing": {
+            key: route[key]
+            for key in (
+                "provider",
+                "model",
+                "reasoning_effort",
+                "selection_reason",
+                "runtime_identity_verified",
+            )
+        },
+        "sdo_decision_receipt": receipt,
+    }
+    result.update(result_overrides or {})
+    return result
+
+
+def _reseal_natural_result_receipt(result: dict) -> None:
+    receipt = result["sdo_decision_receipt"]
+    receipt_content = {
+        key: value
+        for key, value in receipt.items()
+        if key not in {
+            "receipt_id",
+            "receipt_digest",
+            "receipt_consumed",
+            "consumed_by",
+        }
+    }
+    receipt_digest = hashlib.sha256(
+        json.dumps(receipt_content, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    receipt["receipt_id"] = receipt_digest
+    receipt["receipt_digest"] = receipt_digest
+
+
+def test_current_producer_projection_is_compact_and_never_grants_authority() -> None:
+    context = _orch_context("operation-natural-projection")
+    source_identity = {
+        "head": context["decision_binding"]["runtime_revision"],
+        "repo_id": "opaque:sha256:" + "d" * 64,
+        "worktree_id": "opaque:sha256:" + "e" * 64,
+    }
+
+    projected = sdo_adapter.project_natural_producer_result(
+        _natural_producer_result(context),
+        context=context,
+        source_identity=source_identity,
+    )
+
+    assert projected is not None
+    assert set(projected) == sdo_adapter.NATURAL_DECISION_FIELDS
+    assert projected["binding"] == {
+        "project_id": context["decision_binding"]["project_id"],
+        "repo_id": source_identity["repo_id"],
+        "worktree_id": source_identity["worktree_id"],
+        "goal_ref": context["goal"],
+        "request_ref": context["decision_binding"]["decision_id"],
+        "transition": sdo_adapter.NATURAL_TRANSITION,
+        "logical_session_id": context["decision_binding"]["logical_session_id"],
+        "operation_id": context["operation_id"],
+    }
+    assert projected["provider"] == "openai-codex"
+    assert projected["model"] == "gpt-5.6-luna"
+    assert projected["effort"] == "max"
+    assert projected["tier"] == "fast"
+    assert "execution_authorized" not in projected
+    assert "protected_transition" not in projected
+    admitted = sdo_adapter.consume_sdo_decision(projected, context=context)
+    assert admitted["claim_status"] == "admitted"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_project",
+        "wrong_head",
+        "wrong_goal",
+        "wrong_phase",
+        "stale_context",
+        "stale_receipt",
+        "receipt_digest_drift",
+        "receipt_already_consumed",
+        "protected_requested",
+        "protected_allowed",
+        "execution_authorized",
+        "top_authority_grant",
+        "wrong_model",
+        "wrong_tier",
+        "top_decision_mismatch",
+    ],
+)
+def test_current_producer_projection_rejects_unbound_or_authorizing_results(
+    mutation,
+) -> None:
+    context = _orch_context("operation-natural-reject")
+    source_identity = {
+        "head": context["decision_binding"]["runtime_revision"],
+        "repo_id": "opaque:sha256:" + "d" * 64,
+        "worktree_id": "opaque:sha256:" + "e" * 64,
+    }
+    result = _natural_producer_result(context)
+    receipt = result["sdo_decision_receipt"]
+
+    if mutation == "wrong_project":
+        receipt["project_id"] = "other-project"
+    elif mutation == "wrong_head":
+        receipt["repo_facts"]["head_ref"] = "2" * 40
+    elif mutation == "wrong_goal":
+        receipt["repo_facts"]["goal_ref"] = "other-goal"
+    elif mutation == "wrong_phase":
+        receipt["repo_facts"]["phase_ref"] = "other-phase"
+    elif mutation == "stale_context":
+        context["expires_at"] = time.time() - 1.0
+    elif mutation == "stale_receipt":
+        receipt["expiry"]["expires_at"] = "2000-01-01T00:00:00Z"
+    elif mutation == "receipt_digest_drift":
+        receipt["decision"] = "REPLAN_NOW"
+    elif mutation == "receipt_already_consumed":
+        receipt["receipt_consumed"] = True
+        receipt["consumed_by"] = "other-consumer"
+    elif mutation == "protected_requested":
+        receipt["protected_transition"]["requested"] = True
+    elif mutation == "protected_allowed":
+        receipt["protected_transition"]["allowed"] = True
+    elif mutation == "execution_authorized":
+        receipt["protected_transition"]["execution_authorized"] = True
+    elif mutation == "top_authority_grant":
+        result["authority_transition"] = {
+            "allowed": True,
+            "execution_authorized": True,
+        }
+    elif mutation == "wrong_model":
+        receipt["model_route"]["model"] = "gpt-5.6-sol"
+    elif mutation == "wrong_tier":
+        receipt["model_route"]["fast_mode"]["service_tier_preference"] = "standard"
+    elif mutation == "top_decision_mismatch":
+        result["decision"] = "REPLAN_NOW"
+
+    if mutation != "receipt_digest_drift":
+        _reseal_natural_result_receipt(result)
+
+    assert (
+        sdo_adapter.project_natural_producer_result(
+            result,
+            context=context,
+            source_identity=source_identity,
+        )
+        is None
+    )
+
+
+def test_default_natural_producer_uses_pinned_source_and_private_state(
+    monkeypatch, tmp_path
+) -> None:
+    context = _orch_context("operation-natural-default")
+    repo_root = Path(server.__file__).resolve().parents[1]
+    producer = repo_root / "runtime" / "sdo-producer-test.py"
+    common_git_dir = tmp_path / "common.git"
+    common_git_dir.mkdir(mode=0o700)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(mode=0o700)
+    calls = []
+
+    monkeypatch.setattr(
+        server,
+        "_orch_sdo_producer_source",
+        lambda: (repo_root, producer),
+        raising=False,
+    )
+    monkeypatch.setattr(server, "get_hermes_home", lambda: hermes_home)
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        assert kwargs.get("shell") is False
+        if command[0] == "/usr/bin/git":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    f"{repo_root}\n"
+                    f"{context['decision_binding']['runtime_revision']}\n"
+                    f"{common_git_dir}\n"
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(_natural_producer_result(context)),
+            stderr="",
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+
+    decision = server._orch_current_sdo_decision(context)
+
+    assert decision is not None
+    assert decision["provider"] == "openai-codex"
+    assert decision["model"] == "gpt-5.6-luna"
+    assert decision["effort"] == "max"
+    assert decision["tier"] == "fast"
+    producer_command, producer_kwargs = calls[1]
+    assert producer_command[0] == server.sys.executable
+    assert producer_command[1] == str(producer)
+    assert producer_command[2:] == [
+        "--natural-project-id",
+        context["decision_binding"]["project_id"],
+        "--natural-goal-ref",
+        context["goal"],
+        "--natural-phase-ref",
+        context["task_declaration"]["task_class"],
+        "--natural-operation-id",
+        context["operation_id"],
+        "--natural-task-root",
+        str(repo_root),
+        "--output-dir",
+        producer_command[13],
+        "--cmd-state-file",
+        producer_command[15],
+        "--json",
+    ]
+    assert Path(producer_command[13]).parent.parent.is_relative_to(
+        hermes_home / "state" / "orch-sdo-producer"
+    )
+    assert Path(producer_command[15]).is_relative_to(
+        hermes_home / "state" / "orch-sdo-producer"
+    )
+    state_root = Path(producer_command[15]).parent
+    assert not state_root.is_symlink()
+    assert state_root.stat().st_mode & 0o077 == 0
+    assert producer_kwargs["cwd"] == repo_root
+    assert producer_kwargs["timeout"] > 0
+    assert producer_kwargs["stderr"] is subprocess.DEVNULL
+    assert producer_kwargs["env"]["HERMES_HOME"].startswith(str(hermes_home))
+    assert "sdo_decision_receipt" not in " ".join(producer_command)
+    assert "execution_authorized" not in " ".join(producer_command)
+
+
+@pytest.mark.parametrize("context_failure", ["goal", "operation", "target", "stale"])
+def test_invalid_authenticated_context_never_reaches_source_or_producer(
+    monkeypatch, context_failure
+) -> None:
+    context = _orch_context("operation-context-reject")
+    if context_failure == "stale":
+        context["expires_at"] = time.time() - 1.0
+    else:
+        context[context_failure] = "other-" + context_failure
+
+    monkeypatch.setattr(
+        server,
+        "_orch_sdo_producer_source",
+        lambda: pytest.fail("invalid context reached producer source"),
+    )
+
+    assert server._orch_current_sdo_decision(context) is None
+
+
+def test_runtime_head_mismatch_never_reaches_private_state_or_producer(
+    monkeypatch,
+) -> None:
+    context = _orch_context("operation-head-reject")
+    repo_root = Path(server.__file__).resolve().parents[1]
+    monkeypatch.setattr(
+        server,
+        "_orch_sdo_producer_source",
+        lambda: (repo_root, repo_root / "synthetic-producer.py"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_orch_sdo_git_identity",
+        lambda _root: {
+            "head": "2" * 40,
+            "repo_id": "opaque:sha256:" + "d" * 64,
+            "worktree_id": "opaque:sha256:" + "e" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "_orch_sdo_private_state_root",
+        lambda _project: pytest.fail("wrong HEAD reached private state"),
+    )
+
+    assert server._orch_current_sdo_decision(context) is None
+
+
+@pytest.mark.parametrize("binding_failure", ["wrong_root", "path_escape"])
+def test_distribution_source_resolution_rejects_wrong_root_or_escape(
+    monkeypatch, tmp_path, binding_failure
+) -> None:
+    from scripts import orch_next_hermes_distribution as distribution
+
+    repo_root = Path(server.__file__).resolve().parents[1]
+    if binding_failure == "wrong_root":
+        monkeypatch.setattr(distribution, "_repo_root", lambda: tmp_path)
+    else:
+        monkeypatch.setattr(distribution, "_repo_root", lambda: repo_root)
+        monkeypatch.setattr(
+            distribution,
+            "_sdo_producer_binding",
+            lambda _root: {
+                "root": "../outside",
+                "consumer_path": "producer.py",
+            },
+        )
+
+    with pytest.raises(RuntimeError):
+        server._orch_sdo_producer_source()
 
 
 def test_natural_route_binds_before_lazy_agent_build() -> None:
@@ -250,6 +633,286 @@ def test_invalid_injected_callable_is_withheld_after_reservation(monkeypatch) ->
     )
     assert result["claim_withheld_reason"] == "sdo_callable_invalid"
     assert db.calls == ["preflight", "begin", "finish"]
+
+
+@pytest.mark.parametrize(
+    "source_failure",
+    ["missing", "drift", "symlink", "path_escape", "wrong_worktree"],
+)
+def test_default_source_failure_is_safe_before_receipt_claim(
+    monkeypatch, source_failure
+) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    def unavailable_source():
+        raise RuntimeError("sdo producer " + source_failure)
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    monkeypatch.setattr(server, "_orch_sdo_producer_source", unavailable_source)
+    monkeypatch.setattr(
+        server, "_orch_sdo_decision_callable", server._orch_current_sdo_decision
+    )
+    session = {"session_key": "session-source-" + source_failure, "profile_home": None}
+
+    result = server._consume_orch_sdo_submit(
+        {},
+        session,
+        _orch_context("operation-source-" + source_failure),
+    )
+
+    assert result["claim_status"] == "withheld"
+    assert result["safe_local_continuation"] is True
+    assert db.calls == ["preflight", "begin", "finish"]
+    assert "_orch_model_route" not in session
+
+
+@pytest.mark.parametrize("producer_failure", ["timeout", "non_json", "nonzero"])
+def test_default_process_failure_is_safe_before_receipt_claim(
+    monkeypatch, tmp_path, producer_failure
+) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    context = _orch_context("operation-process-" + producer_failure)
+    repo_root = Path(server.__file__).resolve().parents[1]
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(mode=0o700)
+    source_identity = {
+        "head": context["decision_binding"]["runtime_revision"],
+        "repo_id": "opaque:sha256:" + "d" * 64,
+        "worktree_id": "opaque:sha256:" + "e" * 64,
+    }
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    monkeypatch.setattr(
+        server,
+        "_orch_sdo_producer_source",
+        lambda: (repo_root, repo_root / "synthetic-producer.py"),
+    )
+    monkeypatch.setattr(server, "_orch_sdo_git_identity", lambda _root: source_identity)
+    monkeypatch.setattr(server, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(
+        server, "_orch_sdo_decision_callable", server._orch_current_sdo_decision
+    )
+
+    def run(command, **kwargs):
+        assert command[0] == server.sys.executable
+        assert kwargs["shell"] is False
+        if producer_failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        if producer_failure == "non_json":
+            return subprocess.CompletedProcess(command, 0, stdout="not-json", stderr="")
+        return subprocess.CompletedProcess(command, 17, stdout="{}", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+    session = {"session_key": "session-process-" + producer_failure, "profile_home": None}
+
+    result = server._consume_orch_sdo_submit({}, session, context)
+
+    assert result["claim_status"] == "withheld"
+    assert result["safe_local_continuation"] is True
+    assert db.calls == ["preflight", "begin", "finish"]
+    assert "_orch_model_route" not in session
+
+
+def test_default_path_ignores_all_caller_sdo_sidebands(monkeypatch) -> None:
+    db = _RecordingDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    context = _orch_context("operation-sideband")
+    received = []
+
+    def current_provider(value):
+        received.append(value)
+        return _decision(
+            context["operation_id"],
+            binding=_binding_for_context(context["operation_id"], value),
+        )
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    monkeypatch.setattr(server, "_orch_sdo_decision_callable", current_provider)
+    session = {"session_key": "session-sideband", "profile_home": None}
+    params = {
+        "sdo_decision_receipt": {"execution_authorized": True},
+        "sdo_source_binding": {"head": "attacker"},
+        "sdo_candidate_action_ids": ["attacker-action"],
+        "sdo_producer_input": {"project_id": "attacker-project"},
+    }
+
+    result = server._consume_orch_sdo_submit(params, session, context)
+
+    assert result["claim_status"] == "admitted"
+    assert received == [context]
+    assert db.calls == ["preflight", "claim", "begin"]
+    assert session["_orch_model_route"]["model"] == "gpt-5.6-luna"
+
+
+def test_actual_prompt_submit_default_path_produces_claims_begins_then_builds(
+    monkeypatch,
+) -> None:
+    order = []
+
+    class OrderedDB(_RecordingDB):
+        def preflight_orch_task_observation(self, *args, **kwargs):
+            order.append("reserve")
+            return True
+
+        def claim_orch_sdo_receipt(self, *args, **kwargs):
+            order.append("claim")
+            return True
+
+        def begin_orch_task_observation(self, *args, **kwargs):
+            order.append("begin")
+            return True
+
+    db = OrderedDB()
+
+    @contextmanager
+    def db_context(_session):
+        yield db
+
+    class NoopThread:
+        def __init__(self, target, daemon=True):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            order.append("deferred-thread")
+
+        def is_alive(self):
+            return True
+
+    context = _orch_context("operation-actual-default")
+    session = {
+        "session_key": "session-actual-default",
+        "profile_home": None,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "running": False,
+        "agent_ready": threading.Event(),
+        "agent": None,
+        "cols": 80,
+    }
+
+    def current_provider(value):
+        order.append("produce-validate")
+        return _decision(
+            context["operation_id"],
+            binding=_binding_for_context(context["operation_id"], value),
+        )
+
+    monkeypatch.setattr(
+        server, "_validate_orch_submit_context", lambda _params, _rid: (context, None)
+    )
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_voice_mode_enabled", lambda: False)
+    monkeypatch.setattr(server, "current_transport", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_load_dashboard_process_isolation_config",
+        lambda: {"turn_isolation": False},
+    )
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_session_db", db_context)
+    monkeypatch.setattr(server, "_orch_sdo_decision_callable", current_provider)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args: order.append("lazy-build"),
+    )
+    monkeypatch.setattr(server.threading, "Thread", NoopThread)
+
+    response = server._methods["prompt.submit"](
+        "rid-actual-default",
+        {
+            "session_id": "gateway-actual-default",
+            "text": "自然な依頼",
+            "operational_class": "orch",
+            "operational_context": context,
+            "sdo_decision_receipt": {"execution_authorized": True},
+            "sdo_source_binding": {"head": "caller-sideband"},
+            "sdo_candidate_action_ids": ["caller-sideband"],
+            "sdo_producer_input": {"project_id": "caller-sideband"},
+        },
+    )
+
+    assert response["result"]["status"] == "streaming"
+    assert order == [
+        "reserve",
+        "produce-validate",
+        "claim",
+        "begin",
+        "lazy-build",
+        "deferred-thread",
+    ]
+    assert session["_orch_model_route"] == {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "max",
+        "service_tier_preference": "fast",
+    }
+
+
+def test_exact_receipt_digest_is_single_use_across_db_reopen(
+    monkeypatch, tmp_path
+) -> None:
+    database_path = tmp_path / "sdo-reopen.db"
+    current_db = [hermes_state.SessionDB(db_path=database_path)]
+    current_db[0].create_session("session-reopen-one", source="cli")
+
+    @contextmanager
+    def db_context(_session):
+        yield current_db[0]
+
+    monkeypatch.setattr(server, "_session_db", db_context)
+    first_context = _orch_context("operation-reopen-one")
+    first = server._consume_orch_sdo_submit(
+        {},
+        {"session_key": "session-reopen-one", "profile_home": None},
+        first_context,
+        decision_callable=lambda value: _decision(
+            first_context["operation_id"],
+            binding=_binding_for_context(first_context["operation_id"], value),
+        ),
+    )
+    assert first["claim_status"] == "admitted"
+    assert current_db[0].finish_orch_task_observation(
+        first_context["operation_id"], result_status="complete"
+    ) is True
+    current_db[0].close()
+
+    current_db[0] = hermes_state.SessionDB(db_path=database_path)
+    current_db[0].create_session("session-reopen-two", source="cli")
+    second_context = _orch_context("operation-reopen-two")
+    try:
+        second_session = {"session_key": "session-reopen-two", "profile_home": None}
+        second = server._consume_orch_sdo_submit(
+            {},
+            second_session,
+            second_context,
+            decision_callable=lambda value: _decision(
+                second_context["operation_id"],
+                binding=_binding_for_context(second_context["operation_id"], value),
+            ),
+        )
+        assert second["claim_status"] == "withheld"
+        assert second["claim_withheld_reason"] == "sdo_claim_unavailable"
+        assert "_orch_model_route" not in second_session
+    finally:
+        current_db[0].close()
 
 
 @pytest.mark.parametrize(
