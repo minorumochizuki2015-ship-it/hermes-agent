@@ -105,6 +105,8 @@ TARGET_CACHE_VERSIONS: Final = (
     "0.1.45",
     "0.1.46",
     "0.1.47",
+    authority.TERMINAL_PLUGIN_VERSION,
+    authority.ORDINARY_APPLY_PLUGIN_VERSION,
 )
 TARGET_CACHE_HANDLES: Final = {
     PREDECESSOR_VERSION: "target-cache-v013",
@@ -140,6 +142,8 @@ TARGET_CACHE_HANDLES: Final = {
     "0.1.45": "target-cache-v045",
     "0.1.46": "target-cache-v046",
     "0.1.47": "target-cache-v047",
+    authority.TERMINAL_PLUGIN_VERSION: "target-cache-v048",
+    authority.ORDINARY_APPLY_PLUGIN_VERSION: "target-cache-v049",
 }
 PREDECESSOR_SOURCE_MANIFEST_DIGEST: Final = (
     "b91ad2dbd7143f40311d7d0e073ab830f0ea1052ced3b98f4ca133b1215cf4e9"
@@ -194,10 +198,43 @@ _JOURNAL_KEYS = frozenset({
     "before_states",
     "after_states",
 })
+_TERMINAL_JOURNAL_KEYS = _JOURNAL_KEYS | frozenset({
+    "operation",
+    "predecessor_identity_digest",
+    "current_identity_digest",
+    "canonical_identity_digest",
+    "canonical_recovery",
+    "host_mutation_count",
+})
+_TERMINAL_PREPARED_KEYS = _TERMINAL_JOURNAL_KEYS - frozenset({
+    "envelope_digest",
+    "envelope_b64",
+})
+_TERMINAL_PREPARED_TEMP_LEAF: Final = ".terminal-journal.prepared.tmp"
+_TERMINAL_PREPARED_BACKUP_LEAF: Final = ".terminal-journal.prepared"
+_TERMINAL_STAGE_LEAF: Final = ".terminal-journal.stage"
+_TERMINAL_STAGE_TEMP_LEAF: Final = ".terminal-journal.stage.tmp"
+_TERMINAL_OPERATIONAL_STATES = frozenset({"qualification_pending", "orphaned"})
+_TERMINAL_REGISTRY_STATES = frozenset({"active", "installed", "inactive", "orphaned"})
+_TERMINAL_ANCHOR = "fp1-canonical-recovery"
 
 
 class AdoptionError(RuntimeError):
     """A stable, sanitized adoption failure."""
+
+
+def _require_ordinary_apply_plugin_version_alignment() -> None:
+    ordinary_version = getattr(
+        authority,
+        "ORDINARY_APPLY_PLUGIN_VERSION",
+        None,
+    )
+    if (
+        type(ordinary_version) is not str
+        or authority.PLUGIN_VERSION != ordinary_version
+        or distribution.PLUGIN_VERSION != ordinary_version
+    ):
+        raise AdoptionError("ordinary_apply_plugin_version_mismatch")
 
 
 class InjectedCrash(BaseException):
@@ -1035,6 +1072,154 @@ class HostState:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalHostState:
+    """Sanitized read-only identity of one installed 0.1.48 host state."""
+
+    host: str
+    plugin_version: str
+    operational_adoption: str
+    registry_state: str
+    cache_digest: str
+    cache_identity_digest: str
+    marketplace_digest: str
+    marketplace_identity_digest: str
+    orphan_marker_digest: str | None
+
+    def projection(self) -> dict[str, object]:
+        return {
+            "cache_digest": self.cache_digest,
+            "cache_identity_digest": self.cache_identity_digest,
+            "host": self.host,
+            "marketplace_digest": self.marketplace_digest,
+            "marketplace_identity_digest": self.marketplace_identity_digest,
+            "operational_adoption": self.operational_adoption,
+            "orphan_marker_digest": self.orphan_marker_digest,
+            "plugin_version": self.plugin_version,
+            "registry_state": self.registry_state,
+        }
+
+    @classmethod
+    def from_projection(
+        cls,
+        value: object,
+        *,
+        expected_host: str,
+    ) -> "TerminalHostState":
+        keys = {
+            "cache_digest",
+            "cache_identity_digest",
+            "host",
+            "marketplace_digest",
+            "marketplace_identity_digest",
+            "operational_adoption",
+            "orphan_marker_digest",
+            "plugin_version",
+            "registry_state",
+        }
+        if type(value) is not dict or set(value) != keys:
+            raise AdoptionError("terminal_state_projection_invalid")
+        orphan_digest = value["orphan_marker_digest"]
+        if (
+            value["host"] != expected_host
+            or value["plugin_version"] != authority.TERMINAL_PLUGIN_VERSION
+            or value["operational_adoption"] not in _TERMINAL_OPERATIONAL_STATES
+            or value["registry_state"] not in _TERMINAL_REGISTRY_STATES
+            or any(
+                _safe_sha256(value[key]) is None
+                for key in (
+                    "cache_digest",
+                    "cache_identity_digest",
+                    "marketplace_digest",
+                    "marketplace_identity_digest",
+                )
+            )
+            or (orphan_digest is not None and _safe_sha256(orphan_digest) is None)
+            or (
+                value["operational_adoption"] == "orphaned"
+                and orphan_digest is None
+            )
+            or (
+                value["operational_adoption"] != "orphaned"
+                and orphan_digest is not None
+            )
+        ):
+            raise AdoptionError("terminal_state_projection_invalid")
+        return cls(**value)
+
+    def identity_digest(self) -> str:
+        checked = self.from_projection(self.projection(), expected_host=self.host)
+        return _canonical_digest(checked.projection())
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalRecoveryState:
+    """Path-free identity of the clean executable FP1 recovery anchor."""
+
+    anchor: str
+    source_revision: str
+    source_bundle_digest: str
+    source_tree_digest: str
+    interpreter_digest: str
+    clean: bool
+    interpreter_executable: bool
+
+    def projection(self) -> dict[str, object]:
+        return {
+            "anchor": self.anchor,
+            "clean": self.clean,
+            "interpreter_digest": self.interpreter_digest,
+            "interpreter_executable": self.interpreter_executable,
+            "source_bundle_digest": self.source_bundle_digest,
+            "source_revision": self.source_revision,
+            "source_tree_digest": self.source_tree_digest,
+        }
+
+    @classmethod
+    def from_projection(cls, value: object) -> "CanonicalRecoveryState":
+        keys = {
+            "anchor",
+            "clean",
+            "interpreter_digest",
+            "interpreter_executable",
+            "source_bundle_digest",
+            "source_revision",
+            "source_tree_digest",
+        }
+        if type(value) is not dict or set(value) != keys:
+            raise AdoptionError("canonical_recovery_projection_invalid")
+        if (
+            value["anchor"] != _TERMINAL_ANCHOR
+            or value["source_revision"] != authority.TERMINAL_SOURCE_REVISION
+            or any(
+                _safe_sha256(value[key]) is None
+                for key in (
+                    "source_bundle_digest",
+                    "source_tree_digest",
+                    "interpreter_digest",
+                )
+            )
+            or type(value["clean"]) is not bool
+            or type(value["interpreter_executable"]) is not bool
+        ):
+            raise AdoptionError("canonical_recovery_projection_invalid")
+        return cls(**value)
+
+    def identity_digest(self) -> str:
+        checked = self.from_projection(self.projection())
+        return _canonical_digest(checked.projection())
+
+
+class TerminalHostObserver(Protocol):
+    name: str
+
+    def observe(self) -> TerminalHostState: ...
+
+
+class CanonicalRecoveryObserver(Protocol):
+    def observe(self) -> CanonicalRecoveryState: ...
+
+
 class AdoptionHostAdapter(Protocol):
     name: str
 
@@ -1349,6 +1534,42 @@ def _states_digest(states: Sequence[HostState]) -> str:
     return _canonical_digest([state.projection() for state in states])
 
 
+def _terminal_states_digest(states: Sequence[TerminalHostState]) -> str:
+    if tuple(state.host for state in states) != HOST_ORDER:
+        raise AdoptionError("host_order_mismatch")
+    checked = [
+        TerminalHostState.from_projection(
+            state.projection(),
+            expected_host=host,
+        )
+        for state, host in zip(states, HOST_ORDER, strict=True)
+    ]
+    if checked[0].identity_digest() == checked[1].identity_digest():
+        raise AdoptionError("terminal_host_identity_collision")
+    return _canonical_digest([state.projection() for state in checked])
+
+
+def _terminal_current_identity_digest(
+    states: Sequence[TerminalHostState],
+) -> str:
+    if tuple(state.host for state in states) != HOST_ORDER:
+        raise AdoptionError("host_order_mismatch")
+    return _canonical_digest({
+        "claude": states[1].identity_digest(),
+        "codex": states[0].identity_digest(),
+        "target_set": list(HOST_ORDER),
+    })
+
+
+def _admit_canonical_recovery(state: CanonicalRecoveryState) -> CanonicalRecoveryState:
+    checked = CanonicalRecoveryState.from_projection(state.projection())
+    if not checked.interpreter_executable:
+        raise AdoptionError("canonical_recovery_interpreter_unavailable")
+    if not checked.clean:
+        raise AdoptionError("canonical_recovery_source_dirty")
+    return checked
+
+
 def _safe_transaction_id(value: object) -> str:
     checked = authority._safe_id(value)
     if checked is None:
@@ -1381,6 +1602,30 @@ def _fixed_state_root() -> Path:
         / "profiles"
         / "orch"
         / f"plugin-adoption-{version_handle.removeprefix('target-cache-')}"
+    )
+
+
+def _fixed_terminal_state_root() -> Path:
+    """Return the dedicated fresh 0.1.48 terminal transaction root."""
+
+    return (
+        _fixed_user_home()
+        / ".hermes"
+        / "profiles"
+        / "orch"
+        / "plugin-adoption-terminal-v048"
+    )
+
+
+def _fixed_canonical_recovery_root() -> Path:
+    """Return the one fixed FP1 recovery checkout admitted by terminalize."""
+
+    return (
+        _fixed_user_home()
+        / "ORCH-Next"
+        / "worktrees"
+        / "hermes-agent"
+        / "hermes-fp1-state-schema-20260814"
     )
 
 
@@ -1571,6 +1816,51 @@ def _rename_directory_exclusive(
     )
 
 
+def _exchange_directory_entries(
+    parent_descriptor: int,
+    first_name: str,
+    second_name: str,
+) -> None:
+    """Atomically exchange two sibling entries without discarding either."""
+
+    if any(
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\0" in name
+        for name in (first_name, second_name)
+    ):
+        raise AdoptionError("terminal_final_exchange_unsupported")
+    library = ctypes.CDLL(None, use_errno=True)
+    try:
+        if sys.platform == "darwin":
+            rename = library.renameatx_np
+        elif sys.platform.startswith("linux"):
+            rename = library.renameat2
+        else:
+            raise AdoptionError("terminal_final_exchange_unsupported")
+    except AttributeError as exc:
+        raise AdoptionError("terminal_final_exchange_unsupported") from exc
+    rename.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    rename.restype = ctypes.c_int
+    result = rename(
+        parent_descriptor,
+        os.fsencode(first_name),
+        parent_descriptor,
+        os.fsencode(second_name),
+        0x00000002,  # RENAME_SWAP (Darwin) / RENAME_EXCHANGE (Linux)
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, "terminal final exchange failed")
+
+
 def _atomic_private_write(path: Path, content: bytes) -> None:
     _lstat_admitted_directory(path.parent, create=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -1632,6 +1922,10 @@ def _journal_path(root: Path) -> Path:
     return root / "journal.json"
 
 
+def _terminal_stage_path(root: Path) -> Path:
+    return root / _TERMINAL_STAGE_LEAF
+
+
 def _history_root(root: Path) -> Path:
     return root.parent / "plugin-adoption-history"
 
@@ -1686,6 +1980,144 @@ def _journal_bytes(record: dict[str, object]) -> bytes:
     return _json_bytes(record)
 
 
+def _terminal_record_bytes(
+    record: dict[str, object],
+    *,
+    phase: str,
+    keys: frozenset[str],
+) -> bytes:
+    if set(record) != keys:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    if (
+        record["schema"] != JOURNAL_SCHEMA
+        or record["phase"] != phase
+        or record["operation"] != authority.TERMINAL_OPERATION
+        or record["host_mutation_count"] != 0
+        or record["before_state_digest"] != record["after_state_digest"]
+        or record["before_states"] != record["after_states"]
+    ):
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    for key in (
+        "plan_digest",
+        "before_state_digest",
+        "after_state_digest",
+        "rollback_manifest_digest",
+        "request_digest",
+        "predecessor_identity_digest",
+        "current_identity_digest",
+        "canonical_identity_digest",
+    ):
+        if _safe_sha256(record[key]) is None:
+            raise AdoptionError("terminal_journal_contract_mismatch")
+    if "envelope_digest" in keys and _safe_sha256(record["envelope_digest"]) is None:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    for key in ("transaction_id", "decision_id"):
+        _safe_transaction_id(record[key])
+    encoded_keys = ["request_b64"]
+    if "envelope_b64" in keys:
+        encoded_keys.append("envelope_b64")
+    decoded: dict[str, bytes] = {}
+    for key in encoded_keys:
+        value = record[key]
+        if type(value) is not str or len(value) > 256 * 1024:
+            raise AdoptionError("terminal_journal_contract_mismatch")
+        try:
+            decoded[key] = base64.b64decode(value, validate=True)
+        except Exception as exc:
+            raise AdoptionError("terminal_journal_contract_mismatch") from exc
+    request_bytes = decoded["request_b64"]
+    if hashlib.sha256(request_bytes).hexdigest() != record["request_digest"]:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    if "envelope_b64" in decoded and (
+        hashlib.sha256(decoded["envelope_b64"]).hexdigest()
+        != record["envelope_digest"]
+    ):
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    try:
+        request_value = authority._base._parse_canonical_authority_payload(
+            request_bytes
+        )
+        request = authority.validate_terminal_request(request_value)
+        if authority.canonical_bytes(request) != request_bytes:
+            raise AdoptionError("terminal_journal_contract_mismatch")
+    except authority.PluginAdoptionAuthorityError as exc:
+        raise AdoptionError("terminal_journal_contract_mismatch") from exc
+    states = []
+    for key in ("before_states", "after_states"):
+        value = record[key]
+        if type(value) is not list or len(value) != len(HOST_ORDER):
+            raise AdoptionError("terminal_journal_contract_mismatch")
+        parsed = [
+            TerminalHostState.from_projection(item, expected_host=host)
+            for item, host in zip(value, HOST_ORDER, strict=True)
+        ]
+        if _terminal_states_digest(parsed) != record[f"{key.removesuffix('s')}_digest"]:
+            raise AdoptionError("terminal_journal_contract_mismatch")
+        states.append(parsed)
+    if states[0][0].identity_digest() == states[0][1].identity_digest():
+        raise AdoptionError("terminal_host_identity_collision")
+    if _terminal_current_identity_digest(states[0]) != record["current_identity_digest"]:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    recovery = CanonicalRecoveryState.from_projection(record["canonical_recovery"])
+    if recovery.identity_digest() != record["canonical_identity_digest"]:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    plan = request["plan"]
+    actual = request["actual"]
+    rollback_manifest_digest = _canonical_digest({
+        "host_order": list(HOST_ORDER),
+        "policy": "observation_only_no_host_mutation.v1",
+        "states": [state.projection() for state in states[0]],
+    })
+    predecessor_identity_digest = _canonical_digest({
+        "host_state_digests": [
+            state.identity_digest() for state in states[0]
+        ],
+        "operation": authority.TERMINAL_OPERATION,
+        "plugin_id": authority.PLUGIN_ID,
+        "plugin_version": authority.TERMINAL_PLUGIN_VERSION,
+    })
+    if (
+        actual["transaction_id"] != record["transaction_id"]
+        or actual["decision_id"] != record["decision_id"]
+        or plan["plan_digest"] != record["plan_digest"]
+        or plan["before_state_digest"] != record["before_state_digest"]
+        or plan["after_state_digest"] != record["after_state_digest"]
+        or plan["rollback_manifest_digest"]
+        != record["rollback_manifest_digest"]
+        or plan["rollback_manifest_digest"] != rollback_manifest_digest
+        or plan["predecessor_identity_digest"]
+        != record["predecessor_identity_digest"]
+        or plan["predecessor_identity_digest"]
+        != predecessor_identity_digest
+        or plan["current_identity_digest"] != record["current_identity_digest"]
+        or plan["codex_current_state_digest"]
+        != states[0][0].identity_digest()
+        or plan["claude_current_state_digest"]
+        != states[0][1].identity_digest()
+        or plan["canonical_identity_digest"]
+        != record["canonical_identity_digest"]
+        or plan["source_bundle_digest"] != recovery.source_bundle_digest
+    ):
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    return _json_bytes(record)
+
+
+def _terminal_prepared_bytes(record: dict[str, object]) -> bytes:
+    return _terminal_record_bytes(
+        record,
+        phase="REQUEST_PREPARED",
+        keys=_TERMINAL_PREPARED_KEYS,
+    )
+
+
+def _terminal_journal_bytes(record: dict[str, object]) -> bytes:
+    return _terminal_record_bytes(
+        record,
+        phase="COMMITTED",
+        keys=_TERMINAL_JOURNAL_KEYS,
+    )
+
+
 def _read_journal(root: Path) -> dict[str, object]:
     try:
         value = json.loads(_private_file_bytes(_journal_path(root)).decode("ascii"))
@@ -1697,8 +2129,719 @@ def _read_journal(root: Path) -> dict[str, object]:
     return value
 
 
+def _read_terminal_journal(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(_private_file_bytes(_journal_path(root)).decode("ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("terminal_journal_unavailable") from exc
+    if type(value) is not dict:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    _terminal_journal_bytes(value)
+    return value
+
+
+def _read_terminal_prepared(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(_private_file_bytes(_journal_path(root)).decode("ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("terminal_prepared_unavailable") from exc
+    if type(value) is not dict:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    _terminal_prepared_bytes(value)
+    return value
+
+
+def _read_terminal_stage(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(
+            _private_file_bytes(_terminal_stage_path(root)).decode("ascii")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("terminal_stage_unavailable") from exc
+    if type(value) is not dict:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    _terminal_journal_bytes(value)
+    return value
+
+
+def _read_terminal_record(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads(_private_file_bytes(_journal_path(root)).decode("ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError("terminal_journal_unavailable") from exc
+    if type(value) is not dict:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    if value.get("phase") == "REQUEST_PREPARED":
+        _terminal_prepared_bytes(value)
+    elif value.get("phase") == "COMMITTED":
+        _terminal_journal_bytes(value)
+    else:
+        raise AdoptionError("terminal_journal_contract_mismatch")
+    return value
+
+
 def _write_journal(root: Path, record: dict[str, object]) -> None:
     _atomic_private_write(_journal_path(root), _journal_bytes(record))
+
+
+def _terminal_file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_gid,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _terminal_rename_identity_matches(
+    before: tuple[int, ...],
+    after: tuple[int, ...],
+) -> bool:
+    """Admit only the ctime transition caused by renaming a bound file."""
+
+    return before[:-1] == after[:-1] and after[-1] >= before[-1]
+
+
+def _open_terminal_root(root: Path, *, failure: str) -> int:
+    _lstat_admitted_directory(root)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(root, flags)
+        info = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise AdoptionError(failure) from exc
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        os.close(descriptor)
+        raise AdoptionError(failure)
+    return descriptor
+
+
+def _terminal_temp_snapshot(
+    root: Path,
+    leaf: str,
+) -> tuple[bytes, tuple[int, ...]]:
+    """Read one bounded deterministic residue through its admitted root fd."""
+
+    directory = _open_terminal_root(root, failure="terminal_temp_drift")
+    descriptor = -1
+    try:
+        info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+            or info.st_size > 512 * 1024
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        descriptor = os.open(
+            leaf,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory,
+        )
+        before = os.fstat(descriptor)
+        identity = _terminal_file_identity(before)
+        if identity != _terminal_file_identity(info):
+            raise AdoptionError("terminal_temp_drift")
+        content = bytearray()
+        while chunk := os.read(descriptor, 64 * 1024):
+            content.extend(chunk)
+            if len(content) > 512 * 1024:
+                raise AdoptionError("terminal_temp_drift")
+        after = os.fstat(descriptor)
+        path_after = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+        if (
+            identity != _terminal_file_identity(after)
+            or identity != _terminal_file_identity(path_after)
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        return bytes(content), identity
+    except OSError as exc:
+        raise AdoptionError("terminal_temp_drift") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory)
+
+
+def _terminal_leaf_record(
+    root: Path,
+    leaf: str,
+    *,
+    phase: str,
+    failure: str,
+) -> tuple[dict[str, object], bytes, tuple[int, ...]]:
+    try:
+        content, identity = _terminal_temp_snapshot(root, leaf)
+        value = json.loads(content.decode("ascii"))
+    except (AdoptionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError(failure) from exc
+    if type(value) is not dict:
+        raise AdoptionError(failure)
+    try:
+        canonical = (
+            _terminal_prepared_bytes(value)
+            if phase == "REQUEST_PREPARED"
+            else _terminal_journal_bytes(value)
+        )
+    except AdoptionError as exc:
+        raise AdoptionError(failure) from exc
+    if canonical != content:
+        raise AdoptionError(failure)
+    return value, content, identity
+
+
+def _remove_terminal_temp(
+    root: Path,
+    leaf: str,
+    identity: tuple[int, ...],
+) -> None:
+    directory = _open_terminal_root(root, failure="terminal_temp_drift")
+    try:
+        current = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+        if _terminal_file_identity(current) != identity:
+            raise AdoptionError("terminal_temp_drift")
+        os.unlink(leaf, dir_fd=directory)
+        os.fsync(directory)
+    except OSError as exc:
+        raise AdoptionError("terminal_temp_drift") from exc
+    finally:
+        os.close(directory)
+
+
+def _promote_terminal_temp_exclusive(
+    root: Path,
+    *,
+    temp_leaf: str,
+    visible_leaf: str,
+    content: bytes,
+    identity: tuple[int, ...],
+    failure: str,
+) -> None:
+    directory = _open_terminal_root(root, failure=failure)
+    try:
+        current = os.stat(temp_leaf, dir_fd=directory, follow_symlinks=False)
+        if _terminal_file_identity(current) != identity:
+            raise AdoptionError("terminal_temp_drift")
+        try:
+            os.stat(visible_leaf, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure)
+        _rename_directory_exclusive(directory, temp_leaf, visible_leaf)
+        os.fsync(directory)
+    except OSError as exc:
+        raise AdoptionError(failure) from exc
+    finally:
+        os.close(directory)
+    visible = root / visible_leaf
+    if _private_file_bytes(visible) != content:
+        raise AdoptionError(failure)
+
+
+def _atomic_terminal_publish_exclusive(
+    root: Path,
+    *,
+    temp_leaf: str,
+    visible_leaf: str,
+    content: bytes,
+    failure: str,
+    crash_hook: Callable[[str], None],
+    temp_ready_phase: str,
+) -> None:
+    """Write and fsync private bytes before exclusive atomic publication."""
+
+    directory = _open_terminal_root(root, failure=failure)
+    descriptor = -1
+    temp_created = False
+    preserve_temp = False
+    initial_identity: tuple[int, ...] | None = None
+    try:
+        try:
+            os.stat(visible_leaf, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure)
+        descriptor = os.open(
+            temp_leaf,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory,
+        )
+        temp_created = True
+        initial = os.fstat(descriptor)
+        initial_identity = _terminal_file_identity(initial)
+        if (
+            not stat.S_ISREG(initial.st_mode)
+            or initial.st_uid != os.getuid()
+            or stat.S_IMODE(initial.st_mode) != 0o600
+            or initial.st_nlink != 1
+            or initial.st_size != 0
+        ):
+            raise AdoptionError(failure)
+        offset = 0
+        while offset < len(content):
+            written = os.write(descriptor, content[offset:])
+            if written <= 0:
+                raise AdoptionError(failure)
+            offset += written
+        os.fsync(descriptor)
+        after = os.fstat(descriptor)
+        if (
+            after.st_dev != initial.st_dev
+            or after.st_ino != initial.st_ino
+            or after.st_mode != initial.st_mode
+            or after.st_uid != initial.st_uid
+            or after.st_nlink != 1
+            or after.st_size != len(content)
+        ):
+            raise AdoptionError(failure)
+        os.close(descriptor)
+        descriptor = -1
+        crash_hook(temp_ready_phase)
+        current = os.stat(temp_leaf, dir_fd=directory, follow_symlinks=False)
+        if (
+            current.st_dev != initial.st_dev
+            or current.st_ino != initial.st_ino
+            or current.st_mode != initial.st_mode
+            or current.st_uid != initial.st_uid
+            or current.st_nlink != 1
+            or current.st_size != len(content)
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        try:
+            os.stat(visible_leaf, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError(failure)
+        _rename_directory_exclusive(directory, temp_leaf, visible_leaf)
+        temp_created = False
+        os.fsync(directory)
+    except BaseException as exc:
+        preserve_temp = not isinstance(exc, Exception)
+        if isinstance(exc, OSError):
+            raise AdoptionError(failure) from exc
+        raise
+    finally:
+        try:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temp_created and not preserve_temp:
+                try:
+                    current = os.stat(
+                        temp_leaf,
+                        dir_fd=directory,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        initial_identity is None
+                        or current.st_dev != initial_identity[0]
+                        or current.st_ino != initial_identity[1]
+                        or current.st_mode != initial_identity[2]
+                        or current.st_uid != initial_identity[3]
+                        or current.st_gid != initial_identity[4]
+                        or current.st_nlink != 1
+                        or current.st_size > len(content)
+                    ):
+                        raise AdoptionError("terminal_temp_drift")
+                    os.unlink(temp_leaf, dir_fd=directory)
+                    os.fsync(directory)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    raise AdoptionError("terminal_temp_drift") from exc
+        finally:
+            os.close(directory)
+    if _private_file_bytes(root / visible_leaf) != content:
+        raise AdoptionError(failure)
+
+
+def _write_terminal_prepared_exclusive(
+    root: Path,
+    record: dict[str, object],
+    *,
+    crash_hook: Callable[[str], None],
+) -> None:
+    """Durably publish the immutable exact request before authority transport."""
+
+    _lstat_admitted_directory(root, create=True)
+    _atomic_terminal_publish_exclusive(
+        root,
+        temp_leaf=_TERMINAL_PREPARED_TEMP_LEAF,
+        visible_leaf="journal.json",
+        content=_terminal_prepared_bytes(record),
+        failure="terminal_prepared_publish_failed",
+        crash_hook=crash_hook,
+        temp_ready_phase="TERMINAL_PREPARED_TEMP_READY",
+    )
+
+
+def _require_terminal_stage_matches_prepared(
+    prepared: dict[str, object],
+    committed: dict[str, object],
+) -> None:
+    _terminal_prepared_bytes(prepared)
+    _terminal_journal_bytes(committed)
+    if any(
+        key != "phase" and committed[key] != prepared[key]
+        for key in _TERMINAL_PREPARED_KEYS
+    ):
+        raise AdoptionError("terminal_stage_drift")
+
+
+def _replace_terminal_prepared_with_journal(
+    root: Path,
+    prepared: dict[str, object],
+    committed: dict[str, object],
+    *,
+    crash_hook: Callable[[str], None],
+) -> None:
+    """CAS-replace one exact prepared request with its committed envelope."""
+
+    _lstat_admitted_directory(root)
+    expected = _terminal_prepared_bytes(prepared)
+    content = _terminal_journal_bytes(committed)
+    try:
+        prepared_bytes, _prepared_identity = _terminal_temp_snapshot(
+            root,
+            "journal.json",
+        )
+    except AdoptionError as exc:
+        raise AdoptionError("terminal_prepared_drift") from exc
+    if prepared_bytes != expected:
+        raise AdoptionError("terminal_prepared_drift")
+    _atomic_terminal_publish_exclusive(
+        root,
+        temp_leaf=_TERMINAL_STAGE_TEMP_LEAF,
+        visible_leaf=_TERMINAL_STAGE_LEAF,
+        content=content,
+        failure="terminal_journal_publish_failed",
+        crash_hook=crash_hook,
+        temp_ready_phase="TERMINAL_STAGE_TEMP_READY",
+    )
+    crash_hook("TERMINAL_FINAL_READY")
+    _replace_existing_terminal_stage(
+        root,
+        prepared,
+        committed,
+        crash_hook=crash_hook,
+    )
+
+
+def _restore_terminal_prepared_backup(
+    root: Path,
+    *,
+    expected: bytes,
+    backup_identity: tuple[int, ...],
+) -> None:
+    """Restore a prepared backup without discarding a substituted final node."""
+
+    directory = _open_terminal_root(
+        root,
+        failure="terminal_prepared_backup_drift",
+    )
+    try:
+        backup = os.stat(
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            _terminal_file_identity(backup) != backup_identity
+            or _private_file_bytes(
+                root / _TERMINAL_PREPARED_BACKUP_LEAF
+            )
+            != expected
+        ):
+            raise AdoptionError("terminal_prepared_backup_drift")
+        _exchange_directory_entries(
+            directory,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            "journal.json",
+        )
+        os.fsync(directory)
+        restored = os.stat(
+            "journal.json",
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if not _terminal_rename_identity_matches(
+            backup_identity,
+            _terminal_file_identity(restored),
+        ):
+            raise AdoptionError("terminal_prepared_backup_drift")
+    except OSError as exc:
+        raise AdoptionError("terminal_prepared_backup_drift") from exc
+    finally:
+        os.close(directory)
+    if _private_file_bytes(_journal_path(root)) != expected:
+        raise AdoptionError("terminal_prepared_backup_drift")
+    try:
+        _collision, collision_identity = _terminal_temp_snapshot(
+            root,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+        )
+        _remove_terminal_temp(
+            root,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            collision_identity,
+        )
+    except AdoptionError as exc:
+        raise AdoptionError("terminal_prepared_backup_drift") from exc
+
+
+def _publish_terminal_stage_from_backup(
+    root: Path,
+    prepared: dict[str, object],
+    committed: dict[str, object],
+    *,
+    backup_identity: tuple[int, ...],
+    stage_identity: tuple[int, ...],
+    crash_hook: Callable[[str], None],
+) -> None:
+    """No-clobber publish a signed stage while retaining REQUEST_PREPARED."""
+
+    _require_terminal_stage_matches_prepared(prepared, committed)
+    expected = _terminal_prepared_bytes(prepared)
+    content = _terminal_journal_bytes(committed)
+    directory = _open_terminal_root(
+        root,
+        failure="terminal_journal_publish_failed",
+    )
+    rollback_required = False
+    try:
+        try:
+            os.stat("journal.json", dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError("terminal_journal_publish_failed")
+        backup = os.stat(
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        staged = os.stat(
+            _TERMINAL_STAGE_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            _terminal_file_identity(backup) != backup_identity
+            or _terminal_file_identity(staged) != stage_identity
+            or _private_file_bytes(
+                root / _TERMINAL_PREPARED_BACKUP_LEAF
+            )
+            != expected
+            or _private_file_bytes(_terminal_stage_path(root)) != content
+        ):
+            raise AdoptionError("terminal_stage_drift")
+        _rename_directory_exclusive(
+            directory,
+            _TERMINAL_STAGE_LEAF,
+            "journal.json",
+        )
+        os.fsync(directory)
+        try:
+            published = os.stat(
+                "journal.json",
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+            retained = os.stat(
+                _TERMINAL_PREPARED_BACKUP_LEAF,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+            rollback_required = (
+                not _terminal_rename_identity_matches(
+                    stage_identity,
+                    _terminal_file_identity(published),
+                )
+                or _terminal_file_identity(retained) != backup_identity
+                or _private_file_bytes(_journal_path(root)) != content
+                or _private_file_bytes(
+                    root / _TERMINAL_PREPARED_BACKUP_LEAF
+                )
+                != expected
+            )
+        except (OSError, AdoptionError):
+            rollback_required = True
+        if not rollback_required:
+            crash_hook("TERMINAL_FINAL_BOUND")
+    except OSError as exc:
+        raise AdoptionError("terminal_journal_publish_failed") from exc
+    finally:
+        os.close(directory)
+    if rollback_required:
+        _restore_terminal_prepared_backup(
+            root,
+            expected=expected,
+            backup_identity=backup_identity,
+        )
+        raise AdoptionError("terminal_stage_substitution")
+    _remove_terminal_temp(
+        root,
+        _TERMINAL_PREPARED_BACKUP_LEAF,
+        backup_identity,
+    )
+    crash_hook("TERMINAL_FINAL_REPLACED")
+    if _private_file_bytes(_journal_path(root)) != content:
+        raise AdoptionError("terminal_journal_publish_failed")
+
+
+def _replace_existing_terminal_stage(
+    root: Path,
+    prepared: dict[str, object],
+    committed: dict[str, object],
+    *,
+    crash_hook: Callable[[str], None],
+) -> None:
+    """Complete an already durable signed stage without authority replay."""
+
+    _lstat_admitted_directory(root)
+    _require_terminal_stage_matches_prepared(prepared, committed)
+    expected = _terminal_prepared_bytes(prepared)
+    content = _terminal_journal_bytes(committed)
+    if (
+        _private_file_bytes(_journal_path(root)) != expected
+        or _private_file_bytes(_terminal_stage_path(root)) != content
+    ):
+        raise AdoptionError("terminal_stage_drift")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory = os.open(root, directory_flags)
+    backup_identity: tuple[int, ...] | None = None
+    stage_identity: tuple[int, ...] | None = None
+    try:
+        root_info = os.fstat(directory)
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or root_info.st_uid != os.getuid()
+            or stat.S_IMODE(root_info.st_mode) != 0o700
+        ):
+            raise AdoptionError("terminal_stage_drift")
+        identities: list[tuple[int, ...]] = []
+        for leaf, size in (
+            ("journal.json", len(expected)),
+            (_TERMINAL_STAGE_LEAF, len(content)),
+        ):
+            info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1
+                or info.st_size != size
+            ):
+                raise AdoptionError("terminal_stage_drift")
+            identities.append((
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_uid,
+                info.st_gid,
+                info.st_nlink,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            ))
+        if (
+            _private_file_bytes(_journal_path(root)) != expected
+            or _private_file_bytes(_terminal_stage_path(root)) != content
+        ):
+            raise AdoptionError("terminal_stage_drift")
+        for (leaf, _size), identity in zip(
+            (
+                ("journal.json", len(expected)),
+                (_TERMINAL_STAGE_LEAF, len(content)),
+            ),
+            identities,
+            strict=True,
+        ):
+            info = os.stat(leaf, dir_fd=directory, follow_symlinks=False)
+            if (
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_uid,
+                info.st_gid,
+                info.st_nlink,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            ) != identity:
+                raise AdoptionError("terminal_stage_drift")
+        prepared_identity, stage_identity = identities
+        _rename_directory_exclusive(
+            directory,
+            "journal.json",
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+        )
+        os.fsync(directory)
+        backup = os.stat(
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        backup_identity = _terminal_file_identity(backup)
+        if (
+            not _terminal_rename_identity_matches(
+                prepared_identity,
+                backup_identity,
+            )
+            or _private_file_bytes(
+                root / _TERMINAL_PREPARED_BACKUP_LEAF
+            )
+            != expected
+        ):
+            raise AdoptionError("terminal_prepared_backup_drift")
+        try:
+            os.stat("journal.json", dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError("terminal_prepared_backup_drift")
+    except OSError as exc:
+        raise AdoptionError("terminal_journal_publish_failed") from exc
+    finally:
+        os.close(directory)
+    if backup_identity is None or stage_identity is None:
+        raise AdoptionError("terminal_prepared_backup_drift")
+    crash_hook("TERMINAL_PREPARED_BACKED_UP")
+    _publish_terminal_stage_from_backup(
+        root,
+        prepared,
+        committed,
+        backup_identity=backup_identity,
+        stage_identity=stage_identity,
+        crash_hook=crash_hook,
+    )
 
 
 def _archive_stat_identity(info: os.stat_result) -> tuple[int, ...]:
@@ -4289,6 +5432,295 @@ class FixedHostAdapter:
         return observed
 
 
+def _terminal_regular_file_bytes(
+    path: Path,
+    *,
+    maximum: int = 16 * 1024 * 1024,
+) -> bytes:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise AdoptionError("terminal_observation_unavailable") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or before.st_mode & 0o022
+            or before.st_nlink != 1
+            or before.st_size > maximum
+        ):
+            raise AdoptionError("terminal_observation_drift")
+        chunks = bytearray()
+        while chunk := os.read(descriptor, min(1024 * 1024, maximum + 1)):
+            chunks.extend(chunk)
+            if len(chunks) > maximum:
+                raise AdoptionError("terminal_observation_drift")
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if _archive_stat_identity(before) != _archive_stat_identity(after):
+        raise AdoptionError("terminal_observation_drift")
+    return bytes(chunks)
+
+
+def _terminal_directory_identity(path: Path) -> str:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise AdoptionError("terminal_observation_unavailable") from exc
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o022
+    ):
+        raise AdoptionError("terminal_observation_drift")
+    return _canonical_digest({
+        "device": info.st_dev,
+        "group": info.st_gid,
+        "inode": info.st_ino,
+        "mode": stat.S_IMODE(info.st_mode),
+        "owner": info.st_uid,
+    })
+
+
+def _terminal_registry_projection(
+    row: dict[str, object] | None,
+) -> tuple[bool, str | None, str]:
+    if row is None:
+        return False, None, "inactive"
+    version = row.get("version")
+    if _safe_plugin_version(version) is None:
+        raise AdoptionError("terminal_host_registry_invalid")
+    enabled = row.get("enabled")
+    if type(enabled) is bool:
+        return True, version, "active" if enabled else "inactive"
+    state = row.get("state") or row.get("status")
+    mapping = {
+        "active": "active",
+        "enabled": "active",
+        "installed": "installed",
+        "disabled": "inactive",
+        "inactive": "inactive",
+        "orphaned": "orphaned",
+    }
+    if state not in mapping:
+        raise AdoptionError("terminal_host_registry_invalid")
+    return True, version, mapping[state]
+
+
+class FixedTerminalHostObserver:
+    """Read only the fixed installed 0.1.48 cache and registry identities."""
+
+    def __init__(self, name: str, transaction_root: Path):
+        if name not in HOST_ORDER:
+            raise AdoptionError("host_not_admitted")
+        self.name = name
+        self._transaction_root = transaction_root
+        home = _fixed_user_home()
+        if name == "codex":
+            self._cli = _CODEX_CLI
+            self._host_home = home / ".codex"
+        else:
+            self._cli = _CLAUDE_CLI
+            self._host_home = home / ".claude"
+        self._cache = (
+            self._host_home
+            / "plugins"
+            / "cache"
+            / authority.MARKETPLACE_ID
+            / authority.PLUGIN_ID
+            / authority.TERMINAL_PLUGIN_VERSION
+        )
+        self._marketplace_cache = (
+            self._host_home
+            / "plugins"
+            / "marketplaces"
+            / authority.MARKETPLACE_ID
+        )
+
+    def _run_json(self, args: tuple[str, ...]) -> object:
+        identity = _admit_fixed_cli(self._cli, self._transaction_root)
+        completed = _invoke_fixed_cli(
+            self._cli,
+            args,
+            expected_final=identity[-1],
+            transaction_root=self._transaction_root,
+        )
+        if (
+            completed.returncode != 0
+            or len(completed.stdout) > _MAX_COMMAND_OUTPUT
+            or _capture_fixed_cli(self._cli) != identity
+        ):
+            raise AdoptionError("terminal_host_registry_unavailable")
+        try:
+            return json.loads(completed.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdoptionError("terminal_host_registry_invalid") from exc
+
+    def observe(self) -> TerminalHostState:
+        _validate_fixed_host_chain(self._host_home, allow_missing=False)
+        _validate_fixed_host_chain(self._cache, allow_missing=False)
+        _validate_fixed_host_chain(self._marketplace_cache, allow_missing=False)
+        plugin_row = _find_plugin_row(
+            self._run_json(("plugin", "list", "--json"))
+        )
+        present, version, registry_state = _terminal_registry_projection(plugin_row)
+        if not present or version != authority.TERMINAL_PLUGIN_VERSION:
+            raise AdoptionError("terminal_plugin_identity_mismatch")
+        marketplace_row = _find_marketplace_row(
+            self._run_json(("plugin", "marketplace", "list", "--json"))
+        )
+        if marketplace_row is None:
+            raise AdoptionError("terminal_marketplace_identity_mismatch")
+        source = _marketplace_source(marketplace_row)
+        if source not in {
+            self._marketplace_cache,
+            self._marketplace_cache / ".claude-plugin" / "marketplace.json",
+            self._marketplace_cache / ".agents" / "plugins" / "marketplace.json",
+        }:
+            raise AdoptionError("terminal_marketplace_identity_mismatch")
+        marker = self._cache / distribution.ORPHANED_INSTALLED_MARKER
+        marker_digest = None
+        ignored = {".in_use"}
+        if marker.exists() or marker.is_symlink():
+            marker_content = _terminal_regular_file_bytes(marker, maximum=64)
+            marker_info = marker.lstat()
+            _validate_generated_orphan_marker(marker_info, marker_content)
+            marker_digest = _canonical_digest({
+                "content_sha256": hashlib.sha256(marker_content).hexdigest(),
+                "device": marker_info.st_dev,
+                "group": marker_info.st_gid,
+                "inode": marker_info.st_ino,
+                "mode": stat.S_IMODE(marker_info.st_mode),
+                "owner": marker_info.st_uid,
+            })
+            ignored.add(distribution.ORPHANED_INSTALLED_MARKER)
+        cache_digest = _tree_digest(self._cache, ignored=frozenset(ignored))
+        marketplace_digest = _tree_digest(self._marketplace_cache)
+        if cache_digest is None or marketplace_digest is None:
+            raise AdoptionError("terminal_observation_unavailable")
+        try:
+            manifest = json.loads(
+                _terminal_regular_file_bytes(
+                    self._cache / "SOURCE_MANIFEST.json"
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdoptionError("terminal_source_manifest_invalid") from exc
+        if type(manifest) is not dict:
+            raise AdoptionError("terminal_source_manifest_invalid")
+        operational_adoption = (
+            "orphaned" if marker_digest is not None else manifest.get("operational_adoption")
+        )
+        if operational_adoption not in _TERMINAL_OPERATIONAL_STATES:
+            raise AdoptionError("terminal_source_manifest_invalid")
+        return TerminalHostState(
+            host=self.name,
+            plugin_version=authority.TERMINAL_PLUGIN_VERSION,
+            operational_adoption=operational_adoption,
+            registry_state=registry_state,
+            cache_digest=cache_digest,
+            cache_identity_digest=_terminal_directory_identity(self._cache),
+            marketplace_digest=marketplace_digest,
+            marketplace_identity_digest=_terminal_directory_identity(
+                self._marketplace_cache
+            ),
+            orphan_marker_digest=marker_digest,
+        )
+
+
+class FixedCanonicalRecoveryObserver:
+    """Read only one clean exact-head FP1 source and its local interpreter."""
+
+    def __init__(self, source_root: Path):
+        self._root = source_root
+
+    def observe(self) -> CanonicalRecoveryState:
+        if self._root.name != "hermes-fp1-state-schema-20260814":
+            raise AdoptionError("canonical_recovery_anchor_unavailable")
+        _terminal_directory_identity(self._root)
+        source_revision = _git_text(self._root, ("rev-parse", "HEAD")).strip()
+        if source_revision != authority.TERMINAL_SOURCE_REVISION:
+            raise AdoptionError("canonical_recovery_source_revision_drift")
+        tree_oid = _git_text(
+            self._root,
+            ("rev-parse", "HEAD^{tree}"),
+        ).strip()
+        if re.fullmatch(r"[0-9a-f]{40}", tree_oid) is None:
+            raise AdoptionError("canonical_recovery_source_tree_drift")
+        clean = not bool(
+            _git_text(
+                self._root,
+                ("status", "--porcelain", "--untracked-files=normal"),
+            )
+        )
+        bundle_bytes = _terminal_regular_file_bytes(
+            self._root
+            / "distribution"
+            / authority.PLUGIN_ID
+            / "SOURCE_MANIFEST.json"
+        )
+        interpreter = self._root / ".venv" / "bin" / "python"
+        try:
+            lexical_info = interpreter.lstat()
+            resolved_interpreter = interpreter.resolve(strict=True)
+            interpreter_info = resolved_interpreter.stat()
+        except OSError as exc:
+            raise AdoptionError(
+                "canonical_recovery_interpreter_unavailable"
+            ) from exc
+        if (
+            not (
+                stat.S_ISLNK(lexical_info.st_mode)
+                or stat.S_ISREG(lexical_info.st_mode)
+            )
+            or lexical_info.st_uid != os.getuid()
+            or lexical_info.st_mode & 0o022
+            or not stat.S_ISREG(interpreter_info.st_mode)
+            or interpreter_info.st_uid != os.getuid()
+            or interpreter_info.st_mode & 0o022
+            or not interpreter_info.st_mode & 0o111
+            or interpreter_info.st_size <= 0
+        ):
+            raise AdoptionError("canonical_recovery_interpreter_unavailable")
+        try:
+            interpreter_bytes = _terminal_regular_file_bytes(resolved_interpreter)
+        except AdoptionError as exc:
+            raise AdoptionError(
+                "canonical_recovery_interpreter_unavailable"
+            ) from exc
+        lexical_link_digest = None
+        if stat.S_ISLNK(lexical_info.st_mode):
+            try:
+                lexical_link_digest = hashlib.sha256(
+                    os.fsencode(os.readlink(interpreter))
+                ).hexdigest()
+            except OSError as exc:
+                raise AdoptionError(
+                    "canonical_recovery_interpreter_unavailable"
+                ) from exc
+        return CanonicalRecoveryState(
+            anchor=_TERMINAL_ANCHOR,
+            source_revision=source_revision,
+            source_bundle_digest=hashlib.sha256(bundle_bytes).hexdigest(),
+            source_tree_digest=_canonical_digest({"git_tree_oid": tree_oid}),
+            interpreter_digest=_canonical_digest({
+                "content_sha256": hashlib.sha256(interpreter_bytes).hexdigest(),
+                "device": interpreter_info.st_dev,
+                "group": interpreter_info.st_gid,
+                "inode": interpreter_info.st_ino,
+                "lexical_link_digest": lexical_link_digest,
+                "mode": stat.S_IMODE(interpreter_info.st_mode),
+                "owner": interpreter_info.st_uid,
+                "size": interpreter_info.st_size,
+            }),
+            clean=clean,
+            interpreter_executable=True,
+        )
+
+
 def _source_revision() -> str:
     completed = subprocess.run(
         ("git", "rev-parse", "HEAD"),
@@ -4387,6 +5819,7 @@ def _expected_after_state(
 def _candidate_installed_digests(scratch_root: Path) -> tuple[str, str]:
     """Compute future plugin and marketplace digests in a private stage."""
 
+    _require_ordinary_apply_plugin_version_alignment()
     _lstat_admitted_directory(scratch_root)
     with tempfile.TemporaryDirectory(
         prefix="candidate-digest-",
@@ -4511,6 +5944,133 @@ def _record_from_verified(
     }
 
 
+def _terminal_prepared_from_request(
+    request: dict[str, object],
+    *,
+    states: Sequence[TerminalHostState],
+    recovery: CanonicalRecoveryState,
+) -> dict[str, object]:
+    actual = request["actual"]
+    plan = request["plan"]
+    if type(actual) is not dict or type(plan) is not dict:
+        raise AdoptionError("terminal_prepared_contract_mismatch")
+    projections = [state.projection() for state in states]
+    request_bytes = authority.canonical_bytes(request)
+    record = {
+        "schema": JOURNAL_SCHEMA,
+        "operation": authority.TERMINAL_OPERATION,
+        "transaction_id": actual["transaction_id"],
+        "decision_id": actual["decision_id"],
+        "phase": "REQUEST_PREPARED",
+        "plan_digest": plan["plan_digest"],
+        "before_state_digest": plan["before_state_digest"],
+        "after_state_digest": plan["after_state_digest"],
+        "rollback_manifest_digest": plan["rollback_manifest_digest"],
+        "request_digest": hashlib.sha256(request_bytes).hexdigest(),
+        "request_b64": base64.b64encode(request_bytes).decode("ascii"),
+        "before_states": projections,
+        "after_states": projections,
+        "predecessor_identity_digest": plan["predecessor_identity_digest"],
+        "current_identity_digest": plan["current_identity_digest"],
+        "canonical_identity_digest": plan["canonical_identity_digest"],
+        "canonical_recovery": recovery.projection(),
+        "host_mutation_count": 0,
+    }
+    _terminal_prepared_bytes(record)
+    return record
+
+
+def _terminal_record_from_prepared(
+    verified: authority.VerifiedPluginAdoptionEnvelope,
+    prepared: dict[str, object],
+) -> dict[str, object]:
+    _terminal_prepared_bytes(prepared)
+    request_bytes = base64.b64decode(
+        str(prepared["request_b64"]),
+        validate=True,
+    )
+    if (
+        verified.request_bytes != request_bytes
+        or verified.request_digest != prepared["request_digest"]
+        or verified.request != authority._base._parse_canonical_authority_payload(
+            request_bytes
+        )
+    ):
+        raise AdoptionError("terminal_authority_replay_mismatch")
+    record = {
+        **prepared,
+        "phase": "COMMITTED",
+        "envelope_digest": verified.envelope_digest,
+        "envelope_b64": base64.b64encode(verified.envelope_bytes).decode("ascii"),
+    }
+    _terminal_journal_bytes(record)
+    return record
+
+
+def _reverify_terminal_journal(
+    record: dict[str, object],
+) -> authority.VerifiedPluginAdoptionEnvelope:
+    _terminal_journal_bytes(record)
+    try:
+        request_bytes = base64.b64decode(str(record["request_b64"]), validate=True)
+        envelope_bytes = base64.b64decode(str(record["envelope_b64"]), validate=True)
+    except Exception as exc:
+        raise AdoptionError("terminal_journal_authority_bytes_invalid") from exc
+    request = authority._base._parse_canonical_authority_payload(request_bytes)
+    if type(request) is not dict or type(request.get("actual")) is not dict:
+        raise AdoptionError("terminal_journal_authority_bytes_invalid")
+    verification_time = float(request["actual"].get("issued_at", 0.0)) + 0.001
+    try:
+        verified = authority.verify_plugin_adoption_terminal_envelope(
+            request_bytes=request_bytes,
+            envelope_bytes=envelope_bytes,
+            now=verification_time,
+        )
+    except authority.PluginAdoptionAuthorityError as exc:
+        raise AdoptionError("terminal_journal_authority_verification_failed") from exc
+    plan = verified.request["plan"]
+    states = [
+        TerminalHostState.from_projection(value, expected_host=host)
+        for value, host in zip(record["before_states"], HOST_ORDER, strict=True)
+    ]
+    recovery = CanonicalRecoveryState.from_projection(record["canonical_recovery"])
+    rollback_manifest_digest = _canonical_digest({
+        "host_order": list(HOST_ORDER),
+        "policy": "observation_only_no_host_mutation.v1",
+        "states": [state.projection() for state in states],
+    })
+    predecessor_identity_digest = _canonical_digest({
+        "host_state_digests": [state.identity_digest() for state in states],
+        "operation": authority.TERMINAL_OPERATION,
+        "plugin_id": authority.PLUGIN_ID,
+        "plugin_version": authority.TERMINAL_PLUGIN_VERSION,
+    })
+    if (
+        not verified.allowed
+        or verified.request_digest != record["request_digest"]
+        or verified.envelope_digest != record["envelope_digest"]
+        or plan["plan_digest"] != record["plan_digest"]
+        or plan["predecessor_identity_digest"]
+        != record["predecessor_identity_digest"]
+        or plan["predecessor_identity_digest"]
+        != predecessor_identity_digest
+        or plan["current_identity_digest"] != record["current_identity_digest"]
+        or plan["canonical_identity_digest"]
+        != record["canonical_identity_digest"]
+        or plan["codex_current_state_digest"] != states[0].identity_digest()
+        or plan["claude_current_state_digest"] != states[1].identity_digest()
+        or plan["before_state_digest"] != record["before_state_digest"]
+        or plan["after_state_digest"] != record["after_state_digest"]
+        or plan["rollback_manifest_digest"] != rollback_manifest_digest
+        or plan["rollback_manifest_digest"]
+        != record["rollback_manifest_digest"]
+        or plan["source_bundle_digest"] != recovery.source_bundle_digest
+        or recovery.identity_digest() != record["canonical_identity_digest"]
+    ):
+        raise AdoptionError("terminal_journal_authority_verification_failed")
+    return verified
+
+
 def _reverify_journal(record: dict[str, object]) -> authority.VerifiedPluginAdoptionEnvelope:
     try:
         request_bytes = base64.b64decode(str(record["request_b64"]), validate=True)
@@ -4554,7 +6114,7 @@ def _reverify_journal(record: dict[str, object]) -> authority.VerifiedPluginAdop
 
 
 @contextmanager
-def _host_locks(root: Path) -> Iterator[None]:
+def _host_locks(root: Path, *, typed_failure: bool = False) -> Iterator[None]:
     """Acquire the canonical host lock order: Codex, then Claude."""
 
     lock_root = _lock_root(root)
@@ -4566,8 +6126,16 @@ def _host_locks(root: Path) -> Iterator[None]:
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
             info = os.fstat(descriptor)
             if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                if typed_failure:
+                    os.close(descriptor)
                 raise AdoptionError("host_lock_drift")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            except OSError as exc:
+                if not typed_failure:
+                    raise
+                os.close(descriptor)
+                raise AdoptionError("host_lock_unavailable") from exc
             descriptors.append(descriptor)
         yield
     finally:
@@ -4589,9 +6157,29 @@ class PluginAdoptionExecutor:
         crash_hook: Callable[[str], None] = lambda _phase: None,
         archive_rolled_back: bool = False,
         admitted_previous_states: Sequence[HostState] | None = None,
+        action: str = "apply",
+        terminal_observers: Sequence[TerminalHostObserver] | None = None,
+        canonical_recovery_observer: CanonicalRecoveryObserver | None = None,
+        terminal_authority_request: Callable[..., authority.VerifiedPluginAdoptionEnvelope]
+        | None = None,
     ):
-        if tuple(adapter.name for adapter in adapters) != HOST_ORDER:
+        if action not in {"apply", "terminalize"}:
+            raise AdoptionError("plugin_adoption_action_invalid")
+        adapter_names = tuple(adapter.name for adapter in adapters)
+        if (
+            action == "apply" and adapter_names != HOST_ORDER
+        ) or (
+            action == "terminalize"
+            and adapter_names not in {(), HOST_ORDER}
+        ):
             raise AdoptionError("host_order_mismatch")
+        if action == "terminalize" and (
+            terminal_observers is None
+            or tuple(observer.name for observer in terminal_observers) != HOST_ORDER
+            or canonical_recovery_observer is None
+            or terminal_authority_request is None
+        ):
+            raise AdoptionError("terminal_observer_unavailable")
         self.root = state_root
         self.adapters = tuple(adapters)
         self.authority_request = authority_request
@@ -4603,6 +6191,453 @@ class PluginAdoptionExecutor:
             if admitted_previous_states is not None
             else None
         )
+        self.action = action
+        self.terminal_observers = (
+            tuple(terminal_observers) if terminal_observers is not None else ()
+        )
+        self.canonical_recovery_observer = canonical_recovery_observer
+        self.terminal_authority_request = terminal_authority_request
+
+    def _observe_terminal_states(self) -> list[TerminalHostState]:
+        states = [observer.observe() for observer in self.terminal_observers]
+        _terminal_states_digest(states)
+        return states
+
+    def _observe_canonical_recovery(self) -> CanonicalRecoveryState:
+        if self.canonical_recovery_observer is None:
+            raise AdoptionError("terminal_observer_unavailable")
+        return _admit_canonical_recovery(
+            self.canonical_recovery_observer.observe()
+        )
+
+    def _require_terminal_record_bindings(
+        self,
+        record: dict[str, object],
+    ) -> None:
+        states = [
+            TerminalHostState.from_projection(item, expected_host=host)
+            for item, host in zip(
+                record["before_states"],
+                HOST_ORDER,
+                strict=True,
+            )
+        ]
+        recovery = CanonicalRecoveryState.from_projection(
+            record["canonical_recovery"]
+        )
+        if self._observe_terminal_states() != states:
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+
+    def _reconcile_terminal_prepared_backup(
+        self,
+        names: frozenset[str],
+    ) -> None:
+        backup = _TERMINAL_PREPARED_BACKUP_LEAF
+        if names == {backup, _TERMINAL_STAGE_LEAF}:
+            prepared, _prepared_bytes, backup_identity = _terminal_leaf_record(
+                self.root,
+                backup,
+                phase="REQUEST_PREPARED",
+                failure="terminal_prepared_backup_drift",
+            )
+            staged, _staged_bytes, stage_identity = _terminal_leaf_record(
+                self.root,
+                _TERMINAL_STAGE_LEAF,
+                phase="COMMITTED",
+                failure="terminal_stage_drift",
+            )
+            _require_terminal_stage_matches_prepared(prepared, staged)
+            verified = _reverify_terminal_journal(staged)
+            if (
+                not verified.allowed
+                or verified.request_digest != prepared["request_digest"]
+            ):
+                raise AdoptionError("terminal_stage_drift")
+            self._require_terminal_record_bindings(prepared)
+            _publish_terminal_stage_from_backup(
+                self.root,
+                prepared,
+                staged,
+                backup_identity=backup_identity,
+                stage_identity=stage_identity,
+                crash_hook=self.crash_hook,
+            )
+            return
+
+        if names != {backup, "journal.json"}:
+            raise AdoptionError("terminal_prepared_backup_drift")
+        try:
+            prepared, _prepared_bytes, _prepared_identity = (
+                _terminal_leaf_record(
+                    self.root,
+                    "journal.json",
+                    phase="REQUEST_PREPARED",
+                    failure="terminal_prepared_backup_drift",
+                )
+            )
+        except AdoptionError:
+            prepared = None
+        if prepared is not None:
+            self._require_terminal_record_bindings(prepared)
+            _collision, collision_identity = _terminal_temp_snapshot(
+                self.root,
+                backup,
+            )
+            _remove_terminal_temp(self.root, backup, collision_identity)
+            return
+
+        prepared, prepared_bytes, backup_identity = _terminal_leaf_record(
+            self.root,
+            backup,
+            phase="REQUEST_PREPARED",
+            failure="terminal_prepared_backup_drift",
+        )
+        self._require_terminal_record_bindings(prepared)
+        try:
+            committed, _committed_bytes, _committed_identity = (
+                _terminal_leaf_record(
+                    self.root,
+                    "journal.json",
+                    phase="COMMITTED",
+                    failure="terminal_journal_publish_failed",
+                )
+            )
+        except AdoptionError:
+            _restore_terminal_prepared_backup(
+                self.root,
+                expected=prepared_bytes,
+                backup_identity=backup_identity,
+            )
+            return
+        _require_terminal_stage_matches_prepared(prepared, committed)
+        verified = _reverify_terminal_journal(committed)
+        if (
+            not verified.allowed
+            or verified.request_digest != prepared["request_digest"]
+        ):
+            raise AdoptionError("terminal_journal_authority_verification_failed")
+        _remove_terminal_temp(self.root, backup, backup_identity)
+
+    def _reconcile_terminal_publication_residue(self) -> None:
+        """Promote complete deterministic temps or remove only partial residue."""
+
+        try:
+            names = frozenset(path.name for path in self.root.iterdir())
+        except OSError as exc:
+            raise AdoptionError("terminal_temp_drift") from exc
+        if _TERMINAL_PREPARED_BACKUP_LEAF in names:
+            self._reconcile_terminal_prepared_backup(names)
+            return
+        temp_names = names & {
+            _TERMINAL_PREPARED_TEMP_LEAF,
+            _TERMINAL_STAGE_TEMP_LEAF,
+        }
+        if not temp_names:
+            return
+        if len(temp_names) != 1:
+            raise AdoptionError("terminal_temp_drift")
+        temp_leaf = next(iter(temp_names))
+        if temp_leaf == _TERMINAL_PREPARED_TEMP_LEAF:
+            if names != {_TERMINAL_PREPARED_TEMP_LEAF}:
+                raise AdoptionError("terminal_temp_drift")
+            content, identity = _terminal_temp_snapshot(self.root, temp_leaf)
+            try:
+                value = json.loads(content.decode("ascii"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _remove_terminal_temp(self.root, temp_leaf, identity)
+                return
+            if type(value) is not dict:
+                raise AdoptionError("terminal_temp_drift")
+            try:
+                canonical = _terminal_prepared_bytes(value)
+            except AdoptionError as exc:
+                raise AdoptionError("terminal_temp_drift") from exc
+            if canonical != content:
+                raise AdoptionError("terminal_temp_drift")
+            states = [
+                TerminalHostState.from_projection(item, expected_host=host)
+                for item, host in zip(
+                    value["before_states"],
+                    HOST_ORDER,
+                    strict=True,
+                )
+            ]
+            recovery = CanonicalRecoveryState.from_projection(
+                value["canonical_recovery"]
+            )
+            if self._observe_terminal_states() != states:
+                raise AdoptionError("terminal_current_state_drift")
+            if self._observe_canonical_recovery() != recovery:
+                raise AdoptionError("canonical_recovery_drift")
+            _promote_terminal_temp_exclusive(
+                self.root,
+                temp_leaf=temp_leaf,
+                visible_leaf="journal.json",
+                content=content,
+                identity=identity,
+                failure="terminal_prepared_publish_failed",
+            )
+            return
+
+        if names != {"journal.json", _TERMINAL_STAGE_TEMP_LEAF}:
+            raise AdoptionError("terminal_temp_drift")
+        prepared = _read_terminal_prepared(self.root)
+        content, identity = _terminal_temp_snapshot(self.root, temp_leaf)
+        try:
+            value = json.loads(content.decode("ascii"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            _remove_terminal_temp(self.root, temp_leaf, identity)
+            return
+        if type(value) is not dict:
+            raise AdoptionError("terminal_temp_drift")
+        try:
+            canonical = _terminal_journal_bytes(value)
+        except AdoptionError as exc:
+            raise AdoptionError("terminal_temp_drift") from exc
+        if canonical != content:
+            raise AdoptionError("terminal_temp_drift")
+        _require_terminal_stage_matches_prepared(prepared, value)
+        verified = _reverify_terminal_journal(value)
+        if (
+            not verified.allowed
+            or verified.request_digest != prepared["request_digest"]
+        ):
+            raise AdoptionError("terminal_temp_drift")
+        states = [
+            TerminalHostState.from_projection(item, expected_host=host)
+            for item, host in zip(
+                prepared["before_states"],
+                HOST_ORDER,
+                strict=True,
+            )
+        ]
+        recovery = CanonicalRecoveryState.from_projection(
+            prepared["canonical_recovery"]
+        )
+        if self._observe_terminal_states() != states:
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+        _promote_terminal_temp_exclusive(
+            self.root,
+            temp_leaf=temp_leaf,
+            visible_leaf=_TERMINAL_STAGE_LEAF,
+            content=content,
+            identity=identity,
+            failure="terminal_journal_publish_failed",
+        )
+
+    def _run_terminalize_under_locks(self) -> dict[str, object]:
+        self._reconcile_terminal_publication_residue()
+        journal = _journal_path(self.root)
+        prepared_replay = False
+        if journal.exists() or journal.is_symlink():
+            try:
+                root_names = frozenset(path.name for path in self.root.iterdir())
+                if root_names not in (
+                    frozenset({"journal.json"}),
+                    frozenset({"journal.json", _TERMINAL_STAGE_LEAF}),
+                ):
+                    raise AdoptionError("terminal_state_root_not_fresh")
+            except OSError as exc:
+                raise AdoptionError("terminal_state_root_not_fresh") from exc
+            stage_present = _TERMINAL_STAGE_LEAF in root_names
+            record = _read_terminal_record(self.root)
+            states = [
+                TerminalHostState.from_projection(value, expected_host=host)
+                for value, host in zip(
+                    record["before_states"], HOST_ORDER, strict=True
+                )
+            ]
+            recovery = CanonicalRecoveryState.from_projection(
+                record["canonical_recovery"]
+            )
+            if self._observe_terminal_states() != states:
+                raise AdoptionError("terminal_current_state_drift")
+            if self._observe_canonical_recovery() != recovery:
+                raise AdoptionError("canonical_recovery_drift")
+            if record["phase"] == "COMMITTED":
+                if stage_present:
+                    raise AdoptionError("terminal_state_root_not_fresh")
+                verified = _reverify_terminal_journal(record)
+                if (
+                    verified.request["plan"]["before_state_digest"]
+                    != _terminal_states_digest(states)
+                ):
+                    raise AdoptionError(
+                        "terminal_journal_authority_verification_failed"
+                    )
+                _fsync_directory(self.root)
+                return {
+                    "status": "terminalized",
+                    "transaction_id": record["transaction_id"],
+                }
+            prepared = record
+            if stage_present:
+                staged = _read_terminal_stage(self.root)
+                _require_terminal_stage_matches_prepared(prepared, staged)
+                verified = _reverify_terminal_journal(staged)
+                if (
+                    not verified.allowed
+                    or verified.request_digest != prepared["request_digest"]
+                ):
+                    raise AdoptionError("terminal_stage_drift")
+                if self._observe_terminal_states() != states:
+                    raise AdoptionError("terminal_current_state_drift")
+                if self._observe_canonical_recovery() != recovery:
+                    raise AdoptionError("canonical_recovery_drift")
+                _replace_existing_terminal_stage(
+                    self.root,
+                    prepared,
+                    staged,
+                    crash_hook=self.crash_hook,
+                )
+                self.crash_hook("COMMITTED")
+                return {
+                    "status": "terminalized",
+                    "transaction_id": staged["transaction_id"],
+                }
+            prepared_replay = True
+        else:
+            try:
+                if any(self.root.iterdir()):
+                    raise AdoptionError("terminal_state_root_not_fresh")
+            except OSError as exc:
+                raise AdoptionError("terminal_state_root_not_fresh") from exc
+
+            states = self._observe_terminal_states()
+            recovery = self._observe_canonical_recovery()
+            state_digest = _terminal_states_digest(states)
+            current_identity_digest = _terminal_current_identity_digest(states)
+            predecessor_identity_digest = _canonical_digest({
+                "host_state_digests": [
+                    state.identity_digest() for state in states
+                ],
+                "operation": authority.TERMINAL_OPERATION,
+                "plugin_id": authority.PLUGIN_ID,
+                "plugin_version": authority.TERMINAL_PLUGIN_VERSION,
+            })
+            canonical_identity_digest = recovery.identity_digest()
+            rollback_manifest_digest = _canonical_digest({
+                "host_order": list(HOST_ORDER),
+                "policy": "observation_only_no_host_mutation.v1",
+                "states": [state.projection() for state in states],
+            })
+            transaction_seed = authority.canonical_bytes({
+                "canonical_identity_digest": canonical_identity_digest,
+                "current_identity_digest": current_identity_digest,
+                "operation": authority.TERMINAL_OPERATION,
+                "predecessor_identity_digest": predecessor_identity_digest,
+            })
+            transaction_id = "plugin-adoption-terminal-" + hashlib.sha256(
+                transaction_seed
+            ).hexdigest()[:32]
+            decision_id = "plugin-adoption-terminal-decision-" + hashlib.sha256(
+                b"decision\0" + transaction_seed
+            ).hexdigest()[:32]
+            plan_without_digest = {
+                "marketplace_id": authority.MARKETPLACE_ID,
+                "plugin_id": authority.PLUGIN_ID,
+                "plugin_version": authority.TERMINAL_PLUGIN_VERSION,
+                "source_revision": authority.TERMINAL_SOURCE_REVISION,
+                "source_bundle_digest": recovery.source_bundle_digest,
+                "target_set": list(authority.TARGET_SET),
+                "transition_set": list(authority.TERMINAL_TRANSITION_SET),
+                "predecessor_identity_digest": predecessor_identity_digest,
+                "current_identity_digest": current_identity_digest,
+                "canonical_identity_digest": canonical_identity_digest,
+                "codex_current_state_digest": states[0].identity_digest(),
+                "claude_current_state_digest": states[1].identity_digest(),
+                "before_state_digest": state_digest,
+                "after_state_digest": state_digest,
+                "rollback_manifest_digest": rollback_manifest_digest,
+            }
+            plan = {
+                **plan_without_digest,
+                "plan_digest": authority.compute_terminal_plan_digest(
+                    plan_without_digest
+                ),
+            }
+            issued_at = float(self.clock())
+            request = authority.build_plugin_adoption_terminal_request(
+                decision_id=decision_id,
+                transaction_id=transaction_id,
+                source_runtime_revision=authority.TERMINAL_SOURCE_REVISION,
+                issued_at=issued_at,
+                expires_at=issued_at + 120.0,
+                plan=plan,
+            )
+            prepared = _terminal_prepared_from_request(
+                request,
+                states=states,
+                recovery=recovery,
+            )
+            _write_terminal_prepared_exclusive(
+                self.root,
+                prepared,
+                crash_hook=self.crash_hook,
+            )
+            self.crash_hook("TERMINAL_REQUEST_PREPARED")
+
+        request_bytes = base64.b64decode(
+            str(prepared["request_b64"]),
+            validate=True,
+        )
+        request_value = authority._base._parse_canonical_authority_payload(
+            request_bytes
+        )
+        request = authority.validate_terminal_request(request_value)
+        issued_at = float(request["actual"]["issued_at"])
+        transport_now = (
+            float(self.clock()) if prepared_replay else issued_at + 0.001
+        )
+        if self.terminal_authority_request is None:
+            raise AdoptionError("terminal_authority_unavailable")
+        if self._observe_terminal_states() != states:
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+        verified = self.terminal_authority_request(
+            request,
+            now=transport_now,
+            prepared_replay=prepared_replay,
+        )
+        if not verified.allowed:
+            raise AdoptionError("plugin_adoption_terminalize_denied")
+        if self._observe_terminal_states() != states:
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+        verified = authority.verify_plugin_adoption_terminal_envelope(
+            request_bytes=verified.request_bytes,
+            envelope_bytes=verified.envelope_bytes,
+            now=issued_at + 0.001 if prepared_replay else transport_now,
+        )
+        if (
+            verified.request != request
+            or verified.request_bytes != request_bytes
+            or verified.request_digest != prepared["request_digest"]
+            or not verified.allowed
+        ):
+            raise AdoptionError("terminal_authority_verification_failed")
+        self.crash_hook("TERMINAL_AUTHORIZED")
+        record = _terminal_record_from_prepared(
+            verified,
+            prepared,
+        )
+        _replace_terminal_prepared_with_journal(
+            self.root,
+            prepared,
+            record,
+            crash_hook=self.crash_hook,
+        )
+        self.crash_hook("COMMITTED")
+        return {
+            "status": "terminalized",
+            "transaction_id": record["transaction_id"],
+        }
 
     def _fresh_authorization(self) -> tuple[dict[str, object], list[HostState], list[HostState]]:
         _lstat_admitted_directory(self.root, create=True)
@@ -4701,9 +6736,16 @@ class PluginAdoptionExecutor:
         return before, after
 
     def run(self) -> dict[str, object]:
+        if self.action != "terminalize":
+            _require_ordinary_apply_plugin_version_alignment()
         _lstat_admitted_directory(self.root, create=True)
         archived_transaction_id: str | None = None
-        with _host_locks(self.root):
+        with _host_locks(
+            self.root,
+            typed_failure=self.action == "terminalize",
+        ):
+            if self.action == "terminalize":
+                return self._run_terminalize_under_locks()
             if _journal_path(self.root).exists():
                 record = _read_journal(self.root)
                 verified = _reverify_journal(record)
@@ -4863,7 +6905,10 @@ class PluginAdoptionExecutor:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("apply", "resume", "status"))
+    parser.add_argument(
+        "action",
+        choices=("apply", "resume", "status", "terminalize"),
+    )
     return parser
 
 
@@ -4900,8 +6945,33 @@ def _previous_context_required(action: str, root: Path) -> bool:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    root = _fixed_state_root()
+    root = (
+        _fixed_terminal_state_root()
+        if args.action == "terminalize"
+        else _fixed_state_root()
+    )
     try:
+        if args.action == "terminalize":
+            terminal_observers = tuple(
+                FixedTerminalHostObserver(host, root)
+                for host in HOST_ORDER
+            )
+            result = PluginAdoptionExecutor(
+                state_root=root,
+                adapters=(),
+                authority_request=authority.request_plugin_adoption_decision,
+                action="terminalize",
+                terminal_observers=terminal_observers,
+                canonical_recovery_observer=FixedCanonicalRecoveryObserver(
+                    _fixed_canonical_recovery_root()
+                ),
+                terminal_authority_request=(
+                    authority.request_plugin_adoption_terminal_decision
+                ),
+            ).run()
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        _require_ordinary_apply_plugin_version_alignment()
         if args.action == "status":
             status_root = root
             if not _journal_path(status_root).is_file():
