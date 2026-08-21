@@ -28,6 +28,127 @@ AUTHORITY_BUNDLE_VERSION: Final = _base.HERMES_MAESTRO_AUTHORITY_BUNDLE_VERSION
 AUTHORITY_BUNDLE_DIGEST: Final = _base.HERMES_MAESTRO_AUTHORITY_BUNDLE_DIGEST
 OPERATION: Final = "plugin.adoption.apply"
 TERMINAL_OPERATION: Final = "plugin.adoption.terminalize"
+TERMINAL_CONTRACT_ID: Final = CONTRACT_ID
+TERMINAL_CONTRACT_VERSION: Final = (
+    "hermes-protected-plugin-adoption.terminalize.v1"
+)
+TERMINAL_CONTRACT_DESCRIPTOR: Final = {
+    "admission": (
+        "all terminal plan fields equal boot-admitted immutable manifest; "
+        "before_state_digest equals after_state_digest"
+    ),
+    "constants": {
+        "marketplace_id": "orch-next-hermes-local",
+        "max_ttl_seconds": 300,
+        "observation_only": True,
+        "operation": "plugin.adoption.terminalize",
+        "plugin_id": "orch-next-hermes-harness",
+        "plugin_version": "0.1.48",
+        "requester": "hermes_operational_harness",
+        "source_revision": "9957e57afe528477986f889a1570c7ac7e113f0e",
+        "target_set": ["codex", "claude"],
+        "transition_set": [
+            "plugin.adoption.observe",
+            "plugin.adoption.predecessor_terminalize",
+        ],
+    },
+    "contract": {
+        "id": TERMINAL_CONTRACT_ID,
+        "keys": ["id", "version", "digest"],
+        "version": TERMINAL_CONTRACT_VERSION,
+    },
+    "forbidden_request_content": [
+        "paths",
+        "commands",
+        "caller_actions",
+        "host_cache_install_process_mutation",
+    ],
+    "plan_digest": "sha256(canonical plan excluding plan_digest)",
+    "receipt_keys": [
+        "outcome",
+        "code",
+        "decision_id",
+        "transaction_id",
+        "authority_owner",
+        "authority_bundle_version",
+        "authority_bundle_digest",
+        "authority_consumer",
+        "contract_id",
+        "contract_version",
+        "contract_digest",
+        "operation",
+        "marketplace_id",
+        "plugin_id",
+        "plugin_version",
+        "source_runtime_revision",
+        "source_revision",
+        "source_bundle_digest",
+        "target_set",
+        "transition_set",
+        "predecessor_identity_digest",
+        "current_identity_digest",
+        "canonical_identity_digest",
+        "codex_current_state_digest",
+        "claude_current_state_digest",
+        "before_state_digest",
+        "after_state_digest",
+        "rollback_manifest_digest",
+        "plan_digest",
+        "issued_at",
+        "expires_at",
+        "final_decision_state",
+        "final_execution_permitted",
+        "consumed_once",
+        "request_digest",
+    ],
+    "replay": {
+        "active_slots": 1,
+        "allow": "one durable signed envelope",
+        "cross_action_ids": "signed deny",
+        "recent_completed": "bounded",
+        "same_ids_changed_request": "signed deny",
+        "stable_request": (
+            "byte-identical stored signed envelope before fresh TTL validation"
+        ),
+    },
+    "request": {
+        "actual_keys": [
+            "decision_id",
+            "transaction_id",
+            "requester",
+            "operation",
+            "issued_at",
+            "expires_at",
+            "source_runtime_revision",
+        ],
+        "plan_keys": [
+            "marketplace_id",
+            "plugin_id",
+            "plugin_version",
+            "source_revision",
+            "source_bundle_digest",
+            "target_set",
+            "transition_set",
+            "predecessor_identity_digest",
+            "current_identity_digest",
+            "canonical_identity_digest",
+            "codex_current_state_digest",
+            "claude_current_state_digest",
+            "before_state_digest",
+            "after_state_digest",
+            "rollback_manifest_digest",
+            "plan_digest",
+        ],
+        "top_keys": ["actual", "challenge", "contract", "plan"],
+    },
+    "signature_payload": {
+        "canonical": "ascii-json",
+        "keys": ["request", "receipt"],
+    },
+}
+TERMINAL_CONTRACT_DIGEST: Final = (
+    "af7b40de7bf29d27adace625e04671e8e5250fa7a1f9ab7fb4b85c9c68fbefc9"
+)
 MARKETPLACE_ID: Final = "orch-next-hermes-local"
 PLUGIN_ID: Final = "orch-next-hermes-harness"
 PLUGIN_VERSION: Final = "0.1.47"
@@ -413,9 +534,9 @@ def build_plugin_adoption_terminal_request(
         "source_runtime_revision": TERMINAL_SOURCE_REVISION,
     }
     contract = {
-        "id": CONTRACT_ID,
-        "version": CONTRACT_VERSION,
-        "digest": CONTRACT_DIGEST,
+        "id": TERMINAL_CONTRACT_ID,
+        "version": TERMINAL_CONTRACT_VERSION,
+        "digest": TERMINAL_CONTRACT_DIGEST,
     }
     challenge_material = canonical_bytes({
         "contract": contract,
@@ -456,9 +577,9 @@ def validate_terminal_request(
     expires = _finite_time(actual["expires_at"])
     if (
         contract != {
-            "id": CONTRACT_ID,
-            "version": CONTRACT_VERSION,
-            "digest": CONTRACT_DIGEST,
+            "id": TERMINAL_CONTRACT_ID,
+            "version": TERMINAL_CONTRACT_VERSION,
+            "digest": TERMINAL_CONTRACT_DIGEST,
         }
         or _safe_id(actual["decision_id"]) is None
         or _safe_id(actual["transaction_id"]) is None
@@ -628,9 +749,9 @@ def _validate_terminal_receipt(
         "authority_bundle_version": AUTHORITY_BUNDLE_VERSION,
         "authority_bundle_digest": AUTHORITY_BUNDLE_DIGEST,
         "authority_consumer": AUTHORITY_CONSUMER,
-        "contract_id": CONTRACT_ID,
-        "contract_version": CONTRACT_VERSION,
-        "contract_digest": CONTRACT_DIGEST,
+        "contract_id": TERMINAL_CONTRACT_ID,
+        "contract_version": TERMINAL_CONTRACT_VERSION,
+        "contract_digest": TERMINAL_CONTRACT_DIGEST,
         "operation": TERMINAL_OPERATION,
         "marketplace_id": MARKETPLACE_ID,
         "plugin_id": PLUGIN_ID,
@@ -849,10 +970,16 @@ def request_plugin_adoption_terminal_decision(
     request: object,
     *,
     now: float,
+    prepared_replay: bool = False,
 ) -> VerifiedPluginAdoptionEnvelope:
-    """Send and verify only one exact terminal-predecessor decision request."""
+    """Send a fresh request or replay exact durably prepared request bytes."""
 
-    checked = validate_terminal_request(request, now=now)
+    if type(prepared_replay) is not bool:
+        raise PluginAdoptionAuthorityError("authority_contract_unavailable")
+    checked = validate_terminal_request(
+        request,
+        now=None if prepared_replay else now,
+    )
     request_bytes = canonical_bytes(checked)
     if not _base._trusted_runtime_boundary():
         raise PluginAdoptionAuthorityError("authority_contract_unavailable")
@@ -896,7 +1023,11 @@ def request_plugin_adoption_terminal_decision(
     return verify_plugin_adoption_terminal_envelope(
         request_bytes=request_bytes,
         envelope_bytes=line,
-        now=now,
+        now=(
+            float(checked["actual"]["issued_at"]) + 0.001
+            if prepared_replay
+            else now
+        ),
     )
 
 
@@ -915,6 +1046,10 @@ __all__ = [
     "PREVIOUS_TERMINAL_PLUGIN_VERSION",
     "PluginAdoptionAuthorityError",
     "TARGET_SET",
+    "TERMINAL_CONTRACT_DESCRIPTOR",
+    "TERMINAL_CONTRACT_DIGEST",
+    "TERMINAL_CONTRACT_ID",
+    "TERMINAL_CONTRACT_VERSION",
     "TERMINAL_ALLOW_CODE",
     "TERMINAL_DENY_CODE",
     "TERMINAL_OPERATION",

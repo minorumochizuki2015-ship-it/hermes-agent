@@ -68,6 +68,55 @@ def test_terminalize_request_is_an_exact_sibling_action() -> None:
         adoption.validate_request(request, now=1001.0)
 
 
+def test_terminal_contract_descriptor_is_distinct_and_canonical() -> None:
+    assert (
+        adoption.CONTRACT_ID,
+        adoption.CONTRACT_VERSION,
+        adoption.CONTRACT_DIGEST,
+    ) == (
+        "HERMES_PROTECTED_PLUGIN_ADOPTION_V1",
+        "hermes-protected-plugin-adoption.v1",
+        "999ca51fea4d0dd6f77a7d1393bde5bdbd94b425c1c25e6146157dc0d8f97f07",
+    )
+    assert adoption.TERMINAL_CONTRACT_DESCRIPTOR["contract"] == {
+        "id": "HERMES_PROTECTED_PLUGIN_ADOPTION_V1",
+        "keys": ["id", "version", "digest"],
+        "version": "hermes-protected-plugin-adoption.terminalize.v1",
+    }
+    assert adoption.TERMINAL_CONTRACT_DESCRIPTOR["constants"]["operation"] == (
+        "plugin.adoption.terminalize"
+    )
+    assert adoption.TERMINAL_CONTRACT_DESCRIPTOR["replay"]["stable_request"] == (
+        "byte-identical stored signed envelope before fresh TTL validation"
+    )
+    assert (
+        adoption.TERMINAL_CONTRACT_ID,
+        adoption.TERMINAL_CONTRACT_VERSION,
+        adoption.TERMINAL_CONTRACT_DIGEST,
+    ) == (
+        "HERMES_PROTECTED_PLUGIN_ADOPTION_V1",
+        "hermes-protected-plugin-adoption.terminalize.v1",
+        "af7b40de7bf29d27adace625e04671e8e5250fa7a1f9ab7fb4b85c9c68fbefc9",
+    )
+    assert adoption.TERMINAL_CONTRACT_DIGEST == hashlib.sha256(
+        adoption.canonical_bytes(adoption.TERMINAL_CONTRACT_DESCRIPTOR)
+    ).hexdigest()
+
+    request = _terminal_request()
+    assert request["contract"] == {
+        "id": adoption.TERMINAL_CONTRACT_ID,
+        "version": adoption.TERMINAL_CONTRACT_VERSION,
+        "digest": adoption.TERMINAL_CONTRACT_DIGEST,
+    }
+    request["contract"] = {
+        "id": adoption.CONTRACT_ID,
+        "version": adoption.CONTRACT_VERSION,
+        "digest": adoption.CONTRACT_DIGEST,
+    }
+    with pytest.raises(adoption.PluginAdoptionAuthorityError):
+        adoption.validate_terminal_request(request, now=1001.0)
+
+
 def _plan(**updates) -> dict:
     value = {
         "marketplace_id": adoption.MARKETPLACE_ID,
@@ -199,9 +248,9 @@ def _terminal_receipt(request: dict, **updates) -> dict:
         "authority_bundle_version": adoption.AUTHORITY_BUNDLE_VERSION,
         "authority_bundle_digest": adoption.AUTHORITY_BUNDLE_DIGEST,
         "authority_consumer": adoption.AUTHORITY_CONSUMER,
-        "contract_id": adoption.CONTRACT_ID,
-        "contract_version": adoption.CONTRACT_VERSION,
-        "contract_digest": adoption.CONTRACT_DIGEST,
+        "contract_id": adoption.TERMINAL_CONTRACT_ID,
+        "contract_version": adoption.TERMINAL_CONTRACT_VERSION,
+        "contract_digest": adoption.TERMINAL_CONTRACT_DIGEST,
         "operation": adoption.TERMINAL_OPERATION,
         "marketplace_id": plan["marketplace_id"],
         "plugin_id": plan["plugin_id"],
@@ -444,6 +493,50 @@ def test_terminal_authority_consumer_sends_and_verifies_exact_terminal_bytes(
     assert connected == ["/private/fixture-authority.sock"]
     assert sent == [request_bytes + b"\n"]
     assert closed == [client]
+
+
+def test_terminal_authority_consumer_replays_stored_envelope_before_ttl_denial(
+    monkeypatch,
+) -> None:
+    request = _terminal_request()
+    request_bytes = adoption.canonical_bytes(request)
+    envelope_bytes = _terminal_envelope_bytes(request)
+    client = object()
+    sent: list[bytes] = []
+
+    monkeypatch.setattr(adoption._base, "_trusted_runtime_boundary", lambda: True)
+    monkeypatch.setattr(
+        adoption._base,
+        "_fixed_authority_socket_path",
+        lambda: "/private/fixture-authority.sock",
+    )
+    monkeypatch.setattr(adoption._base, "_NATIVE_TIME_MONOTONIC", lambda: 10.0)
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_CLASS", lambda *_args: client)
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_SETTIMEOUT", lambda *_args: None)
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_CONNECT", lambda *_args: None)
+    monkeypatch.setattr(
+        adoption._base,
+        "_NATIVE_SOCKET_SENDALL",
+        lambda _client, payload: sent.append(payload),
+    )
+    monkeypatch.setattr(
+        adoption._base,
+        "_NATIVE_SOCKET_RECV",
+        lambda *_args: envelope_bytes + b"\n",
+    )
+    monkeypatch.setattr(adoption._base, "_NATIVE_SOCKET_CLOSE", lambda *_args: None)
+    monkeypatch.setattr(adoption._base, "_verify_sshsig", lambda *_args: True)
+
+    verified = adoption.request_plugin_adoption_terminal_decision(
+        request,
+        now=1200.0,
+        prepared_replay=True,
+    )
+
+    assert verified.allowed is True
+    assert verified.request_bytes == request_bytes
+    assert verified.envelope_bytes == envelope_bytes
+    assert sent == [request_bytes + b"\n"]
 
 
 def test_request_is_exact_stable_and_contains_no_path_or_command() -> None:
