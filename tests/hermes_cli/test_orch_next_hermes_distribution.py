@@ -2308,11 +2308,11 @@ def test_checked_in_bundle_is_exact_dual_channel_source() -> None:
         "bundle": str(bundle),
         "identity": "orch-next-hermes-harness",
         "mcp_module": "agent.transports.hermes_tools_mcp_server",
-        "recursive_file_count": 70,
-        "skill_count": 47,
-            "skill_closure_digest": (
-                "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329"
-            ),
+        "recursive_file_count": 71,
+        "skill_count": 48,
+        "skill_closure_digest": (
+            "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf"
+        ),
         "status": "verified",
     }
 
@@ -2331,7 +2331,7 @@ def test_checked_in_bundle_is_exact_dual_channel_source() -> None:
         "authority_policy_source": distribution.AUTHORITY_POLICY_SOURCE,
         "content": {
             "digest": distribution.EXPECTED_SKILL_CLOSURE_DIGEST,
-            "recursive_file_count": 70,
+            "recursive_file_count": 71,
             "source_root": "skills/orch-next",
         },
         "full_skill_closure_injected_into_runtime_prompt": False,
