@@ -207,6 +207,7 @@ _TERMINAL_PREPARED_KEYS = _TERMINAL_JOURNAL_KEYS - frozenset({
     "envelope_b64",
 })
 _TERMINAL_PREPARED_TEMP_LEAF: Final = ".terminal-journal.prepared.tmp"
+_TERMINAL_PREPARED_BACKUP_LEAF: Final = ".terminal-journal.prepared"
 _TERMINAL_STAGE_LEAF: Final = ".terminal-journal.stage"
 _TERMINAL_STAGE_TEMP_LEAF: Final = ".terminal-journal.stage.tmp"
 _TERMINAL_OPERATIONAL_STATES = frozenset({"qualification_pending", "orphaned"})
@@ -1797,6 +1798,51 @@ def _rename_directory_exclusive(
     )
 
 
+def _exchange_directory_entries(
+    parent_descriptor: int,
+    first_name: str,
+    second_name: str,
+) -> None:
+    """Atomically exchange two sibling entries without discarding either."""
+
+    if any(
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\0" in name
+        for name in (first_name, second_name)
+    ):
+        raise AdoptionError("terminal_final_exchange_unsupported")
+    library = ctypes.CDLL(None, use_errno=True)
+    try:
+        if sys.platform == "darwin":
+            rename = library.renameatx_np
+        elif sys.platform.startswith("linux"):
+            rename = library.renameat2
+        else:
+            raise AdoptionError("terminal_final_exchange_unsupported")
+    except AttributeError as exc:
+        raise AdoptionError("terminal_final_exchange_unsupported") from exc
+    rename.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    rename.restype = ctypes.c_int
+    result = rename(
+        parent_descriptor,
+        os.fsencode(first_name),
+        parent_descriptor,
+        os.fsencode(second_name),
+        0x00000002,  # RENAME_SWAP (Darwin) / RENAME_EXCHANGE (Linux)
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, "terminal final exchange failed")
+
+
 def _atomic_private_write(path: Path, content: bytes) -> None:
     _lstat_admitted_directory(path.parent, create=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -2134,6 +2180,15 @@ def _terminal_file_identity(info: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _terminal_rename_identity_matches(
+    before: tuple[int, ...],
+    after: tuple[int, ...],
+) -> bool:
+    """Admit only the ctime transition caused by renaming a bound file."""
+
+    return before[:-1] == after[:-1] and after[-1] >= before[-1]
+
+
 def _open_terminal_root(root: Path, *, failure: str) -> int:
     _lstat_admitted_directory(root)
     flags = (
@@ -2205,6 +2260,33 @@ def _terminal_temp_snapshot(
         if descriptor >= 0:
             os.close(descriptor)
         os.close(directory)
+
+
+def _terminal_leaf_record(
+    root: Path,
+    leaf: str,
+    *,
+    phase: str,
+    failure: str,
+) -> tuple[dict[str, object], bytes, tuple[int, ...]]:
+    try:
+        content, identity = _terminal_temp_snapshot(root, leaf)
+        value = json.loads(content.decode("ascii"))
+    except (AdoptionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AdoptionError(failure) from exc
+    if type(value) is not dict:
+        raise AdoptionError(failure)
+    try:
+        canonical = (
+            _terminal_prepared_bytes(value)
+            if phase == "REQUEST_PREPARED"
+            else _terminal_journal_bytes(value)
+        )
+    except AdoptionError as exc:
+        raise AdoptionError(failure) from exc
+    if canonical != content:
+        raise AdoptionError(failure)
+    return value, content, identity
 
 
 def _remove_terminal_temp(
@@ -2450,6 +2532,168 @@ def _replace_terminal_prepared_with_journal(
     )
 
 
+def _restore_terminal_prepared_backup(
+    root: Path,
+    *,
+    expected: bytes,
+    backup_identity: tuple[int, ...],
+) -> None:
+    """Restore a prepared backup without discarding a substituted final node."""
+
+    directory = _open_terminal_root(
+        root,
+        failure="terminal_prepared_backup_drift",
+    )
+    try:
+        backup = os.stat(
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            _terminal_file_identity(backup) != backup_identity
+            or _private_file_bytes(
+                root / _TERMINAL_PREPARED_BACKUP_LEAF
+            )
+            != expected
+        ):
+            raise AdoptionError("terminal_prepared_backup_drift")
+        _exchange_directory_entries(
+            directory,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            "journal.json",
+        )
+        os.fsync(directory)
+        restored = os.stat(
+            "journal.json",
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if not _terminal_rename_identity_matches(
+            backup_identity,
+            _terminal_file_identity(restored),
+        ):
+            raise AdoptionError("terminal_prepared_backup_drift")
+    except OSError as exc:
+        raise AdoptionError("terminal_prepared_backup_drift") from exc
+    finally:
+        os.close(directory)
+    if _private_file_bytes(_journal_path(root)) != expected:
+        raise AdoptionError("terminal_prepared_backup_drift")
+    try:
+        _collision, collision_identity = _terminal_temp_snapshot(
+            root,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+        )
+        _remove_terminal_temp(
+            root,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            collision_identity,
+        )
+    except AdoptionError as exc:
+        raise AdoptionError("terminal_prepared_backup_drift") from exc
+
+
+def _publish_terminal_stage_from_backup(
+    root: Path,
+    prepared: dict[str, object],
+    committed: dict[str, object],
+    *,
+    backup_identity: tuple[int, ...],
+    stage_identity: tuple[int, ...],
+    crash_hook: Callable[[str], None],
+) -> None:
+    """No-clobber publish a signed stage while retaining REQUEST_PREPARED."""
+
+    _require_terminal_stage_matches_prepared(prepared, committed)
+    expected = _terminal_prepared_bytes(prepared)
+    content = _terminal_journal_bytes(committed)
+    directory = _open_terminal_root(
+        root,
+        failure="terminal_journal_publish_failed",
+    )
+    rollback_required = False
+    try:
+        try:
+            os.stat("journal.json", dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError("terminal_journal_publish_failed")
+        backup = os.stat(
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        staged = os.stat(
+            _TERMINAL_STAGE_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            _terminal_file_identity(backup) != backup_identity
+            or _terminal_file_identity(staged) != stage_identity
+            or _private_file_bytes(
+                root / _TERMINAL_PREPARED_BACKUP_LEAF
+            )
+            != expected
+            or _private_file_bytes(_terminal_stage_path(root)) != content
+        ):
+            raise AdoptionError("terminal_stage_drift")
+        _rename_directory_exclusive(
+            directory,
+            _TERMINAL_STAGE_LEAF,
+            "journal.json",
+        )
+        os.fsync(directory)
+        try:
+            published = os.stat(
+                "journal.json",
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+            retained = os.stat(
+                _TERMINAL_PREPARED_BACKUP_LEAF,
+                dir_fd=directory,
+                follow_symlinks=False,
+            )
+            rollback_required = (
+                not _terminal_rename_identity_matches(
+                    stage_identity,
+                    _terminal_file_identity(published),
+                )
+                or _terminal_file_identity(retained) != backup_identity
+                or _private_file_bytes(_journal_path(root)) != content
+                or _private_file_bytes(
+                    root / _TERMINAL_PREPARED_BACKUP_LEAF
+                )
+                != expected
+            )
+        except (OSError, AdoptionError):
+            rollback_required = True
+        if not rollback_required:
+            crash_hook("TERMINAL_FINAL_BOUND")
+    except OSError as exc:
+        raise AdoptionError("terminal_journal_publish_failed") from exc
+    finally:
+        os.close(directory)
+    if rollback_required:
+        _restore_terminal_prepared_backup(
+            root,
+            expected=expected,
+            backup_identity=backup_identity,
+        )
+        raise AdoptionError("terminal_stage_substitution")
+    _remove_terminal_temp(
+        root,
+        _TERMINAL_PREPARED_BACKUP_LEAF,
+        backup_identity,
+    )
+    crash_hook("TERMINAL_FINAL_REPLACED")
+    if _private_file_bytes(_journal_path(root)) != content:
+        raise AdoptionError("terminal_journal_publish_failed")
+
+
 def _replace_existing_terminal_stage(
     root: Path,
     prepared: dict[str, object],
@@ -2474,7 +2718,8 @@ def _replace_existing_terminal_stage(
         | getattr(os, "O_NOFOLLOW", 0)
     )
     directory = os.open(root, directory_flags)
-    published = False
+    backup_identity: tuple[int, ...] | None = None
+    stage_identity: tuple[int, ...] | None = None
     try:
         root_info = os.fstat(directory)
         if (
@@ -2483,7 +2728,7 @@ def _replace_existing_terminal_stage(
             or stat.S_IMODE(root_info.st_mode) != 0o700
         ):
             raise AdoptionError("terminal_stage_drift")
-        identities = []
+        identities: list[tuple[int, ...]] = []
         for leaf, size in (
             ("journal.json", len(expected)),
             (_TERMINAL_STAGE_LEAF, len(content)),
@@ -2534,21 +2779,51 @@ def _replace_existing_terminal_stage(
                 info.st_ctime_ns,
             ) != identity:
                 raise AdoptionError("terminal_stage_drift")
-        os.replace(
-            _TERMINAL_STAGE_LEAF,
+        prepared_identity, stage_identity = identities
+        _rename_directory_exclusive(
+            directory,
             "journal.json",
-            src_dir_fd=directory,
-            dst_dir_fd=directory,
+            _TERMINAL_PREPARED_BACKUP_LEAF,
         )
-        published = True
-        crash_hook("TERMINAL_FINAL_REPLACED")
         os.fsync(directory)
+        backup = os.stat(
+            _TERMINAL_PREPARED_BACKUP_LEAF,
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        backup_identity = _terminal_file_identity(backup)
+        if (
+            not _terminal_rename_identity_matches(
+                prepared_identity,
+                backup_identity,
+            )
+            or _private_file_bytes(
+                root / _TERMINAL_PREPARED_BACKUP_LEAF
+            )
+            != expected
+        ):
+            raise AdoptionError("terminal_prepared_backup_drift")
+        try:
+            os.stat("journal.json", dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AdoptionError("terminal_prepared_backup_drift")
     except OSError as exc:
         raise AdoptionError("terminal_journal_publish_failed") from exc
     finally:
         os.close(directory)
-    if not published or _private_file_bytes(_journal_path(root)) != content:
-        raise AdoptionError("terminal_journal_publish_failed")
+    if backup_identity is None or stage_identity is None:
+        raise AdoptionError("terminal_prepared_backup_drift")
+    crash_hook("TERMINAL_PREPARED_BACKED_UP")
+    _publish_terminal_stage_from_backup(
+        root,
+        prepared,
+        committed,
+        backup_identity=backup_identity,
+        stage_identity=stage_identity,
+        crash_hook=crash_hook,
+    )
 
 
 def _archive_stat_identity(info: os.stat_result) -> tuple[int, ...]:
@@ -5916,6 +6191,116 @@ class PluginAdoptionExecutor:
             self.canonical_recovery_observer.observe()
         )
 
+    def _require_terminal_record_bindings(
+        self,
+        record: dict[str, object],
+    ) -> None:
+        states = [
+            TerminalHostState.from_projection(item, expected_host=host)
+            for item, host in zip(
+                record["before_states"],
+                HOST_ORDER,
+                strict=True,
+            )
+        ]
+        recovery = CanonicalRecoveryState.from_projection(
+            record["canonical_recovery"]
+        )
+        if self._observe_terminal_states() != states:
+            raise AdoptionError("terminal_current_state_drift")
+        if self._observe_canonical_recovery() != recovery:
+            raise AdoptionError("canonical_recovery_drift")
+
+    def _reconcile_terminal_prepared_backup(
+        self,
+        names: frozenset[str],
+    ) -> None:
+        backup = _TERMINAL_PREPARED_BACKUP_LEAF
+        if names == {backup, _TERMINAL_STAGE_LEAF}:
+            prepared, _prepared_bytes, backup_identity = _terminal_leaf_record(
+                self.root,
+                backup,
+                phase="REQUEST_PREPARED",
+                failure="terminal_prepared_backup_drift",
+            )
+            staged, _staged_bytes, stage_identity = _terminal_leaf_record(
+                self.root,
+                _TERMINAL_STAGE_LEAF,
+                phase="COMMITTED",
+                failure="terminal_stage_drift",
+            )
+            _require_terminal_stage_matches_prepared(prepared, staged)
+            verified = _reverify_terminal_journal(staged)
+            if (
+                not verified.allowed
+                or verified.request_digest != prepared["request_digest"]
+            ):
+                raise AdoptionError("terminal_stage_drift")
+            self._require_terminal_record_bindings(prepared)
+            _publish_terminal_stage_from_backup(
+                self.root,
+                prepared,
+                staged,
+                backup_identity=backup_identity,
+                stage_identity=stage_identity,
+                crash_hook=self.crash_hook,
+            )
+            return
+
+        if names != {backup, "journal.json"}:
+            raise AdoptionError("terminal_prepared_backup_drift")
+        try:
+            prepared, _prepared_bytes, _prepared_identity = (
+                _terminal_leaf_record(
+                    self.root,
+                    "journal.json",
+                    phase="REQUEST_PREPARED",
+                    failure="terminal_prepared_backup_drift",
+                )
+            )
+        except AdoptionError:
+            prepared = None
+        if prepared is not None:
+            self._require_terminal_record_bindings(prepared)
+            _collision, collision_identity = _terminal_temp_snapshot(
+                self.root,
+                backup,
+            )
+            _remove_terminal_temp(self.root, backup, collision_identity)
+            return
+
+        prepared, prepared_bytes, backup_identity = _terminal_leaf_record(
+            self.root,
+            backup,
+            phase="REQUEST_PREPARED",
+            failure="terminal_prepared_backup_drift",
+        )
+        self._require_terminal_record_bindings(prepared)
+        try:
+            committed, _committed_bytes, _committed_identity = (
+                _terminal_leaf_record(
+                    self.root,
+                    "journal.json",
+                    phase="COMMITTED",
+                    failure="terminal_journal_publish_failed",
+                )
+            )
+        except AdoptionError:
+            _restore_terminal_prepared_backup(
+                self.root,
+                expected=prepared_bytes,
+                backup_identity=backup_identity,
+            )
+            return
+        _require_terminal_stage_matches_prepared(prepared, committed)
+        verified = _reverify_terminal_journal(committed)
+        if (
+            not verified.allowed
+            or verified.request_digest != prepared["request_digest"]
+        ):
+            raise AdoptionError("terminal_journal_authority_verification_failed")
+        _remove_terminal_temp(self.root, backup, backup_identity)
+
     def _reconcile_terminal_publication_residue(self) -> None:
         """Promote complete deterministic temps or remove only partial residue."""
 
@@ -5923,6 +6308,9 @@ class PluginAdoptionExecutor:
             names = frozenset(path.name for path in self.root.iterdir())
         except OSError as exc:
             raise AdoptionError("terminal_temp_drift") from exc
+        if _TERMINAL_PREPARED_BACKUP_LEAF in names:
+            self._reconcile_terminal_prepared_backup(names)
+            return
         temp_names = names & {
             _TERMINAL_PREPARED_TEMP_LEAF,
             _TERMINAL_STAGE_TEMP_LEAF,
