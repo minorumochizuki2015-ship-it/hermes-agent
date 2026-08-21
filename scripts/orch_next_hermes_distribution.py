@@ -101,7 +101,7 @@ ALLOWED_BUNDLE_TOP_LEVEL = frozenset({
     ".mcp.json",
     OPERATIONAL_PROFILE_INDEX_PATH,
     "SOURCE_MANIFEST.json",
-    "hooks",
+    "codex-hooks",
     "runtime",
     "skills",
 })
@@ -155,7 +155,7 @@ MAESTRO_PROMPT_CONTEXT_DIGESTS = {
         "e511b125d2fe94bae0db30f4e1556d39736b170cecf6be31059188bb980ffe21"
     ),
 }
-CODEX_HOOKS_PATH = "hooks/hooks.json"
+CODEX_HOOKS_PATH = "codex-hooks/hooks.json"
 RUNTIME_PORTABLE_SOURCE_ROOT = "../../.."
 RUNTIME_PYTHON_PATH = ".venv/bin/python"
 RUNTIME_LAUNCHER_PATH = "scripts/orch_next_hermes_mcp_launcher.py"

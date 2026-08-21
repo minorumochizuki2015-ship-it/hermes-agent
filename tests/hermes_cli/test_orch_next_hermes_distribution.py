@@ -175,6 +175,23 @@ def _commit_payload(repo: Path, payload: bytes, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD").stdout.decode().strip()
 
 
+def test_0149_codex_hook_manifest_avoids_claude_default_discovery(
+    tmp_path: Path,
+) -> None:
+    bundle = _generated_bundle(tmp_path)
+    codex = json.loads(
+        (bundle / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    claude = json.loads(
+        (bundle / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+
+    assert codex["hooks"] == "./codex-hooks/hooks.json"
+    assert (bundle / "codex-hooks" / "hooks.json").is_file()
+    assert not (bundle / "hooks" / "hooks.json").exists()
+    assert "hooks" not in claude
+
+
 def test_0149_generated_bundle_carries_exact_maestro_prompt_context(
     tmp_path: Path,
 ) -> None:
@@ -192,7 +209,7 @@ def test_0149_generated_bundle_carries_exact_maestro_prompt_context(
     claude = json.loads(
         (bundle / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
-    hooks = json.loads((bundle / "hooks" / "hooks.json").read_text())
+    hooks = json.loads((bundle / "codex-hooks" / "hooks.json").read_text())
 
     assert intake["source_commit"] == (
         "568fe9ab0804e0b8b51a2e728f691e4a5edb9f26"
@@ -212,7 +229,7 @@ def test_0149_generated_bundle_carries_exact_maestro_prompt_context(
     assert "maestro_prompt_context" not in binding
     assert manifest["maestro_prompt_context"]["source_commit"] == intake["source_commit"]
     assert manifest["maestro_prompt_context"]["source_tree"] == intake["source_tree"]
-    assert codex["hooks"] == "./hooks/hooks.json"
+    assert codex["hooks"] == "./codex-hooks/hooks.json"
     assert "hooks" not in claude
     assert hooks == {
         "hooks": {
@@ -374,6 +391,34 @@ def test_0149_bundle_verification_rejects_prompt_context_drift(
         manifest_path.write_bytes(distribution._json_bytes(manifest))
 
     with pytest.raises(distribution.DistributionError, match=message):
+        distribution.verify_bundle(bundle, source, runtime_root=REPO_ROOT)
+
+
+def test_0149_bundle_rejects_stale_claude_default_hook_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = REPO_ROOT / "skills" / "orch-next"
+    bundle = _generated_bundle(tmp_path)
+    runtime_python = Path(sys.executable)
+    monkeypatch.setattr(distribution, "runtime_python", lambda: runtime_python)
+    monkeypatch.setattr(
+        distribution,
+        "_runtime_python_identity",
+        lambda _source_root: {
+            "runtime_python_sha256": hashlib.sha256(
+                runtime_python.read_bytes()
+            ).hexdigest(),
+            "runtime_python_size": runtime_python.stat().st_size,
+        },
+    )
+    stale_path = bundle / "hooks" / "hooks.json"
+    stale_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_path.write_bytes(
+        (bundle / "codex-hooks" / "hooks.json").read_bytes()
+    )
+
+    with pytest.raises(distribution.DistributionError, match="bundle top-level mismatch"):
         distribution.verify_bundle(bundle, source, runtime_root=REPO_ROOT)
 
 

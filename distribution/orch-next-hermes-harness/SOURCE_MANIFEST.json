@@ -101,7 +101,7 @@
     ],
     "hook": {
       "event": "UserPromptSubmit",
-      "manifest": "hooks/hooks.json",
+      "manifest": "codex-hooks/hooks.json",
       "registered_channels": [
         "codex"
       ]
@@ -228,7 +228,7 @@
     }
   },
   "operational_profile_index": {
-    "digest": "10ae5302c8b23eee543151d9d4207bd8e9deb4216d879eb77b863a8263225be9",
+    "digest": "6932515a21e643d939099b98f99b5f5e7d12b9594c0ff0bc7b709bb388c6f463",
     "identity": "orch-next-hermes-compact-operational-profile.v1",
     "path": "OPERATIONAL_PROFILE_INDEX.json",
     "schema": "orch-next-hermes-operational-profile-index.v1"
@@ -241,7 +241,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "48ae96ce74185ed81ea164493a7af4c20240b2c565e8e264215c61e1e7e41845",
+      "digest": "8b051eca8ddcbc0fa07c8dee1dc2ed5d9461740e87b633a137f3d00ae7426737",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"
