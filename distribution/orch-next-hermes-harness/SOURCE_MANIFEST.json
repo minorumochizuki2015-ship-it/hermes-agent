@@ -163,7 +163,7 @@
     "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
     "locator": {
       "binding": "runtime/RUNTIME_BINDING.json",
-      "binding_sha256": "8d92d48fb6869eaaada6455776a0aa71aca1ef17a1c511e2a4bdf7f9b5525f2b",
+      "binding_sha256": "8df86ee15068d7c253c0020b11409507d44043c87be6b75f8c7c5cf82e991674",
       "mode": "manifest_relative",
       "rollback_identity": "installed:orch-next-hermes-harness@0.1.48"
     },
@@ -241,7 +241,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "389ffb94e5f5b119815ddf05b03faef0be280aec221d949cfeaa31f63e525da1",
+      "digest": "ae48d88bd91da26273db17c802a7096a1c282be002b56412273a0cad0632a5ca",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"

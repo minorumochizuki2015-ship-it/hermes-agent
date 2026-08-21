@@ -2059,25 +2059,11 @@ def _exchange_directory_entries(
 
 
 def _atomic_private_write(path: Path, content: bytes) -> None:
-    _lstat_admitted_directory(path.parent, create=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temporary)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=True) as handle:
-            descriptor = -1
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-        _fsync_directory(path.parent)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
+    _write_private_file_exclusive(
+        path,
+        content,
+        failure_code="ordinary_journal_collision",
+    )
 
 
 def _private_file_bytes(path: Path, *, maximum: int = 512 * 1024) -> bytes:

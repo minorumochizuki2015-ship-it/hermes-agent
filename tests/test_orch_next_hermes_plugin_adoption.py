@@ -19,6 +19,11 @@ from scripts import orch_next_hermes_plugin_adoption as executor
 from tui_gateway import maestro_plugin_adoption_authority as authority
 
 
+def _overwrite_private_fixture(path: Path, content: bytes) -> None:
+    path.write_bytes(content)
+    path.chmod(0o600)
+
+
 def _temporary_cli_spec(tmp_path: Path) -> executor._FixedCliSpec:
     root = tmp_path / "homebrew"
     bin_dir = root / "bin"
@@ -2693,7 +2698,7 @@ def test_ordinary_v049_bridge_rejects_invalid_terminal_journal_variants(
         request_bytes = authority.canonical_bytes(request)
         record["request_b64"] = base64.b64encode(request_bytes).decode("ascii")
         record["request_digest"] = hashlib.sha256(request_bytes).hexdigest()
-    executor._atomic_private_write(
+    _overwrite_private_fixture(
         terminal_root / "journal.json",
         executor._json_bytes(record),
     )
@@ -5395,7 +5400,7 @@ def test_terminal_archive_requires_exact_reverified_journal_bytes(
     root.mkdir(mode=0o700)
     _write_previous_terminal_journal(root)
     record = executor._read_journal(root)
-    executor._atomic_private_write(
+    _overwrite_private_fixture(
         executor._journal_path(root),
         executor._journal_bytes(record) + b" ",
     )
@@ -6149,6 +6154,128 @@ def test_private_exclusive_publish_never_deletes_swapped_temp(
     assert not target.exists()
     assert held.read_bytes() == b"bound\n"
     assert (root / swapped_leaf[0]).read_bytes() == b"foreign\n"
+
+
+def test_legacy_initial_journal_rejects_substituted_temp_inode(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "legacy-initial-journal-substitution"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    held = root / "journal.intended-held"
+    collision_identity: tuple[int, int] | None = None
+    peer_identity: tuple[int, int] | None = None
+    peer_leaf: Path | None = None
+    original_fsync = executor.os.fsync
+
+    def fsync_then_substitute(descriptor: int) -> None:
+        nonlocal collision_identity, peer_identity, peer_leaf
+        original_fsync(descriptor)
+        if peer_leaf is not None or not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return
+        leaves = tuple(root.glob(".journal.json.*"))
+        if len(leaves) != 1:
+            return
+        temporary = leaves[0]
+        temporary.rename(held)
+        peer_leaf = temporary
+        peer_leaf.write_bytes(held.read_bytes())
+        peer_leaf.chmod(0o600)
+        peer_info = peer_leaf.stat()
+        peer_identity = (peer_info.st_dev, peer_info.st_ino)
+        collision = root / "journal.json"
+        collision.write_bytes(held.read_bytes())
+        collision.chmod(0o600)
+        collision_info = collision.stat()
+        collision_identity = (collision_info.st_dev, collision_info.st_ino)
+
+    monkeypatch.setattr(executor.os, "fsync", fsync_then_substitute)
+    with pytest.raises(executor.AdoptionError, match="ordinary_journal_collision"):
+        _runner(root, adapters).run()
+
+    assert peer_leaf is not None
+    assert peer_identity is not None
+    assert collision_identity is not None
+    assert (held.stat().st_dev, held.stat().st_ino) != peer_identity
+    assert (peer_leaf.stat().st_dev, peer_leaf.stat().st_ino) == peer_identity
+    collision = root / "journal.json"
+    assert (collision.stat().st_dev, collision.stat().st_ino) == collision_identity
+
+
+def test_legacy_initial_journal_collision_never_clobbers_destination_inode(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "legacy-initial-journal-collision"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    collision_identity: tuple[int, int] | None = None
+    original_fsync = executor.os.fsync
+
+    def fsync_then_collide(descriptor: int) -> None:
+        nonlocal collision_identity
+        original_fsync(descriptor)
+        if (
+            collision_identity is not None
+            or not stat.S_ISREG(os.fstat(descriptor).st_mode)
+            or len(tuple(root.glob(".journal.json.*"))) != 1
+        ):
+            return
+        collision = root / "journal.json"
+        collision.write_bytes(b"peer collision evidence\n")
+        collision.chmod(0o600)
+        info = collision.stat()
+        collision_identity = (info.st_dev, info.st_ino)
+
+    monkeypatch.setattr(executor.os, "fsync", fsync_then_collide)
+    with pytest.raises(executor.AdoptionError, match="ordinary_journal_collision"):
+        _runner(root, adapters).run()
+
+    assert collision_identity is not None
+    collision = root / "journal.json"
+    assert collision.read_bytes() == b"peer collision evidence\n"
+    assert (collision.stat().st_dev, collision.stat().st_ino) == collision_identity
+
+
+def test_legacy_initial_journal_finalizer_preserves_recreated_peer_inode(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "legacy-initial-journal-finalizer"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    temporary_leaf: Path | None = None
+    peer_identity: tuple[int, int] | None = None
+    original_fsync = executor.os.fsync
+
+    def fsync_then_recreate(descriptor: int) -> None:
+        nonlocal temporary_leaf, peer_identity
+        original_fsync(descriptor)
+        mode = os.fstat(descriptor).st_mode
+        if stat.S_ISREG(mode) and temporary_leaf is None:
+            leaves = tuple(root.glob(".journal.json.*"))
+            if len(leaves) == 1:
+                temporary_leaf = leaves[0]
+            return
+        if (
+            stat.S_ISDIR(mode)
+            and temporary_leaf is not None
+            and peer_identity is None
+            and not temporary_leaf.exists()
+        ):
+            temporary_leaf.write_bytes(b"peer finalizer evidence\n")
+            temporary_leaf.chmod(0o600)
+            info = temporary_leaf.stat()
+            peer_identity = (info.st_dev, info.st_ino)
+
+    monkeypatch.setattr(executor.os, "fsync", fsync_then_recreate)
+    assert _runner(root, adapters).run()["status"] == "committed"
+
+    assert temporary_leaf is not None
+    assert peer_identity is not None
+    assert temporary_leaf.read_bytes() == b"peer finalizer evidence\n"
+    assert (temporary_leaf.stat().st_dev, temporary_leaf.stat().st_ino) == peer_identity
 
 
 def test_bridge_journal_cas_retains_swapped_displaced_inode(
@@ -7106,7 +7233,7 @@ def test_marketplace_stage_binds_exact_manifest_bytes_and_shape(
         **manifest,
         "plugins": [{**manifest["plugins"][0], "source": "./redirected"}],
     }
-    executor._atomic_private_write(
+    _overwrite_private_fixture(
         marketplace / ".claude-plugin" / "marketplace.json",
         executor._json_bytes(substituted),
     )
@@ -7119,7 +7246,7 @@ def test_marketplace_stage_binds_exact_manifest_bytes_and_shape(
             verify_current_bundle=True,
         )
 
-    executor._atomic_private_write(
+    _overwrite_private_fixture(
         marketplace / ".claude-plugin" / "marketplace.json",
         executor._json_bytes(manifest),
     )
@@ -7677,7 +7804,7 @@ def test_candidate_projection_rejects_physical_cache_foreign_source_and_stage_dr
         "source": str(adapter._stage_marketplace_root()),
     }
     manifest = adapter._stage_marketplace_root() / ".claude-plugin" / "marketplace.json"
-    executor._atomic_private_write(manifest, b"{}")
+    _overwrite_private_fixture(manifest, b"{}")
     with pytest.raises(executor.AdoptionError, match="marketplace_stage_drift"):
         adapter.observe()
 
