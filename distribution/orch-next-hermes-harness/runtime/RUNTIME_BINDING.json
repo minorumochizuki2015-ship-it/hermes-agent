@@ -103,7 +103,7 @@
     },
     {
       "path": "scripts/orch_next_hermes_plugin_adoption.py",
-      "sha256": "5e18a3414e2e2c37a33747942a8fc63d700ebe98c18db5f182997fd2b0eef1ff"
+      "sha256": "51397a442cc807028db90a965888d8c8d06c64aeb6500973b07ddd1c76ddb983"
     },
     {
       "path": "scripts/orch_next_hermes_serve_service.py",
@@ -226,7 +226,7 @@
       "sha256": "02f1a11fc00991ca1f78d098b49a9623c7343dddd43fbf7a02de012f6d1e4e07"
     }
   ],
-  "runtime_files_digest": "ae59bc03e689b58144c9d8a7e9983bf6d8b6f04e5d907a1ad3a1180b1b8a2215",
+  "runtime_files_digest": "96f5c2cf11323b39b3e6634b48561049ee0165300724ba6295d69695c43c3f63",
   "runtime_launcher": "scripts/orch_next_hermes_mcp_launcher.py",
   "runtime_python": ".venv/bin/python",
   "runtime_python_sha256": "4c78423e7d5986362ac04df40edb18cdd1174f9818d653402e3abbd2a5bbf793",

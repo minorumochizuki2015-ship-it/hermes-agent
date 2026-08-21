@@ -4956,6 +4956,27 @@ def test_host_failure_rolls_back_both_and_persists_terminal_state(
     assert executor._read_journal(root)["phase"] == "ROLLED_BACK"
 
 
+def test_legacy_retained_journal_evidence_archives_before_next_apply(
+    tmp_path: Path, fixed_source
+) -> None:
+    root = tmp_path / "rollback-archive-retry"
+    adapters = (
+        MemoryAdapter("codex"),
+        MemoryAdapter("claude", fail_apply=True),
+    )
+    with pytest.raises(executor.AdoptionError, match="plugin_adoption_rolled_back"):
+        _runner(root, adapters).run()
+    rolled_back = executor._read_journal(root)
+
+    adapters[1].fail_apply = False
+    result = _runner(root, adapters, archive_rolled_back=True).run()
+
+    assert result["status"] == "committed"
+    assert result["archived_transaction_id"] == rolled_back["transaction_id"]
+    archive = executor._history_root(root) / str(rolled_back["transaction_id"])
+    assert executor._read_journal(archive) == rolled_back
+
+
 def _write_previous_terminal_journal(
     root: Path,
     *,
@@ -5834,6 +5855,128 @@ def test_journal_transition_cas_binds_expected_bytes_to_exchanged_inode(
         executor._replace_journal_cas(root, expected, successor)
     assert journal.read_bytes() == b"{}\n"
     assert displaced.read_bytes() == executor._journal_bytes(expected)
+
+
+def test_legacy_journal_cas_never_deletes_post_exchange_substitution(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "legacy-journal-post-exchange-swap"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    with pytest.raises(executor.InjectedCrash, match="AUTHORIZED"):
+        _runner(root, adapters, crash_phase="AUTHORIZED").run()
+    expected = executor._read_journal(root)
+    successor = {**expected, "phase": "PREPARED"}
+    held = root / "journal.displaced-held"
+    foreign = root / "journal.peer"
+    foreign.write_bytes(b"peer-owned\n")
+    foreign.chmod(0o600)
+    foreign_identity = (foreign.stat().st_dev, foreign.stat().st_ino)
+    original_exchange = executor._exchange_directory_entries
+    original_fsync = executor.os.fsync
+    exchanged: dict[str, object] = {}
+
+    def capture_exchange(directory: int, first: str, second: str) -> None:
+        original_exchange(directory, first, second)
+        exchanged.update(directory=directory, leaf=first)
+
+    def fsync_then_substitute(descriptor: int) -> None:
+        original_fsync(descriptor)
+        if (
+            exchanged
+            and descriptor == exchanged["directory"]
+            and not exchanged.get("substituted")
+        ):
+            leaf = str(exchanged["leaf"])
+            os.rename(
+                leaf,
+                held.name,
+                src_dir_fd=descriptor,
+                dst_dir_fd=descriptor,
+            )
+            os.rename(
+                foreign.name,
+                leaf,
+                src_dir_fd=descriptor,
+                dst_dir_fd=descriptor,
+            )
+            exchanged["substituted"] = True
+
+    monkeypatch.setattr(
+        executor,
+        "_exchange_directory_entries",
+        capture_exchange,
+    )
+    monkeypatch.setattr(executor.os, "fsync", fsync_then_substitute)
+    with pytest.raises(
+        executor.AdoptionError,
+        match="journal_transition_publish_failed",
+    ):
+        executor._replace_legacy_journal_cas(root, expected, successor)
+
+    peer_leaf = root / str(exchanged["leaf"])
+    assert peer_leaf.read_bytes() == b"peer-owned\n"
+    assert (peer_leaf.stat().st_dev, peer_leaf.stat().st_ino) == foreign_identity
+    assert held.read_bytes() == executor._journal_bytes(expected)
+    assert executor._read_journal(root) == successor
+
+
+def test_legacy_journal_cas_finalizer_never_deletes_substituted_peer(
+    tmp_path: Path,
+    fixed_source,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "legacy-journal-finalizer-swap"
+    adapters = (MemoryAdapter("codex"), MemoryAdapter("claude"))
+    with pytest.raises(executor.InjectedCrash, match="AUTHORIZED"):
+        _runner(root, adapters, crash_phase="AUTHORIZED").run()
+    expected = executor._read_journal(root)
+    successor = {**expected, "phase": "PREPARED"}
+    held = root / "journal.successor-held"
+    foreign = root / "journal.peer"
+    foreign.write_bytes(b"peer-owned\n")
+    foreign.chmod(0o600)
+    foreign_identity = (foreign.stat().st_dev, foreign.stat().st_ino)
+    exchanged_leaf: list[str] = []
+
+    def substitute_then_fail(
+        directory: int,
+        first: str,
+        second: str,
+    ) -> None:
+        del second
+        os.rename(
+            first,
+            held.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        os.rename(
+            foreign.name,
+            first,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        exchanged_leaf.append(first)
+        raise OSError(errno.EIO, "injected exchange failure")
+
+    monkeypatch.setattr(
+        executor,
+        "_exchange_directory_entries",
+        substitute_then_fail,
+    )
+    with pytest.raises(
+        executor.AdoptionError,
+        match="journal_transition_publish_failed",
+    ):
+        executor._replace_legacy_journal_cas(root, expected, successor)
+
+    peer_leaf = root / exchanged_leaf[0]
+    assert peer_leaf.read_bytes() == b"peer-owned\n"
+    assert (peer_leaf.stat().st_dev, peer_leaf.stat().st_ino) == foreign_identity
+    assert held.read_bytes() == executor._journal_bytes(successor)
+    assert executor._read_journal(root) == expected
 
 
 def test_private_exclusive_publish_never_deletes_swapped_temp(

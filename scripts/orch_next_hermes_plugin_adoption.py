@@ -57,6 +57,24 @@ PHASES: Final = (
     "ROLLED_BACK",
 )
 FORWARD_PHASES: Final = PHASES[:6]
+_JOURNAL_EDGES: Final = frozenset({
+    ("AUTHORIZED", "PREPARED"),
+    ("AUTHORIZED", "ROLLING_BACK"),
+    ("PREPARED", "CODEX_APPLIED"),
+    ("PREPARED", "ROLLING_BACK"),
+    ("CODEX_APPLIED", "CLAUDE_APPLIED"),
+    ("CODEX_APPLIED", "ROLLING_BACK"),
+    ("CLAUDE_APPLIED", "VERIFIED"),
+    ("CLAUDE_APPLIED", "ROLLING_BACK"),
+    ("VERIFIED", "COMMITTED"),
+    ("VERIFIED", "ROLLING_BACK"),
+    ("ROLLING_BACK", "ROLLED_BACK"),
+})
+_JOURNAL_EDGE_LEAVES: Final = frozenset(
+    ".ordinary-journal-edge-"
+    f"{current.lower()}-to-{successor.lower()}"
+    for current, successor in _JOURNAL_EDGES
+)
 HOST_ORDER: Final = ("codex", "claude")
 PREDECESSOR_VERSION: Final = "0.1.13"
 PREDECESSOR_REVISION: Final = "f7a8102745270394cbacab64199346354a2abff1"
@@ -3529,7 +3547,7 @@ def _archive_terminal_transaction(
         "stage",
         _TERMINAL_BRIDGE_MANIFEST_LEAF,
         _ORDINARY_CONSUMED_LEAF,
-    })
+    }) | _JOURNAL_EDGE_LEAVES
     try:
         initial_snapshot, _ = _archive_snapshot(root_descriptor)
     except Exception:
@@ -3660,17 +3678,7 @@ def _advance_journal(
     crash_hook: Callable[[str], None],
 ) -> dict[str, object]:
     current = str(record["phase"])
-    allowed_edges = {
-        "AUTHORIZED": {"PREPARED", "ROLLING_BACK"},
-        "PREPARED": {"CODEX_APPLIED", "ROLLING_BACK"},
-        "CODEX_APPLIED": {"CLAUDE_APPLIED", "ROLLING_BACK"},
-        "CLAUDE_APPLIED": {"VERIFIED", "ROLLING_BACK"},
-        "VERIFIED": {"COMMITTED", "ROLLING_BACK"},
-        "ROLLING_BACK": {"ROLLED_BACK"},
-        "COMMITTED": set(),
-        "ROLLED_BACK": set(),
-    }
-    if phase not in allowed_edges[current]:
+    if (current, phase) not in _JOURNAL_EDGES:
         raise AdoptionError("journal_transition_invalid")
     successor = {**record, "phase": phase}
     _replace_journal_cas(root, record, successor)
@@ -3683,150 +3691,11 @@ def _replace_legacy_journal_cas(
     expected: dict[str, object],
     successor: dict[str, object],
 ) -> None:
-    expected_bytes = _journal_bytes(expected)
-    successor_bytes = _journal_bytes(successor)
-    path = _journal_path(root)
-    if _private_file_bytes(path) != expected_bytes:
+    """Advance legacy journals without pathname-based residue deletion."""
+
+    if _private_file_bytes(_journal_path(root)) != _journal_bytes(expected):
         raise AdoptionError("journal_transition_cas_mismatch")
-    directory = os.open(
-        root,
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
-    current_descriptor = temporary_descriptor = -1
-    temporary = f".journal.transition.{secrets.token_hex(16)}"
-    exchanged = False
-    current_identity: tuple[int, ...] | None = None
-    temporary_identity: tuple[int, ...] | None = None
-    try:
-        current_descriptor = os.open(
-            "journal.json",
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=directory,
-        )
-        current_info = os.fstat(current_descriptor)
-        current_identity = _archive_stat_identity(current_info)
-        if (
-            not stat.S_ISREG(current_info.st_mode)
-            or current_info.st_uid != os.getuid()
-            or stat.S_IMODE(current_info.st_mode) != 0o600
-            or current_info.st_nlink != 1
-            or current_info.st_size != len(expected_bytes)
-            or current_identity
-            != _archive_stat_identity(
-                os.stat(
-                    "journal.json",
-                    dir_fd=directory,
-                    follow_symlinks=False,
-                )
-            )
-        ):
-            raise AdoptionError("journal_transition_cas_mismatch")
-        current_content = bytearray()
-        while len(current_content) <= len(expected_bytes):
-            chunk = os.read(
-                current_descriptor,
-                len(expected_bytes) + 1 - len(current_content),
-            )
-            if not chunk:
-                break
-            current_content.extend(chunk)
-        if (
-            bytes(current_content) != expected_bytes
-            or current_identity
-            != _archive_stat_identity(os.fstat(current_descriptor))
-            or current_identity
-            != _archive_stat_identity(
-                os.stat(
-                    "journal.json",
-                    dir_fd=directory,
-                    follow_symlinks=False,
-                )
-            )
-        ):
-            raise AdoptionError("journal_transition_cas_mismatch")
-        temporary_descriptor = os.open(
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory,
-        )
-        os.fchmod(temporary_descriptor, 0o600)
-        view = memoryview(successor_bytes)
-        while view:
-            written = os.write(temporary_descriptor, view)
-            if written <= 0:
-                raise OSError(errno.EIO, "journal transition write failed")
-            view = view[written:]
-        os.fsync(temporary_descriptor)
-        temporary_info = os.fstat(temporary_descriptor)
-        temporary_identity = _archive_stat_identity(temporary_info)
-        if (
-            not stat.S_ISREG(temporary_info.st_mode)
-            or temporary_info.st_uid != os.getuid()
-            or stat.S_IMODE(temporary_info.st_mode) != 0o600
-            or temporary_info.st_nlink != 1
-            or temporary_info.st_size != len(successor_bytes)
-            or current_identity
-            != _archive_stat_identity(os.fstat(current_descriptor))
-            or current_identity
-            != _archive_stat_identity(
-                os.stat(
-                    "journal.json",
-                    dir_fd=directory,
-                    follow_symlinks=False,
-                )
-            )
-        ):
-            raise AdoptionError("journal_transition_cas_mismatch")
-        os.close(temporary_descriptor)
-        temporary_descriptor = -1
-        _exchange_directory_entries(directory, temporary, "journal.json")
-        exchanged = True
-        displaced = os.stat(
-            temporary, dir_fd=directory, follow_symlinks=False
-        )
-        published = os.stat(
-            "journal.json", dir_fd=directory, follow_symlinks=False
-        )
-        if (
-            not _terminal_rename_identity_matches(
-                current_identity, _archive_stat_identity(displaced)
-            )
-            or not _terminal_rename_identity_matches(
-                temporary_identity, _archive_stat_identity(published)
-            )
-        ):
-            _exchange_directory_entries(
-                directory, temporary, "journal.json"
-            )
-            exchanged = False
-            raise AdoptionError("journal_transition_cas_mismatch")
-        os.fsync(directory)
-        os.unlink(temporary, dir_fd=directory)
-        exchanged = False
-        os.fsync(directory)
-    except AdoptionError:
-        raise
-    except OSError as exc:
-        raise AdoptionError("journal_transition_publish_failed") from exc
-    finally:
-        if temporary_descriptor >= 0:
-            os.close(temporary_descriptor)
-        if current_descriptor >= 0:
-            os.close(current_descriptor)
-        if not exchanged:
-            try:
-                os.unlink(temporary, dir_fd=directory)
-            except FileNotFoundError:
-                pass
-        os.close(directory)
-    if _private_file_bytes(path) != successor_bytes:
-        raise AdoptionError("journal_transition_publish_failed")
+    _replace_bridge_journal_cas(root, expected, successor)
 
 
 def _replace_bridge_journal_cas(
@@ -3834,7 +3703,7 @@ def _replace_bridge_journal_cas(
     expected: dict[str, object],
     successor: dict[str, object],
 ) -> None:
-    """Advance a bridge journal while retaining every displaced bound inode."""
+    """Advance a journal while retaining every displaced bound inode."""
 
     expected_bytes = _journal_bytes(expected)
     successor_bytes = _journal_bytes(successor)
