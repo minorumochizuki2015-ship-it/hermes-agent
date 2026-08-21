@@ -46,6 +46,108 @@
     "status": "pending_zero_consumer_proof_and_retirement",
     "zero_consumer_proof": false
   },
+  "maestro_closed_loop_goal_consumer": {
+    "authority": {
+      "binding_drift_result": "maestro_goal_binding_drift",
+      "bundle_digest": "7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e",
+      "bundle_identity": "HERMES_MAESTRO_AUTHORITY_BUNDLE_V3",
+      "bundle_version": "hermes-maestro-authority-bundle.v3",
+      "can_issue_protected_authority": false,
+      "can_issue_user_acceptance": false,
+      "can_perform_protected_transition": false,
+      "launch": false,
+      "unavailable_result": "maestro_authority_unavailable"
+    },
+    "authority_owner": "maestro-kernel",
+    "canonical_phase_gate_map": {
+      "P0": [],
+      "P1": [],
+      "P10": [
+        "U1",
+        "U5",
+        "U6",
+        "U8"
+      ],
+      "P11": [
+        "U8"
+      ],
+      "P2": [
+        "U4"
+      ],
+      "P3": [
+        "U4"
+      ],
+      "P4": [
+        "U5"
+      ],
+      "P5": [
+        "U2"
+      ],
+      "P6": [
+        "U3",
+        "U6"
+      ],
+      "P7": [
+        "U6"
+      ],
+      "P8": [
+        "U7"
+      ],
+      "P9": [
+        "U7"
+      ]
+    },
+    "canonical_source_binding": {
+      "control": {
+        "path": "controls/orch-next-closed-loop-grand-goal.v1.json",
+        "sha256": "11feb5ef9d35dea49c47905c8680ad14e70c058a0dad4b9d6d1387c5fbd63ddc"
+      },
+      "layer": "source_composed_candidate",
+      "repository": "maestro-kernel",
+      "revision": "70c61128b1f31b29ae2c1e2a53d676ffb62e4d9e",
+      "skill": {
+        "path": "skills/orch-next-closed-loop-grand-goal/SKILL.md",
+        "sha256": "82064d2049309b8cd9f6a2b37be155a0b6a4ee78b01effc0b0fff759a40b3575"
+      },
+      "tree": "86f47770b0fac0ab13edf0d1bfc5930de1c0e62a"
+    },
+    "consumer_skill_id": "orch-next-closed-loop-grand-goal-consumer",
+    "final_acceptance": {
+      "consecutive_natural_closed_loop_journeys": 10,
+      "critical_failures": 0,
+      "explicit_same_surface_user_acceptance": true,
+      "manual_relay": 0,
+      "minimum_recovery_cases": 3,
+      "minimum_task_classes": 3,
+      "requires_all_u1_u8": true
+    },
+    "grand_goal_id": "ORCH_NEXT_CMD_MAESTRO_HERMES_SDO_PMS_ODG_CLOSED_LOOP_COMPLETION",
+    "lifecycle_order": [
+      "SOURCE",
+      "SOURCE_COMPOSED_CANDIDATE",
+      "CANONICAL_INTEGRATED",
+      "INSTALLED",
+      "SELECTED",
+      "LIVE",
+      "NATURALLY_EXERCISED",
+      "RESULT_CONSUMED",
+      "USER_ACCEPTED"
+    ],
+    "normal_user_route": [
+      "U1",
+      "U2",
+      "U3",
+      "U4",
+      "U5",
+      "U6",
+      "U7",
+      "U8"
+    ],
+    "operational_consumer_owner": "hermes-agent",
+    "role": "operational_front_door_consumer_projection",
+    "schema": "orch-next-closed-loop-grand-goal-consumer.v1",
+    "support_work_progress_credit": 0
+  },
   "maestro_prompt_context": {
     "closure_digest": "65e957ca4823cd90cca81ba1afc552bd1bcb613ef18637bd86e0cb26fccbdf4a",
     "file_count": 8,
@@ -163,7 +265,7 @@
     "launcher": "runtime/orch_next_hermes_mcp_launcher.py",
     "locator": {
       "binding": "runtime/RUNTIME_BINDING.json",
-      "binding_sha256": "8df86ee15068d7c253c0020b11409507d44043c87be6b75f8c7c5cf82e991674",
+      "binding_sha256": "a6c8fc3718215ed8a0bddef13f412cd624a9b5c816dc12047098a495a864c212",
       "mode": "manifest_relative",
       "rollback_identity": "installed:orch-next-hermes-harness@0.1.48"
     },
@@ -182,8 +284,8 @@
     "authority_policy_reference": "maestro-kernel:research/mk675/fable5_decision_os/mk737_p1a_skill_distribution_ownership.json",
     "authority_policy_source": "maestro_kernel_active_policy_and_routing",
     "content": {
-      "digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
-      "recursive_file_count": 70,
+      "digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
+      "recursive_file_count": 71,
       "source_root": "skills/orch-next"
     },
     "full_skill_closure_injected_into_runtime_prompt": false,
@@ -209,7 +311,7 @@
         "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
       }
     },
-    "profile_digest": "87a4c916db5722cfe5eac5f76a7b08c355643c0effe5f778fad4f1214ac5414b",
+    "profile_digest": "8524a88dc867ed29f0603170a9171a1079b657a02660627d97ac81d5011dfca7",
     "prompt_materialization": "metadata_index_then_selected_skill_on_demand",
     "runtime_baseline": {
       "commit": "f80f453ae0679347e38abc917c7f94f717bf96c5",
@@ -228,7 +330,7 @@
     }
   },
   "operational_profile_index": {
-    "digest": "6932515a21e643d939099b98f99b5f5e7d12b9594c0ff0bc7b709bb388c6f463",
+    "digest": "51a0f34bc9f654ad6f2a6a509d656fa0f741951015160b8b99f5d173e87de56a",
     "identity": "orch-next-hermes-compact-operational-profile.v1",
     "path": "OPERATIONAL_PROFILE_INDEX.json",
     "schema": "orch-next-hermes-operational-profile-index.v1"
@@ -241,7 +343,7 @@
     "manifest_path": "SOURCE_MANIFEST.json",
     "self_content_binding": {
       "algorithm": "sha256",
-      "digest": "ae48d88bd91da26273db17c802a7096a1c282be002b56412273a0cad0632a5ca",
+      "digest": "548fd54c808d1301089b230f74fae738396ab94651d8ccaae9f7bc3df1a6bde0",
       "scope": "canonical_SOURCE_MANIFEST_without_self_digest"
     },
     "source_root": "skills/orch-next"
@@ -260,9 +362,10 @@
   "quarantined_exclusions": [
     "fable5-os-durable-user-value-goal"
   ],
-  "release_note": "0.1.49: Codex UserPromptSubmit carries the accepted bounded Maestro Decision OS prompt-context selector; installation and firing remain unclaimed.",
+  "release_note": "0.1.49: Codex UserPromptSubmit carries the accepted bounded Maestro Decision OS prompt-context selector, and Hermes carries an exact Maestro-owned closed-loop Goal consumer; installation and firing remain unclaimed.",
   "required_admitted_skills": [
-    "fable5-derived-advisory-synthesis"
+    "fable5-derived-advisory-synthesis",
+    "orch-next-closed-loop-grand-goal-consumer"
   ],
   "rollback": {
     "identity": "installed:orch-next-hermes-harness@0.1.48",
@@ -569,6 +672,10 @@
         "sha256": "8e9fb36761860b8c5d7057bb2d433faec7c47f5fbbd9e3595e62914a6834c69f"
       },
       {
+        "path": "orch-next-closed-loop-grand-goal-consumer/SKILL.md",
+        "sha256": "5f0f59edc40ff5462fc61ae3688c40d1a6595248496b1ef06cf9831f74e727be"
+      },
+      {
         "path": "orch-next-recovery/SKILL.md",
         "sha256": "94125cb510946439f624c823e3d5fc73d44f5fc6890a733b90874389430c9e99"
       },
@@ -641,9 +748,9 @@
         "sha256": "9cc5ac1526f41174c032a984c410a95867415e10db76182dd89c0dc87c23dc99"
       }
     ],
-    "recursive_file_count": 70,
-    "skill_count": 47,
-    "sorted_recursive_file_sha256_stream_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+    "recursive_file_count": 71,
+    "skill_count": 48,
+    "sorted_recursive_file_sha256_stream_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
     "source_root": "skills/orch-next",
     "stream_format": "lowercase_sha256_two_spaces_repo_relative_path_lf"
   },

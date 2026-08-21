@@ -321,7 +321,7 @@
     "source_revision": "c25555b54315b8dc868d12b8699b500b9aab8094",
     "source_tree": "ba7e28fef29e9a28c93ff9226f260e74bc061e3c"
   },
-  "skill_closure_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+  "skill_closure_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
   "source_root": "../../..",
   "upstream_commit": "f80f453ae0679347e38abc917c7f94f717bf96c5",
   "upstream_tag": "v2026.8.13",

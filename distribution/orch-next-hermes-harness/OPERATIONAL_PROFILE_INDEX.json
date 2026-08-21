@@ -31,7 +31,7 @@
     "topology": "topology_neutral"
   },
   "identity": "orch-next-hermes-compact-operational-profile.v1",
-  "index_digest": "e1b011cfd5375519bd3d387c8b1a41c4a3b69b70f7515f97f1a7f619d4315d57",
+  "index_digest": "9e5f94a243c253fb43dd383506c327837f792233a56aebafd2ae74035d83e1f8",
   "maestro_skill_source": {
     "adaptation": "existing_hermes_operational_skill_tree",
     "files": [
@@ -83,7 +83,7 @@
     "plugin_id": "orch-next-hermes-harness",
     "plugin_manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
     "plugin_version": "0.1.49",
-    "skill_closure_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+    "skill_closure_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
     "source_manifest_schema": "orch-next-hermes-harness-distribution.v1"
   },
   "schema": "orch-next-hermes-operational-profile-index.v1",
@@ -94,11 +94,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "65dc58e1613a1b9b07ce2561f74be9c4bf7eb063ad2b0e060ab64cec6734d8a4",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "cdca5856117c4597dc12811f68041eec0f00812e846b064d1eb7abea9fcad361",
+        "profile_digest": "f67d63acb0fc720140385e94099a8ebad5cea2c89762b1b0e087507fd12a13b3",
         "semantic_operational_digest": "8374b3d7d13ff1ae409aa0eaaf824052a09e73f84459b52e65c83850775d2c62"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:action-first-operator-communication",
         "package_identity": "orch-next-hermes-harness",
@@ -122,11 +122,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "6435fa8aabdf857e42ea412faf6384ce07b832e5a78288ddb19b180b7387de6b",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "df7cf265cbda2fe71193f7df69c209707000fbe0db2ee3b09ec011dafccc14d5",
+        "profile_digest": "b961aa8f86a5e78654a45852f795f355c6abc102758c4a6618688420b5dd86db",
         "semantic_operational_digest": "072fe34bdd48334d9780e82118a5eda5f6e68f05cad517902f5265893f6e0d76"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:agent-dispatch",
         "package_identity": "orch-next-hermes-harness",
@@ -150,11 +150,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "f9b3f452b0508272862e0d9c1d40d6b86db8a3548c59d03c46d7fe25e7c5687c",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "7a0d7f3f2428dfce8fd6abb270fb5a0c9927402ec617d2a40b8ef7ef9b8c1c7c",
+        "profile_digest": "2498281f709c5efacab6f91845fb70fdcb7c3c98194559eb0bf6dec45ee2cf34",
         "semantic_operational_digest": "c90d61e1219148b9b93297e3c9d5d2e066290b9f0f159e75562783b6ca86b455"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:autonomous-implementation-team",
         "package_identity": "orch-next-hermes-harness",
@@ -178,11 +178,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "20c15396a15b65b6e8dd18ba4dae2338e36e7f2a070f7ca1927184cf97d9faeb",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "464d42ce1a1c24fa7de8ed14a9b610a7146b995e0bdb7ccfafa922307ed83584",
+        "profile_digest": "504450d89e54c6738894028a1fe93bf89ba880507d9bba47adf3bcd6a9af6195",
         "semantic_operational_digest": "6ca95a8938293b562beeeb13c3b2bdd888fa1808bcb30a055099eb66b8a540e6"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:best-evaluate",
         "package_identity": "orch-next-hermes-harness",
@@ -206,11 +206,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "d877abe01752ae6e805634deb957013d9a4f8d86306a9ba9257d4f667028a910",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "5ade985e8fd7b85c4ffa90a796683864e059207b3b5d571112825c697fd82635",
+        "profile_digest": "e2a1242dbcb80b6c1a0b6d2475ddcc0aa07f97c42ef1316e3e259be1b75a1179",
         "semantic_operational_digest": "02ee63c32fe878e08d8aca31e7e4bfe12c272a8d5b7d94e66d1d8bb4a612406d"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:cmd-delegation-orchestration",
         "package_identity": "orch-next-hermes-harness",
@@ -234,11 +234,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "73dc44ec8875030799d865257dd7fbec34bee7aee4eb42ea770610448381e439",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "8042dd99c1698a4057d1dd40324194dfce5be9d08baaed1478dcf64b9345ef28",
+        "profile_digest": "7c33ee02b51e89f3c9d5b7a6a379f0e0f0f2b594aee35c3e8b14a12d4f3ad169",
         "semantic_operational_digest": "92a54b6b02b8566f8e40a3fb5a441ccc8e54fa66a861628823e18165323bf8cd"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:codex-parallel-lanes",
         "package_identity": "orch-next-hermes-harness",
@@ -262,11 +262,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "6326cacca06f75586a0cd82e638e7c0294ac164301b746b9249bfc5c4c82aa94",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "1c9c0d89532403719d85b69bf56c4533c69b7768f6048977fd308f1e591a12cf",
+        "profile_digest": "16368fc8e5b78515fbf56bebac66c964e1e4e3d84bae1850d60c597567949fd6",
         "semantic_operational_digest": "109908c2ada10a87c8bec42f2ce8df5dac0b874e7817a6332c64928a640a1e6e"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:cross-research-admission-loop",
         "package_identity": "orch-next-hermes-harness",
@@ -290,11 +290,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "917cf8a9771a9410625d44bb24a86cfa3d2e3f0ac0179e22e3335b9257c44725",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "566a10b1f1330564a8bff890200d4c9fb2fcb173c2b1f016a3c0213d7973a810",
+        "profile_digest": "2da3c973e5f3877805e1c27ee7252a99f6f7049b01204223940b182f17ec05be",
         "semantic_operational_digest": "3da0a196c4da5a20cebea25de354f22bdb89976833baee85863fc33a1e02d314"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:cross-research-workflow",
         "package_identity": "orch-next-hermes-harness",
@@ -318,11 +318,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "34a10675c0c9287ecba1aa987dce0537eae038464385e8b33580cd65cb6e019a",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "69e1137665522a71cf86181aabe1bf700061b5fc3ebdb36ade464bc6e2bd751c",
+        "profile_digest": "4c8b11535f4cf552bb22f0ac98acc30628cb1bdb5023f71c568a7c23f1fee2b0",
         "semantic_operational_digest": "89fdce41a14b581d809e840f73befae0e6cf2a6a3a739628f6f057a59cfaf470"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:cross-session-audit-coordination",
         "package_identity": "orch-next-hermes-harness",
@@ -346,11 +346,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "956f351143bfb8d26a4c7e41ee76a8e1d6e37ca6f2770cb3e5d9361370c936a4",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "6fcbd8f3adc7084f4a126d8a087ceaab6ca0930cdd3776882296f7bc86d680fc",
+        "profile_digest": "1abbed1a1dd963deeb75a31572472d426d6848e220df4630edfdffae6bbac51c",
         "semantic_operational_digest": "6f338c6fcc90993dd888906896ff50eaa6dddeafdb8a8ee7f6ca48cf46c8c73f"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:decomposition",
         "package_identity": "orch-next-hermes-harness",
@@ -374,11 +374,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "78dd3679328f43d1fe87371f68138706d6a80feafc971b3de6fc3a748893d050",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "11fde31228b6d25379cc01df28b17bf96821ff13d9d2e5efb5145af18cc13729",
+        "profile_digest": "6c67a47c2398c068295ffea28af05b438b1531f59147e01caf61bbb4ce9fc20e",
         "semantic_operational_digest": "623d30f43a0e99336cf7771dd8c9e60d1f1cda320d0d8f79a2c739639bbb9e18"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:demo-video-production",
         "package_identity": "orch-next-hermes-harness",
@@ -402,11 +402,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "a4a5030b8b8c9cecc333b50a08c3d0025197df3cd27a19147463bed763c110cd",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "27320b6114801650b5188cb8ce98eeed4b519e9cd72ba35ad026ddd75b54e297",
+        "profile_digest": "708e6f334a943345eaa259ad6013400b200fa90a16256185079529c9f470a975",
         "semantic_operational_digest": "4d0968470cedeafc0be7b1e768bdd9528f225e6c1b6e2af17f33364cd8d7e069"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:design-eye-review",
         "package_identity": "orch-next-hermes-harness",
@@ -430,11 +430,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "0141e81a6cbba0553327670473054fff6c2d66b32778681d2476b8c8984da95f",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "3472aa327de13506fb3ba717dbec4f1883f4380432d193685a9d3d3a3fea909c",
+        "profile_digest": "5a5a4bd457ceb88bda5a591326eec3d276e629200c1c7f4e4d93c3ed305c0761",
         "semantic_operational_digest": "10c5ceb558d8a5d3e35efa7b6ba0298525c14c384c13254149c9e2677076fea9"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:design-taste",
         "package_identity": "orch-next-hermes-harness",
@@ -475,11 +475,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "1913f9aadc7e5765f4859760dab198d44e3ef5b3ff47d2216479bd63f6536616",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "1bfe859a7b97621a1b58a9cb12e4ea1171f73f421131dac28c2c949029dd4b3b",
+        "profile_digest": "c300e72e1427ad949e1bd1cc568d40730d55c5edd0f5e51036a20e3b561389d3",
         "semantic_operational_digest": "684133e32b29e2ed672eda0cfa97df479b5800f0479c4b16634f115567fa925a"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:dynamic-requirements-planning",
         "package_identity": "orch-next-hermes-harness",
@@ -503,11 +503,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "2d208bb14ca0af7c1e3e4e5335b97e843b2e815066c4d1df4b79bda37338c24c",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "0d108b7d069d09089538a465fffb4f49b46136d517dd98d560354e11d385457e",
+        "profile_digest": "ebbf1a11cb789dd54bbaca675db1e1ee7a811102a2a71429a1299fbc53a2b183",
         "semantic_operational_digest": "ff12b1b20919de8c66086803aabfb9a4a9287ec487977809d7dd08932e89e001"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:environment-ground-truth",
         "package_identity": "orch-next-hermes-harness",
@@ -531,11 +531,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "94e44a7dbfc5d036867f78f3e35ad3e20b45b951e705a4afea46ee996a2f01ec",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "98f5f0cc45aa1d1da2d13f4e101c89320dbe5c4e6c46f8db2ba5fa0265b60e3f",
+        "profile_digest": "1c8bef31ff034d13c616f7eca2db62b114a43d488642a2d9dad42c212db5df0d",
         "semantic_operational_digest": "993884011e59586eb0c114479d05b79c94cf3d0054326853855946a8b892df87"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:fable5-derived-advisory-synthesis",
         "package_identity": "orch-next-hermes-harness",
@@ -559,11 +559,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "238a1b898a9e881df5f600670fdb373704fa1804efc5cb619dfd95a7385bbc74",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "695830cfea4e108e4f66803c50f9460136c910380316a51b03a78f885138d1e7",
+        "profile_digest": "fcce32e5e84f98088cf6c2e20171c1074f348ab55687c61851ece054fc7717ab",
         "semantic_operational_digest": "d372141a32ea9b74ff56b0c236c42967080828f06f8086e743950e92d65ed81b"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:fg000o-goal-audit-phase-orchestrator",
         "package_identity": "orch-next-hermes-harness",
@@ -587,11 +587,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "ac78259f886338f10895956b457d4c785692c26ba20704b76c041f1e44a904af",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "1f6c319e11886b2113fcb7692f93ac0b84840f72b75a0615f71310a7a934c3f5",
+        "profile_digest": "511a085c22ed541b310dacd727e5b125fffef2f570d3b24f84b6e9c8c23d26d0",
         "semantic_operational_digest": "5809f7b7cbb36fc8aeafaf09da54d55639b3a113f7f80ca015e9fdae0a3db823"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:github-merge-readiness",
         "package_identity": "orch-next-hermes-harness",
@@ -615,11 +615,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "ff0ec36de36a2dbea6aabca1d656be1d11eda6602e77474ff670dcb80dc3d2cf",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "8b7629a2e25968a14aaa5d43257a9abfbaec01cd59357eebdfab3f54a50e3d87",
+        "profile_digest": "fdc4b466683771d49cff20cad43994419099fee6376f010af8a834e2b7f805e2",
         "semantic_operational_digest": "01f3069a90d6aa5971d79f6a813d42803ecb62d380c1182d3122ad2bcc666d9f"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:goal-audit-checklist",
         "package_identity": "orch-next-hermes-harness",
@@ -643,11 +643,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "40372f71120740bb6b44879456f80065f30f9528f760e1efcc92727e59bef604",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "3fd782dae0c5ccdb043625feede89844f5b3fb6b3c1692e481d02a4c94073bbf",
+        "profile_digest": "0864a8235dda2621fa878541a6279f3a6085e04ace6ca56d853eb0ec835a76e8",
         "semantic_operational_digest": "f0e4d77ae800551011a97513a5c602582a7d98d906d33646643578a4909c3e5b"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:grand-goal-implementation-orchestrator",
         "package_identity": "orch-next-hermes-harness",
@@ -671,11 +671,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "5d4908ee4601a4ad9bab1641753405f84350e89509ed4a20d1a89709c8c9425b",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "1c82873b174da17db6c8a976dd0cba40bc8f260e5ec93524247259c8882b1685",
+        "profile_digest": "3c0ac067734f7db2a16f4263f874148c09e66e1bb64b0d28c8151d1141a135ea",
         "semantic_operational_digest": "c2e619567bd14b70eed96ec2f0fde08fd45c05066aa760d1c5dbb38acf2627dc"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:grand-goal-native-goal-formulation",
         "package_identity": "orch-next-hermes-harness",
@@ -699,11 +699,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "5cee79b87e36bdf2bf7544758c811f1efffefcd2ae982509cc96ea189fe09560",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "a118936987961d5faa903afcaf0873be6156542aa78f372755d83248f9ebb18c",
+        "profile_digest": "77e0dbf0db8a24b96f9420f21aa910711dbd27229fe78c365c72eb46f9f8cd0d",
         "semantic_operational_digest": "cf92e5689f04fa1f59f98479296910c4b5413c3c7c5081bb1db9b6b3de61e56d"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:grand-goal-orchestrator",
         "package_identity": "orch-next-hermes-harness",
@@ -727,11 +727,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "5e09bb4a9da8d055c923c09bed400e039cd2691681cd3621f02f1839b2eb990d",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "6cfa4a0580e84175379210aa5dd214e6963ecd72af6ab81784dbca1c167cec06",
+        "profile_digest": "9b9abb54104fd7f61eb0f62196662e46f4daf2c09f0f8f20dc196506b4c67256",
         "semantic_operational_digest": "375940d47a021f02f161b437eafbaba8dccd8485b64a5de767bab41fcffa3d46"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:heartbeat-cmd-control-guard",
         "package_identity": "orch-next-hermes-harness",
@@ -755,11 +755,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "90162dffde4e55cb97847ba06e1eb2113061ae22d8005b09002ad14646b784cc",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "3ed0e0a80bdbd909dd782993f676849c2307efbdd571f920eea08d55954271c0",
+        "profile_digest": "e4358028c6a60ce9853711e2d0657ac8aa0477f38d7f2220b7bb2381efc7f657",
         "semantic_operational_digest": "36dd3e42460e4c8c1363b0433536c3b2bfea3a1cf24fb53fa5b5e8c7b1223a33"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:image-gen-lane-dispatch",
         "package_identity": "orch-next-hermes-harness",
@@ -783,11 +783,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "204c6f2afdd5bc050811cc3af4732f4164c2e0660b170a399bdf72c6713125e5",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "a1131c526cd3c4cdd4d952300b3a5ee58e953a4000ddf43d5fdfdb9613b0cd3e",
+        "profile_digest": "6d1b11b88bbf42e79771a5cbae4053b3953015c2ed9516c62674dff4ed7b18f7",
         "semantic_operational_digest": "96b61e98209b6d8491d1c0a22a8a6297a79fc0224c8aadb8b7d6660030692680"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:implementation-audit-dispatch",
         "package_identity": "orch-next-hermes-harness",
@@ -811,11 +811,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "9775d0d7ba29212bde26eccf7e67012d6b0e50e09d11b43f108027eed11fa1b3",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "1d15468c2622481041ecdc7670674b31566a2ab5d9d9bea791af853888970769",
+        "profile_digest": "29a3256d2c73758239d7caa9d3953974bdf28fea937516fa05a3e77f1cfc0f01",
         "semantic_operational_digest": "7ea2b76505407aad24609e3a7dac5787774780d92175d86feae05301d57fa858"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:incident-response",
         "package_identity": "orch-next-hermes-harness",
@@ -839,11 +839,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "26f5c2f82230c03aa89080608eb4444c6562a7c949152c0e65e776741ec63c46",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "614383aee11c48d353c3a911afc5f39a16ec9d1edc769f2437d5a3306c97bf8e",
+        "profile_digest": "0a4afa9fc3b78c6227f6371bb98c3044d1018d8b351723c6f11450009d2189ad",
         "semantic_operational_digest": "fc20c6f768c3a0fc1237c54dd4b69c88511bd9f7f9915c71d55a0d7a316829bd"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:incident-to-skill",
         "package_identity": "orch-next-hermes-harness",
@@ -867,11 +867,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "882cf6553eadff5d93183fb5393567c5b804194ef3e2fa2f5fc054b9e8c0992c",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "96bf4aa295801faed64713d3d6d16ec4a9175067e5a6bd6a1ca4268de9aea156",
+        "profile_digest": "d1612b8462c159a3a3771699d704e7993731e613a7c922c0ebc4d94169c0bcfb",
         "semantic_operational_digest": "162732359602cd2769927166ad2f30d426df3cdf8871446d6f8d934ef51e2149"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:mobile-harness",
         "package_identity": "orch-next-hermes-harness",
@@ -895,11 +895,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "16d0e197f2506f7a5016d4d86f0aba8a71ea236fd8021a127d1f12e6dd5caa2e",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "17727d2a32d915d18dda23c583f5562b0a99657d253d9d701991350f2d25ace7",
+        "profile_digest": "ff4b7ce745c65332f0312d920a987d765c2d09c7279912750d9fb2c30c924e64",
         "semantic_operational_digest": "ade6e5f60ea89e1c9e1a1cf94b5f6b150cb43c0ba2e12798113e8ad9d1b200f2"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:orch-independent-audit-packet",
         "package_identity": "orch-next-hermes-harness",
@@ -921,13 +921,41 @@
       "materialization_binding": {
         "compiler_digest": "ed788818637490d8407476dfcf7c8e046748097c80d3f2cdfc2ddca92a33046d",
         "compiler_identity": "hermes-agent.skill-materializer",
+        "coverage_profile_digest": "190454742cced336290320727b12bd021d10ac3d36c611b9c41ad0368f515d21",
+        "mode": "plugin_namespaced_resolve",
+        "profile_digest": "eff5a9ec143feb5ed154c3e72bbb1307bc93ba12a180b2ba047c61966d999eb0",
+        "semantic_operational_digest": "8ddb8681d333a5d6a15642d8ea02d6b0afc789c7c9f31bc6b64708f06512e2d1"
+      },
+      "plugin_binding": {
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
+        "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
+        "namespaced_skill_id": "orch-next-hermes-harness:orch-next-closed-loop-grand-goal-consumer",
+        "package_identity": "orch-next-hermes-harness",
+        "package_version": "0.1.49"
+      },
+      "qualified_skill_id": "orch-next-hermes-harness:orch-next-closed-loop-grand-goal-consumer",
+      "required_references": [],
+      "source_binding": {
+        "path": "skills/orch-next-closed-loop-grand-goal-consumer/SKILL.md",
+        "skill_sha256": "5f0f59edc40ff5462fc61ae3688c40d1a6595248496b1ef06cf9831f74e727be",
+        "source_head": null,
+        "source_kind": "plugin_distribution",
+        "source_manifest_identity": "orch-next-hermes-harness-distribution.v1:orch-next-hermes-harness@0.1.49"
+      },
+      "source_trigger": "exact_goal_id:ORCH_NEXT_CMD_MAESTRO_HERMES_SDO_PMS_ODG_CLOSED_LOOP_COMPLETION",
+      "trigger_mode": "task_specific"
+    },
+    {
+      "materialization_binding": {
+        "compiler_digest": "ed788818637490d8407476dfcf7c8e046748097c80d3f2cdfc2ddca92a33046d",
+        "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "0e0b0e57aa4c89d7078c32eade094236638de3766ea9af38d41313367362bfde",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "23d3c3470fec850a6b46d87979afd3288fee2329c0227839e587912dc3cafccf",
+        "profile_digest": "69e43aeffd7473590c949e6257658459006d28570eb25a95e23daa0067dba005",
         "semantic_operational_digest": "83cef9eb1f961c238eef76ca012ad779f69f4c6c0539d33f7fe344d4a08b8bb3"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:orch-next-recovery",
         "package_identity": "orch-next-hermes-harness",
@@ -951,11 +979,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "b743ae350a5d7687a4343ae98466cafe16f9ec0242c23e382bc5c5b923a9d1d1",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "3a9538e682e4b3fa505df64fa8bcf7373f27d5d23feeee713d5f3ae86dbb0bf4",
+        "profile_digest": "3d8e37904f7a665cf4faffc0ac0d1dfa0bcb37be9e68833febbb0dece39c49f7",
         "semantic_operational_digest": "0deb863b3fdd327f7c8d2f51104f79f6e39928530667f1894c0702942e109b93"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:orch-skill-ecosystem-improvement",
         "package_identity": "orch-next-hermes-harness",
@@ -979,11 +1007,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "9274b7df9a9de6d5ceb6e203c0baeb8e60caf86c6d638c425409b322e9efa5c1",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "58f2a1a1c2bee4811143f1051af68ca165baa2a309258c594b1db98b469c2351",
+        "profile_digest": "7e13e641c4102a78c4e3c292a5fe8f7f331d41e36cc67755efba4c0cfc59fca4",
         "semantic_operational_digest": "67af1134fdfac8265b3d065d9d4a74533060a38acc77474fbc33e3595c14b047"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:pms-private-knowledge-vault-grand-goal",
         "package_identity": "orch-next-hermes-harness",
@@ -1007,11 +1035,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "9e60c80da3f5e979a99bfceceeb41e32fa430e1be4638334b9f39c00a325f2b1",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "8f74ff70cc58bcd02df3cde91c92d6bfa8850b47d5422454486b38efbaa011b4",
+        "profile_digest": "b030f403e07762c5b27bce2baeff9f4dd7553fdba878375bea3dea59c8e9f69f",
         "semantic_operational_digest": "9d95b520cc1660944499445ac75daf44338ca03453b428771e700e88bd449003"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:priority-action-router",
         "package_identity": "orch-next-hermes-harness",
@@ -1035,11 +1063,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "0359d91b7c5ba791677840d5939b84281cae23bf592d71d6b2dfc61751ea3de4",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "4640bc94ebe3b6f7da434667ea9637f3835ed9968ffbc5bb256dc98d2fb2e5c0",
+        "profile_digest": "115a0a7ab1741c6b486e48e85f513b2a83404d0e99a515c6e829404bbb69681b",
         "semantic_operational_digest": "297b4e1d2442544df48a1bb70cb41f7512ca22ad3c4be155335801081b4b6e52"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:product-build-fast-lane",
         "package_identity": "orch-next-hermes-harness",
@@ -1063,11 +1091,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "0f8766a0dae678380426024e9e94423fe808d2ff68a769cad2a5d42c819f9c6d",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "09a219d198945f7cb5d42750e4ee0b0f57ad8a148b1cebaf7815c16be2a620a7",
+        "profile_digest": "cff74035d54a5b2fb3d28333f81fb00346c360207e0752917cf2e605cb0eaf01",
         "semantic_operational_digest": "776d90c46779edca9eec69c9b2a39784841999f8d4d2119fa463ab4263b2af26"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:product-work-os-closeout",
         "package_identity": "orch-next-hermes-harness",
@@ -1091,11 +1119,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "1979a0eb36e5b1335758244e5a90e6d089bd5f2b6d681c89ccbae6bfcab9a49f",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "dc02cba7b0beb1f1cb4687cdfa2c871a1b9dff8ed1fc03ebc8590e40698757af",
+        "profile_digest": "eb89b3f5d093843d85571386fd5d721aa7c4a77a20085199baeb8d9aadb93bbd",
         "semantic_operational_digest": "a2650537d9f9c471544f191f5e52b84099c82a9df11987d64a031ad74a2489c6"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:repo-entrypoints-and-rules",
         "package_identity": "orch-next-hermes-harness",
@@ -1119,11 +1147,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "e1c1df9ab15638278d3a3a41e753a23a1fa3a01a538bdb8e3692d3c61f8cb421",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "fdd6629537df40fad751448431cb3d667942cf00e6221d4e366fbd3945080358",
+        "profile_digest": "57a59d66385d31e03d46f7bbfdd264ac4bc1201df79f496391ad338a71694b1e",
         "semantic_operational_digest": "b43bb8013b7707ad7934da356e4f7831e256c57e4c904189609990a7f0f18f1d"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:requirement-to-implementation-operationalization",
         "package_identity": "orch-next-hermes-harness",
@@ -1147,11 +1175,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "175c5fa83994089e45af0d121cccef182441979f4a715dd44f5c5dd3befca4a9",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "06ddfe1c64249c84f9df1ebf73638d6ac855b4af996d558d5080b08e31c00825",
+        "profile_digest": "bfc3475a5979a985f9463d8e162137ea14c87e97729a51a3efcb10dfd3d9c9d2",
         "semantic_operational_digest": "446afa87c759dd407d929dd75c882341a5ec107f6b235ea9046494d6a2414097"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:research-intake",
         "package_identity": "orch-next-hermes-harness",
@@ -1175,11 +1203,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "005b1112c48b1703c2a2d7686bc4e564968c7f38b5695ba0aaba2695dc244e41",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "7f5ab61cb94e4a62a641fc62d7b035748178aad2ca074073fef077987e6c64d3",
+        "profile_digest": "7c0ed0ae9a3c44583ae619a9361cdb835dde319046b1b47c7bf920ac6553b3b6",
         "semantic_operational_digest": "f91ada7a148a921dc4b816e8756cabb38e9da3b6a46712c6a0382821675e1ebf"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:rolling-goal-eternal-context-link",
         "package_identity": "orch-next-hermes-harness",
@@ -1203,11 +1231,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "9d68ed620043ce6c34f49ef9b54ab27d5fb186060431d6f059e0ea463c74ce20",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "7aa93a72aa55106557a112783d1dd5b0a65a14ae512c2fee3aa1628ec427427d",
+        "profile_digest": "92e72268acc5f2e313448434b3b1c49a28efda5b6fc75e9269a4fa46390e07f6",
         "semantic_operational_digest": "e961b1331d8550d1dd4a8f5b137825cb238d0f3df7c6ea6824bcb41f19206c14"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:skill-authoring",
         "package_identity": "orch-next-hermes-harness",
@@ -1231,11 +1259,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "c37d67c993ce6d8ce41029a1de25d0f3866987731ac5724af4845a70c9c3c1b7",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "fc1e85207249b9a363728abdb4969cc62e926630fbfcca631651de5a6cd64e7b",
+        "profile_digest": "440437e22c1d604218e572e96f0bcb6117e509ad9b402aeb4b2628d513275ea8",
         "semantic_operational_digest": "b367377c9fee445c419899c99aabf9e5e2050ba058fa8a1a0670efd84944302b"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:skill-health-monitor",
         "package_identity": "orch-next-hermes-harness",
@@ -1259,11 +1287,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "ef4c1c151ad48698b3a2b36963aeec08c789476561091a72772f4a38f1673322",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "5e4c47c08ea5a9088449056ebf33dc56b45185486a9bb2b4b3685573b67dbe15",
+        "profile_digest": "0c75b7f1da603ae91c2eceafcc369ac7112573249dc657e313c5e0528f8d6131",
         "semantic_operational_digest": "c09095053b284a5fcabc55b7e202f2f451ecb093029c021a31fc24ec410d61df"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:skill-lifecycle",
         "package_identity": "orch-next-hermes-harness",
@@ -1287,11 +1315,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "1db7d28899651e6b655811021e04a6d01638cb57e2a47038d80c13c8f8906eed",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "4e0db342030c5ca41a376c442f452f7b8bcd5687a53c18473283c5383d4e8d92",
+        "profile_digest": "31bd75cd2418147916a5e1c22d9546d707856efab3e44ca67aacc4ba18641a97",
         "semantic_operational_digest": "de08a6e8c9020a8934a8b9d8c3220c8c3c9ff45ca70824e12c822e8a2e1c92ba"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:skill-select",
         "package_identity": "orch-next-hermes-harness",
@@ -1315,11 +1343,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "5fa465f46f27e765d5fad3ba4132da7dd55b1e289787a8441a4505ccf3cc1a78",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "cb379c060ce81c4aeb61b6ad967df554e0cecf76ce865b0a2592ac363587dd68",
+        "profile_digest": "1401d7e9781056a8739e2cbbd31e9db070ab469b0cf611a6daddf07bd9269566",
         "semantic_operational_digest": "25b06cc6f669ead82e9d9ff8fce3d1d76408e738b10669aabbd964908b0843a5"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:task-tracker",
         "package_identity": "orch-next-hermes-harness",
@@ -1343,11 +1371,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "84310330a948759ff72dfa165f8725a97ac75810fdb7e6541142cbdd8408c322",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "fb27cf997d679c9258bbfefda22ca2ebd8f950d7ea0cb44814fc487e8d2bd0b6",
+        "profile_digest": "a7079861a95219aec0afb2e280599d37fe06d4d09eef03e4018870a6120d82da",
         "semantic_operational_digest": "b7ccc22b7da73110ca1afc949d1cb9356535f44752ae968f1845521eaeaed34e"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:terminal-deep-security-scan-gate",
         "package_identity": "orch-next-hermes-harness",
@@ -1371,11 +1399,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "19b6865a0672429afe33806fb2899ccf356e1ac2fd06561e74c0dd8749ab2964",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "e2ac9842213d4c3bf0df906fc871ec89c85d8a8100db7d8e551e759f6185461b",
+        "profile_digest": "21a09d8df72cb4bbbe88edd70530644d37dbdaffaa8a179221b8a58439f429a9",
         "semantic_operational_digest": "500e90416bf3c28f54566aa80b6926cf8046e7a145f5970fa43508658687474c"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:ui-design-direction-approval-pipeline",
         "package_identity": "orch-next-hermes-harness",
@@ -1399,11 +1427,11 @@
         "compiler_identity": "hermes-agent.skill-materializer",
         "coverage_profile_digest": "daf8a8ada612a6b89d5350cb61beded78d016843bfa10ce11b643bc70d155122",
         "mode": "plugin_namespaced_resolve",
-        "profile_digest": "b03b7623b469d6703678396e8a8de41b38168eedd2b3c69942d4b7860207cbfa",
+        "profile_digest": "cdcaf0905e33d9e93d96446230b3e4f2b83a2a2e025059767c97959c60ab8291",
         "semantic_operational_digest": "3cda4fe5abd57eebd58afaf00bbaf3a6f1a8bd5898d0e5aba071c4974935f4aa"
       },
       "plugin_binding": {
-        "content_digest": "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329",
+        "content_digest": "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf",
         "manifest_digest": "8c0affffe16e5ceceb310a3dde1f7442b443081228349ab8463ebc10a04a0389",
         "namespaced_skill_id": "orch-next-hermes-harness:workflow-plan-test-patch",
         "package_identity": "orch-next-hermes-harness",

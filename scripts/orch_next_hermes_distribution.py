@@ -41,7 +41,9 @@ PLUGIN_ID = "orch-next-hermes-harness"
 PLUGIN_VERSION = "0.1.49"
 PLUGIN_RELEASE_NOTE = (
     "0.1.49: Codex UserPromptSubmit carries the accepted bounded Maestro "
-    "Decision OS prompt-context selector; installation and firing remain unclaimed."
+    "Decision OS prompt-context selector, and Hermes carries an exact "
+    "Maestro-owned closed-loop Goal consumer; installation and firing remain "
+    "unclaimed."
 )
 MARKETPLACE_ID = "orch-next-hermes-local"
 LEGACY_PLUGIN_ID = "orch-next-codex-harness"
@@ -59,6 +61,13 @@ MAESTRO_AUTHORITY_BUNDLE_ID = "HERMES_MAESTRO_AUTHORITY_BUNDLE_V3"
 MAESTRO_AUTHORITY_BUNDLE_VERSION = "hermes-maestro-authority-bundle.v3"
 MAESTRO_AUTHORITY_BUNDLE_DIGEST = (
     "7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e"
+)
+CLOSED_LOOP_GOAL_CONSUMER_SKILL = "orch-next-closed-loop-grand-goal-consumer"
+CLOSED_LOOP_GOAL_ID = (
+    "ORCH_NEXT_CMD_MAESTRO_HERMES_SDO_PMS_ODG_CLOSED_LOOP_COMPLETION"
+)
+CLOSED_LOOP_GOAL_CONSUMER_CONTRACT = json.loads(
+    r'''{"authority":{"binding_drift_result":"maestro_goal_binding_drift","bundle_digest":"7d6bc36e50938f74ad2728ed3d87f272620086de7bfd928616c84bbdfd09412e","bundle_identity":"HERMES_MAESTRO_AUTHORITY_BUNDLE_V3","bundle_version":"hermes-maestro-authority-bundle.v3","can_issue_protected_authority":false,"can_issue_user_acceptance":false,"can_perform_protected_transition":false,"launch":false,"unavailable_result":"maestro_authority_unavailable"},"authority_owner":"maestro-kernel","canonical_phase_gate_map":{"P0":[],"P1":[],"P10":["U1","U5","U6","U8"],"P11":["U8"],"P2":["U4"],"P3":["U4"],"P4":["U5"],"P5":["U2"],"P6":["U3","U6"],"P7":["U6"],"P8":["U7"],"P9":["U7"]},"canonical_source_binding":{"control":{"path":"controls/orch-next-closed-loop-grand-goal.v1.json","sha256":"11feb5ef9d35dea49c47905c8680ad14e70c058a0dad4b9d6d1387c5fbd63ddc"},"layer":"source_composed_candidate","repository":"maestro-kernel","revision":"70c61128b1f31b29ae2c1e2a53d676ffb62e4d9e","skill":{"path":"skills/orch-next-closed-loop-grand-goal/SKILL.md","sha256":"82064d2049309b8cd9f6a2b37be155a0b6a4ee78b01effc0b0fff759a40b3575"},"tree":"86f47770b0fac0ab13edf0d1bfc5930de1c0e62a"},"consumer_skill_id":"orch-next-closed-loop-grand-goal-consumer","final_acceptance":{"consecutive_natural_closed_loop_journeys":10,"critical_failures":0,"explicit_same_surface_user_acceptance":true,"manual_relay":0,"minimum_recovery_cases":3,"minimum_task_classes":3,"requires_all_u1_u8":true},"grand_goal_id":"ORCH_NEXT_CMD_MAESTRO_HERMES_SDO_PMS_ODG_CLOSED_LOOP_COMPLETION","lifecycle_order":["SOURCE","SOURCE_COMPOSED_CANDIDATE","CANONICAL_INTEGRATED","INSTALLED","SELECTED","LIVE","NATURALLY_EXERCISED","RESULT_CONSUMED","USER_ACCEPTED"],"normal_user_route":["U1","U2","U3","U4","U5","U6","U7","U8"],"operational_consumer_owner":"hermes-agent","role":"operational_front_door_consumer_projection","schema":"orch-next-closed-loop-grand-goal-consumer.v1","support_work_progress_credit":0}'''
 )
 MAESTRO_OWNERSHIP_MANIFEST = (
     "maestro-kernel:research/mk675/fable5_decision_os/"
@@ -88,13 +97,16 @@ TERMINAL_AUTHORITY_PROFILE = "skills/heartbeat-cmd-control-guard/OPERATIONAL_PRO
 TERMINAL_AUTHORITY_PROFILE_SHA256 = (
     "a57c57fc6cbe65c5657324ebbc737a370c7ef24ea6ae5cc2f0305ec94607c0be"
 )
-EXPECTED_SKILL_COUNT = 47
-EXPECTED_SKILL_FILE_COUNT = 70
+EXPECTED_SKILL_COUNT = 48
+EXPECTED_SKILL_FILE_COUNT = 71
 EXPECTED_SKILL_CLOSURE_DIGEST = (
-    "c869e171d1cb15c6e5004642b9db3a51fa19033471cc824a65566269ab073329"
+    "18e362d90fd7f966d99a9327605470511c5aa2d848802d86b385f8a43eda6edf"
 )
 QUARANTINED_SKILLS = frozenset({"fable5-os-durable-user-value-goal"})
-REQUIRED_ADMITTED_SKILLS = frozenset({"fable5-derived-advisory-synthesis"})
+REQUIRED_ADMITTED_SKILLS = frozenset({
+    "fable5-derived-advisory-synthesis",
+    CLOSED_LOOP_GOAL_CONSUMER_SKILL,
+})
 ALLOWED_BUNDLE_TOP_LEVEL = frozenset({
     ".claude-plugin",
     ".codex-plugin",
@@ -653,6 +665,27 @@ def verify_latest_stable_release(
 
 def _json_bytes(value: object) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _closed_loop_goal_consumer_contract(skill_text: str) -> dict:
+    """Read the exact Maestro-owned Goal binding from its Hermes consumer."""
+
+    prefix = "<!-- hermes_goal_consumer_contract_json: "
+    if skill_text.count(prefix) != 1:
+        raise DistributionError("closed-loop Goal consumer binding drift")
+    start = skill_text.index(prefix) + len(prefix)
+    end = skill_text.find(" -->", start)
+    if end < 0:
+        raise DistributionError("closed-loop Goal consumer binding drift")
+    try:
+        contract = json.loads(skill_text[start:end])
+    except json.JSONDecodeError as exc:
+        raise DistributionError(
+            "closed-loop Goal consumer binding drift"
+        ) from exc
+    if type(contract) is not dict or contract != CLOSED_LOOP_GOAL_CONSUMER_CONTRACT:
+        raise DistributionError("closed-loop Goal consumer binding drift")
+    return contract
 
 
 def _validate_relative_path(value: str, *, label: str) -> PurePosixPath:
@@ -1645,6 +1678,8 @@ def _compact_operational_profile(entries: Sequence[dict[str, str]]) -> dict:
 def _skill_trigger(name: str) -> tuple[str, str | None]:
     """Map native skill triggers without making conditionals mandatory."""
 
+    if name == CLOSED_LOOP_GOAL_CONSUMER_SKILL:
+        return "task_specific", f"exact_goal_id:{CLOSED_LOOP_GOAL_ID}"
     if name == "skill-select":
         return "common_preflight", "multiple_candidates"
     if name == "best-evaluate":
@@ -1774,6 +1809,16 @@ def verify_source_skills(skills_root: Path) -> list[dict[str, str]]:
         raise DistributionError(
             "required admitted skill missing: " + ", ".join(missing_admitted)
         )
+    if "orch-next-closed-loop-grand-goal" in names:
+        raise DistributionError(
+            "duplicate Maestro closed-loop Goal authority in Hermes skill tree"
+        )
+    consumer_path = skills_root / CLOSED_LOOP_GOAL_CONSUMER_SKILL / "SKILL.md"
+    if not consumer_path.is_file() or consumer_path.is_symlink():
+        raise DistributionError("closed-loop Goal consumer binding drift")
+    _closed_loop_goal_consumer_contract(
+        consumer_path.read_text(encoding="utf-8")
+    )
     if len(names) != EXPECTED_SKILL_COUNT:
         raise DistributionError(
             f"skill count mismatch: expected {EXPECTED_SKILL_COUNT}, observed {len(names)}"
@@ -2056,6 +2101,9 @@ def _source_manifest(
         },
         "legacy_maestro_compatibility": dict(LEGACY_MAESTRO_COMPATIBILITY),
         "maestro_prompt_context": prompt_context_binding,
+        "maestro_closed_loop_goal_consumer": dict(
+            CLOSED_LOOP_GOAL_CONSUMER_CONTRACT
+        ),
         "maestro_skill_source": _maestro_skill_source_binding(),
         "quarantined_exclusions": sorted(QUARANTINED_SKILLS),
         "required_admitted_skills": sorted(REQUIRED_ADMITTED_SKILLS),

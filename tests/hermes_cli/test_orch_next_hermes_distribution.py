@@ -88,6 +88,56 @@ MAESTRO_PROMPT_CONTEXT_FILES = {
     ),
 }
 
+CLOSED_LOOP_GOAL_CONSUMER_SKILL = "orch-next-closed-loop-grand-goal-consumer"
+CLOSED_LOOP_GOAL_ID = (
+    "ORCH_NEXT_CMD_MAESTRO_HERMES_SDO_PMS_ODG_CLOSED_LOOP_COMPLETION"
+)
+CLOSED_LOOP_GOAL_SOURCE_REVISION = (
+    "70c61128b1f31b29ae2c1e2a53d676ffb62e4d9e"
+)
+CLOSED_LOOP_GOAL_SOURCE_TREE = "86f47770b0fac0ab13edf0d1bfc5930de1c0e62a"
+CLOSED_LOOP_GOAL_CONTROL_SHA256 = (
+    "11feb5ef9d35dea49c47905c8680ad14e70c058a0dad4b9d6d1387c5fbd63ddc"
+)
+CLOSED_LOOP_GOAL_SKILL_SHA256 = (
+    "82064d2049309b8cd9f6a2b37be155a0b6a4ee78b01effc0b0fff759a40b3575"
+)
+CLOSED_LOOP_PHASE_GATE_MAP = {
+    "P0": [],
+    "P1": [],
+    "P2": ["U4"],
+    "P3": ["U4"],
+    "P4": ["U5"],
+    "P5": ["U2"],
+    "P6": ["U3", "U6"],
+    "P7": ["U6"],
+    "P8": ["U7"],
+    "P9": ["U7"],
+    "P10": ["U1", "U5", "U6", "U8"],
+    "P11": ["U8"],
+}
+
+
+def _closed_loop_goal_contract(skill_text: str) -> dict[str, object]:
+    prefix = "<!-- hermes_goal_consumer_contract_json: "
+    start = skill_text.index(prefix) + len(prefix)
+    end = skill_text.index(" -->", start)
+    value = json.loads(skill_text[start:end])
+    assert type(value) is dict
+    return value
+
+
+def _replace_closed_loop_goal_contract(
+    skill_text: str, contract: dict[str, object]
+) -> str:
+    prefix = "<!-- hermes_goal_consumer_contract_json: "
+    start = skill_text.index(prefix) + len(prefix)
+    end = skill_text.index(" -->", start)
+    replacement = json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return skill_text[:start] + replacement + skill_text[end:]
+
 
 def _prompt_context_root(bundle: Path) -> Path:
     return bundle / "runtime" / "maestro_prompt_context"
@@ -190,6 +240,138 @@ def test_0149_codex_hook_manifest_avoids_claude_default_discovery(
     assert (bundle / "codex-hooks" / "hooks.json").is_file()
     assert not (bundle / "hooks" / "hooks.json").exists()
     assert "hooks" not in claude
+
+
+def test_0149_closed_loop_goal_is_a_bound_consumer_not_a_second_owner() -> None:
+    source_root = REPO_ROOT / "skills" / "orch-next"
+    bundle = REPO_ROOT / "distribution" / distribution.PLUGIN_ID
+    source_skill = source_root / CLOSED_LOOP_GOAL_CONSUMER_SKILL / "SKILL.md"
+    bundled_skill = (
+        bundle / "skills" / CLOSED_LOOP_GOAL_CONSUMER_SKILL / "SKILL.md"
+    )
+
+    assert not (source_root / "orch-next-closed-loop-grand-goal").exists()
+    assert source_skill.is_file() and not source_skill.is_symlink()
+    assert bundled_skill.is_file() and not bundled_skill.is_symlink()
+    assert bundled_skill.read_bytes() == source_skill.read_bytes()
+
+    contract = _closed_loop_goal_contract(source_skill.read_text(encoding="utf-8"))
+    assert contract == distribution.CLOSED_LOOP_GOAL_CONSUMER_CONTRACT
+    assert contract["schema"] == "orch-next-closed-loop-grand-goal-consumer.v1"
+    assert contract["consumer_skill_id"] == CLOSED_LOOP_GOAL_CONSUMER_SKILL
+    assert contract["role"] == "operational_front_door_consumer_projection"
+    assert contract["authority_owner"] == "maestro-kernel"
+    assert contract["operational_consumer_owner"] == "hermes-agent"
+    assert contract["grand_goal_id"] == CLOSED_LOOP_GOAL_ID
+    assert contract["normal_user_route"] == [f"U{index}" for index in range(1, 9)]
+    assert contract["canonical_phase_gate_map"] == CLOSED_LOOP_PHASE_GATE_MAP
+    assert contract["support_work_progress_credit"] == 0
+    assert contract["lifecycle_order"] == [
+        "SOURCE",
+        "SOURCE_COMPOSED_CANDIDATE",
+        "CANONICAL_INTEGRATED",
+        "INSTALLED",
+        "SELECTED",
+        "LIVE",
+        "NATURALLY_EXERCISED",
+        "RESULT_CONSUMED",
+        "USER_ACCEPTED",
+    ]
+    assert contract["canonical_source_binding"] == {
+        "control": {
+            "path": "controls/orch-next-closed-loop-grand-goal.v1.json",
+            "sha256": CLOSED_LOOP_GOAL_CONTROL_SHA256,
+        },
+        "layer": "source_composed_candidate",
+        "repository": "maestro-kernel",
+        "revision": CLOSED_LOOP_GOAL_SOURCE_REVISION,
+        "skill": {
+            "path": "skills/orch-next-closed-loop-grand-goal/SKILL.md",
+            "sha256": CLOSED_LOOP_GOAL_SKILL_SHA256,
+        },
+        "tree": CLOSED_LOOP_GOAL_SOURCE_TREE,
+    }
+    assert contract["authority"] == {
+        "bundle_digest": distribution.MAESTRO_AUTHORITY_BUNDLE_DIGEST,
+        "bundle_identity": distribution.MAESTRO_AUTHORITY_BUNDLE_ID,
+        "bundle_version": distribution.MAESTRO_AUTHORITY_BUNDLE_VERSION,
+        "binding_drift_result": "maestro_goal_binding_drift",
+        "can_issue_protected_authority": False,
+        "can_issue_user_acceptance": False,
+        "can_perform_protected_transition": False,
+        "launch": False,
+        "unavailable_result": "maestro_authority_unavailable",
+    }
+    assert contract["final_acceptance"] == {
+        "consecutive_natural_closed_loop_journeys": 10,
+        "critical_failures": 0,
+        "explicit_same_surface_user_acceptance": True,
+        "manual_relay": 0,
+        "minimum_recovery_cases": 3,
+        "minimum_task_classes": 3,
+        "requires_all_u1_u8": True,
+    }
+
+    manifest = json.loads((bundle / "SOURCE_MANIFEST.json").read_text())
+    assert manifest["maestro_closed_loop_goal_consumer"] == contract
+    profiles = {
+        row["qualified_skill_id"]: row
+        for row in json.loads(
+            (bundle / distribution.OPERATIONAL_PROFILE_INDEX_PATH).read_text()
+        )["skills"]
+    }
+    profile = profiles[f"{distribution.PLUGIN_ID}:{CLOSED_LOOP_GOAL_CONSUMER_SKILL}"]
+    assert profile["trigger_mode"] == "task_specific"
+    assert profile["source_trigger"] == f"exact_goal_id:{CLOSED_LOOP_GOAL_ID}"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "authority_owner",
+        "source_revision",
+        "goal_id",
+        "normal_user_route",
+        "phase_gate_map",
+        "authority_emission",
+    ],
+)
+def test_0149_closed_loop_goal_binding_drift_fails_closed(
+    tmp_path: Path, mutation: str
+) -> None:
+    source = _source_copy(tmp_path)
+    skill = source / CLOSED_LOOP_GOAL_CONSUMER_SKILL / "SKILL.md"
+    text = skill.read_text(encoding="utf-8")
+    contract = _closed_loop_goal_contract(text)
+    if mutation == "authority_owner":
+        contract["authority_owner"] = "hermes-agent"
+    elif mutation == "source_revision":
+        binding = contract["canonical_source_binding"]
+        assert type(binding) is dict
+        binding["revision"] = "0" * 40
+    elif mutation == "goal_id":
+        contract["grand_goal_id"] = "UNBOUND_GOAL"
+    elif mutation == "normal_user_route":
+        contract["normal_user_route"] = ["U1", "U2", "U4"]
+    elif mutation == "phase_gate_map":
+        phase_map = contract["canonical_phase_gate_map"]
+        assert type(phase_map) is dict
+        phase_map["P5"] = ["U3"]
+    elif mutation == "authority_emission":
+        authority = contract["authority"]
+        assert type(authority) is dict
+        authority["can_issue_protected_authority"] = True
+    else:  # pragma: no cover - parametrization is exhaustive
+        raise AssertionError(mutation)
+    skill.write_text(
+        _replace_closed_loop_goal_contract(text, contract), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        distribution.DistributionError,
+        match="closed-loop Goal consumer binding drift",
+    ):
+        distribution.verify_source_skills(source)
 
 
 def test_0149_generated_bundle_carries_exact_maestro_prompt_context(
